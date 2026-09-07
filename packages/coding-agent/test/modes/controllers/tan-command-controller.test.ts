@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import type { AsyncJobRegisterOptions } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import type { EffectiveExtensionRoots } from "@oh-my-pi/pi-coding-agent/capability/types";
@@ -59,10 +60,13 @@ function createCloneStub(overrides?: {
 	activeToolNames?: string[];
 	enabledToolNames?: string[];
 }) {
-	const appendMessage = vi.fn();
+	const messages: AgentMessage[] = [];
+	const appendMessage = vi.fn((message: AgentMessage) => {
+		messages.push(message);
+	});
 	let listener: ((event: TanSessionEvent) => void) | undefined;
 	const clone = {
-		agent: { appendMessage },
+		agent: { appendMessage, state: { messages } },
 		sessionManager: overrides?.sessionManager,
 		setTodoPhases: vi.fn(),
 		getActiveToolNames: vi.fn(() => overrides?.activeToolNames ?? ["read", "bash"]),
@@ -82,6 +86,7 @@ function createCloneStub(overrides?: {
 	return {
 		clone,
 		appendMessage,
+		messages,
 		get compactionListener() {
 			return listener;
 		},
@@ -576,5 +581,48 @@ describe("TanCommandController", () => {
 		// Only the two fork notices are re-appended (dispatch + pre-prompt
 		// restore); the request is left for the real dispatch, never duplicated.
 		expect(stub.appendMessage.mock.calls.map(([message]) => message.role)).toEqual(["developer", "developer"]);
+	});
+
+	it("does not re-append the request when compaction keeps it in context", async () => {
+		const harness = createContext();
+		vi.spyOn(SessionManager, "forkFrom").mockResolvedValue(harness.cloneManager);
+		const compacted = Promise.withResolvers<void>();
+		const stub = createCloneStub({
+			prompt: async () => {
+				// Model the real dispatch appending the request, then a post-dispatch
+				// compaction that keeps the recent turn: the request survives in the
+				// rebuilt context, so the listener must not append it a second time.
+				stub.compactionListener?.({ type: "agent_start" });
+				stub.clone.agent.appendMessage({
+					role: "user",
+					content: [{ type: "text", text: "follow the tangent" }],
+					attribution: "user",
+					timestamp: Date.now(),
+				});
+				stub.compactionListener?.({ type: "auto_compaction_end", result: {}, aborted: false });
+				compacted.resolve();
+			},
+		});
+		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
+			session: stub.clone,
+		} as unknown as CreateAgentSessionResult);
+		const controller = new TanCommandController(harness.ctx);
+
+		await controller.start("follow the tangent");
+		const run = harness.capturedRun;
+		if (!run) throw new Error("run function was not captured");
+		await run({ jobId: "job-123", signal: new AbortController().signal, reportProgress: async () => {} });
+		await compacted.promise;
+
+		// Only the initial-dispatch fork notice and the dispatched request are
+		// appended; the retained request is left in place, not duplicated.
+		expect(stub.appendMessage.mock.calls.map(([message]) => message.role)).toEqual(["developer", "user"]);
+		const requestCount = stub.messages.filter(
+			message =>
+				message.role === "user" &&
+				Array.isArray(message.content) &&
+				message.content.some(part => part.type === "text" && part.text === "follow the tangent"),
+		).length;
+		expect(requestCount).toBe(1);
 	});
 });
