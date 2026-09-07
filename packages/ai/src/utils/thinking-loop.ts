@@ -103,7 +103,7 @@ const STRUCTURAL_PUNCT = /[|{}[\]"`:;,/=<>#]/u;
  *  structured output regardless of how long the key name is, and essentially
  *  absent from prose; used to recognize JSON independently of {@link proseRatio}.
  *  Global flag: collected with matchAll, never used with the stateful test(). */
-const JSON_KEY_FIELD = /"[^"\n]{1,200}"\s*:/g;
+const JSON_KEY_FIELD = /"(?:\\.|[^"\\\n])*"\s*:/g;
 /** Minimum fraction of prose characters (Unicode letters + whitespace, versus
  *  structural punctuation) a segment must reach to feed the near-duplicate and
  *  lexical-stall heuristics. Homogeneous structured output — a markdown table of

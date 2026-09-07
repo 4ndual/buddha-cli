@@ -263,6 +263,51 @@ function longKeyJsonAnswer(n: number): string {
 	return `Here is the requested account data:\n\n${objs.join("\n\n")}`;
 }
 
+/** Compact JSON whose fields exceed the detector's force-flush chunk size when
+ *  combined, with each individual key longer than 200 characters. The chunks
+ *  remain JSON records regardless of key length and must never enter the prose
+ *  similarity heuristics (issue #11132 review). */
+function oversizedKeyJsonAnswer(n: number): string {
+	const keyPrefix = [
+		"very",
+		"long",
+		"descriptive",
+		"customer",
+		"account",
+		"identifier",
+		"for",
+		"cross",
+		"region",
+		"enterprise",
+		"reporting",
+		"workflow",
+		"with",
+		"historical",
+		"billing",
+		"context",
+		"and",
+		"primary",
+		"ledger",
+		"reconciliation",
+		"metadata",
+		"for",
+		"compliance",
+		"export",
+		"sequence",
+		"including",
+		"audited",
+		"ownership",
+		"attribution",
+		"details",
+	].join("_");
+	const rows = Array.from(
+		{ length: n },
+		(_, i) =>
+			`{"${keyPrefix}_primary":${1000 + i},"${keyPrefix}_secondary":${2000 + i},"${keyPrefix}_tertiary":${3000 + i}}`,
+	);
+	return `[${rows.join(",")}]`;
+}
+
 describe("ThinkingLoopDetector", () => {
 	test("trips on a tight near-duplicate paragraph loop via the trigram path", () => {
 		// High word-trigram overlap: the cluster check claims it before the lexical
@@ -354,6 +399,10 @@ describe("ThinkingLoopDetector", () => {
 		// Long key names push the prose ratio above its threshold, so the JSON must
 		// be recognized by shape rather than by the letter-to-punctuation ratio.
 		expect(feed(longKeyJsonAnswer(12))).toBeNull();
+	});
+
+	test("does not trip on compact JSON fields longer than 200 characters", () => {
+		expect(feed(oversizedKeyJsonAnswer(12))).toBeNull();
 	});
 
 	test("still trips on a reasoning-prose loop even when it follows structured output", () => {
