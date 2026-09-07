@@ -99,11 +99,11 @@ const LEX_STALL_MIN_RUN = 8;
 /** Structural punctuation that dominates tables / JSON / code but is rare in
  *  prose. Used to score a segment's prose-likeness. */
 const STRUCTURAL_PUNCT = /[|{}[\]"`:;,/=<>#]/u;
-/** A quoted `"key":` pair — the shape of a JSON/object record field. Present in
- *  structured output regardless of how long the key name is, and essentially
- *  absent from prose; used to recognize JSON independently of {@link proseRatio}.
- *  Global flag: collected with matchAll, never used with the stateful test(). */
-const JSON_KEY_FIELD = /"(?:\\.|[^"\\\n])*"\s*:/g;
+/** A JSON record field prefixed by the record/field delimiter (`{` or `,`).
+ *  Requiring that structure keeps prose mentions such as `"status":` from
+ *  masquerading as record fields. Global flag: collected with matchAll, never
+ *  used with the stateful test(). */
+const JSON_KEY_FIELD = /(?:^|[{,])\s*"(?:\\.|[^"\\\n])*"\s*:/gm;
 /** Minimum fraction of prose characters (Unicode letters + whitespace, versus
  *  structural punctuation) a segment must reach to feed the near-duplicate and
  *  lexical-stall heuristics. Homogeneous structured output — a markdown table of
@@ -611,10 +611,18 @@ function proseRatio(segment: string): number {
  *  punctuation-heavy data (CSV, code). */
 function isStructuredSegment(segment: string): boolean {
 	const trimmed = segment.trim();
-	// A JSON object/array value, whole or force-flush-chunked.
+	// A complete JSON object/array value.
 	if (/^[{[]/.test(trimmed) && /[}\]]$/.test(trimmed)) return true;
-	// Two or more named fields: the shape of a record, independent of key length.
-	if ((segment.match(JSON_KEY_FIELD)?.length ?? 0) >= 2) return true;
+	// A force-flushed partial record: at least two delimiter-prefixed fields whose
+	// syntax dominates the chunk. Incidental inline JSON inside a prose paragraph
+	// leaves most of the segment outside these matches and must remain analyzable.
+	let fields = 0;
+	let fieldChars = 0;
+	for (const match of segment.matchAll(JSON_KEY_FIELD)) {
+		fields++;
+		fieldChars += match[0].length;
+	}
+	if (fields >= 2 && fieldChars * 2 >= trimmed.length) return true;
 	// Markdown table: most non-blank lines are multi-column pipe rows.
 	const lines = segment.split("\n").filter(line => line.trim() !== "");
 	if (lines.length >= 2) {

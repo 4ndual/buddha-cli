@@ -308,6 +308,17 @@ function oversizedKeyJsonAnswer(n: number): string {
 	return `[${rows.join(",")}]`;
 }
 
+/** A genuine near-identical reasoning loop that discusses an inline JSON
+ *  example. The object is incidental prose payload, not the surrounding segment
+ *  structure, so it must not exempt the paragraph from semantic detection. */
+function embeddedRecordProseLoop(paragraphs: number): string {
+	return Array.from(
+		{ length: paragraphs },
+		(_, i) =>
+			`I am still reviewing the same payload example {"status": ${i}, "message": ${i}} without making progress. The record fields remain incidental to this repeated reasoning paragraph, and I keep restating the same inspection instead of acting.`,
+	).join("\n\n");
+}
+
 describe("ThinkingLoopDetector", () => {
 	test("trips on a tight near-duplicate paragraph loop via the trigram path", () => {
 		// High word-trigram overlap: the cluster check claims it before the lexical
@@ -403,6 +414,10 @@ describe("ThinkingLoopDetector", () => {
 
 	test("does not trip on compact JSON fields longer than 200 characters", () => {
 		expect(feed(oversizedKeyJsonAnswer(12))).toBeNull();
+	});
+
+	test("still trips on looping prose with an embedded JSON object", () => {
+		expect(feed(embeddedRecordProseLoop(12))).not.toBeNull();
 	});
 
 	test("still trips on a reasoning-prose loop even when it follows structured output", () => {
