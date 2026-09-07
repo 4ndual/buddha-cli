@@ -631,6 +631,45 @@ function resolveAntigravityEndpoints(): string[] {
 	return [DEFAULT_ANTIGRAVITY_ENDPOINT_PROD, DEFAULT_ANTIGRAVITY_ENDPOINT_SANDBOX];
 }
 
+/** Advertised Antigravity image model plus the endpoints to reach it, per account. */
+interface AntigravityImageTarget {
+	model: string;
+	endpoints: string[];
+}
+
+/**
+ * Resolves the image model and serving endpoint advertised for the account
+ * behind `bearer`, memoized per bearer. `withAuth` can rotate to a sibling
+ * account mid-request; each account carries its own image roster, so the target
+ * MUST be resolved for the credential actually in hand, not the initial one.
+ * Falls back to {@link DEFAULT_ANTIGRAVITY_MODEL} and the default endpoint order
+ * when discovery is unavailable.
+ */
+async function resolveAntigravityImageTarget(
+	bearer: string,
+	cache: Map<string, AntigravityImageTarget>,
+	fetchImpl: FetchImpl,
+	signal?: AbortSignal,
+): Promise<AntigravityImageTarget> {
+	const cached = cache.get(bearer);
+	if (cached) return cached;
+
+	const endpoints = resolveAntigravityEndpoints();
+	const advertised = await fetchAntigravityImageModel({
+		token: bearer,
+		endpoint: endpoints.length === 1 ? endpoints[0] : undefined,
+		userAgent: getAntigravityUserAgent(),
+		signal,
+		fetcher: fetchImpl,
+	});
+	const target: AntigravityImageTarget = {
+		model: advertised?.id ?? DEFAULT_ANTIGRAVITY_MODEL,
+		endpoints: advertised ? [advertised.endpoint] : endpoints,
+	};
+	cache.set(bearer, target);
+	return target;
+}
+
 async function findXAIImageCredentials(modelRegistry?: ModelRegistry): Promise<ImageApiKey | null> {
 	if (modelRegistry) {
 		const creds = await resolveXAIHttpCredentials(modelRegistry);
@@ -1281,23 +1320,14 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 
 				const provider = apiKey.provider;
 				try {
-					let antigravityEndpoints: string[] | undefined;
 					let model: string;
 					if (provider === "openai" || provider === "openai-codex") {
 						model = apiKey.model?.id ?? "gpt";
 					} else if (provider === "antigravity") {
-						antigravityEndpoints = resolveAntigravityEndpoints();
-						const advertised = await fetchAntigravityImageModel({
-							token: apiKey.apiKey,
-							endpoint: antigravityEndpoints.length === 1 ? antigravityEndpoints[0] : undefined,
-							userAgent: getAntigravityUserAgent(),
-							signal: requestSignal,
-							fetcher: fetchImpl,
-						});
-						if (advertised) {
-							antigravityEndpoints = [advertised.endpoint];
-						}
-						model = advertised?.id ?? DEFAULT_ANTIGRAVITY_MODEL;
+						// The real model is resolved per credential inside withAuth (a
+						// rotated sibling account may advertise a different roster); this
+						// seed only hints credential resolution and the fallback path.
+						model = DEFAULT_ANTIGRAVITY_MODEL;
 					} else if (provider === "openrouter") {
 						model = DEFAULT_OPENROUTER_MODEL;
 					} else if (provider === "xai") {
@@ -1385,6 +1415,11 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 							sessionId,
 							modelId: model,
 						});
+						// withAuth may rotate to a sibling account after a 401/403/quota
+						// failure; resolve each account's advertised image target once and
+						// reuse it across that credential's endpoint retries.
+						const imageTargetCache = new Map<string, AntigravityImageTarget>();
+						let usedModel = model;
 
 						const response = await withAuth(
 							antigravityKey,
@@ -1395,16 +1430,23 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 								const rotated = parseAntigravityCredentials(key);
 								const bearer = rotated?.accessToken ?? key;
 								const projectId = rotated?.projectId ?? apiKey.projectId!;
+								const target = await resolveAntigravityImageTarget(
+									bearer,
+									imageTargetCache,
+									fetchImpl,
+									requestSignal,
+								);
+								usedModel = target.model;
 								const requestBody = buildAntigravityRequest(
 									prompt,
-									model,
+									target.model,
 									projectId,
 									params.aspect_ratio,
 									params.image_size,
 									resolvedImages,
 								);
 
-								const endpoints = antigravityEndpoints ?? resolveAntigravityEndpoints();
+								const endpoints = target.endpoints;
 
 								let resp: Response | undefined;
 								let lastError: Error | undefined;
@@ -1476,7 +1518,7 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 								content: [{ type: "text", text: `No image data returned.${messageText}` }],
 								details: {
 									provider,
-									model,
+									model: usedModel,
 									imageCount: 0,
 									imagePaths: [],
 									images: [],
@@ -1489,10 +1531,12 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 						const imagePaths = await saveImagesToTemp(parsed.images);
 
 						return {
-							content: [{ type: "text", text: buildResponseSummary(provider, model, imagePaths, responseText) }],
+							content: [
+								{ type: "text", text: buildResponseSummary(provider, usedModel, imagePaths, responseText) },
+							],
 							details: {
 								provider,
-								model,
+								model: usedModel,
 								imageCount: parsed.images.length,
 								imagePaths,
 								images: parsed.images,
