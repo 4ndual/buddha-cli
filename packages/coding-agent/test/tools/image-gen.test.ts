@@ -816,6 +816,64 @@ describe("imageGenTool", () => {
 		expect(result.details?.model).toBe("gemini-3.1-flash-image");
 	});
 
+	it("fails over to the sandbox endpoint in auto mode after a production 5xx", async () => {
+		setImageProviderOrder(["antigravity"]);
+		const requestUrls: string[] = [];
+		const fetchMock = (async (input: string | URL | Request) => {
+			const url = input.toString();
+			if (url.includes(":fetchAvailableModels")) {
+				requestUrls.push(url);
+				return new Response(JSON.stringify({ imageGenerationModelIds: ["gemini-3.1-flash-image"] }), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				});
+			}
+			if (url.includes("streamGenerateContent")) {
+				requestUrls.push(url);
+				if (url.startsWith("https://daily-cloudcode-pa.googleapis.com/")) {
+					return new Response(JSON.stringify({ error: { message: "backend unavailable" } }), {
+						status: 503,
+						headers: { "content-type": "application/json" },
+					});
+				}
+				return new Response(
+					`data: ${JSON.stringify({
+						response: {
+							candidates: [
+								{
+									content: {
+										parts: [
+											{
+												inlineData: {
+													data: Buffer.from("sandbox-antigravity-image").toString("base64"),
+													mimeType: "image/png",
+												},
+											},
+										],
+									},
+								},
+							],
+						},
+					})}\n\n`,
+					{ status: 200, headers: { "content-type": "text/event-stream" } },
+				);
+			}
+			throw new Error(`Unexpected provider request: ${url}`);
+		}) as unknown as typeof fetch;
+		const ctx = createAntigravityXAIContext(undefined, fetchMock);
+
+		const result = await imageGenTool.execute("call-antigravity-failover", { subject: "a cat" }, undefined, ctx);
+		generatedImagePaths.push(...(result.details?.imagePaths ?? []));
+
+		expect(requestUrls).toEqual([
+			"https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+			"https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
+			"https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:streamGenerateContent?alt=sse",
+		]);
+		expect(result.details?.provider).toBe("antigravity");
+		expect(result.details?.model).toBe("gemini-3.1-flash-image");
+	});
+
 	it("re-discovers the image model when withAuth rotates to a sibling Antigravity account", async () => {
 		setImageProviderOrder(["antigravity", "xai"]);
 		const credsA = JSON.stringify({ token: "token-A", projectId: "proj-A" });

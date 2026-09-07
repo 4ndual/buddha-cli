@@ -662,10 +662,14 @@ async function resolveAntigravityImageTarget(
 		signal,
 		fetcher: fetchImpl,
 	});
-	const target: AntigravityImageTarget = {
-		model: advertised?.id ?? DEFAULT_ANTIGRAVITY_MODEL,
-		endpoints: advertised ? [advertised.endpoint] : endpoints,
-	};
+	const target: AntigravityImageTarget = advertised
+		? {
+				model: advertised.id,
+				// Keep the discovered endpoint first but retain the other configured
+				// fallbacks so generation retries (429/5xx/network) still fail over.
+				endpoints: [advertised.endpoint, ...endpoints.filter(endpoint => endpoint !== advertised.endpoint)],
+			}
+		: { model: DEFAULT_ANTIGRAVITY_MODEL, endpoints };
 	cache.set(bearer, target);
 	return target;
 }
