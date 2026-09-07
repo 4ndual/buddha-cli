@@ -105,12 +105,18 @@ export async function discoverAgents(
 		orderedDirs.push({ dir: path.join(root.path, "agents"), source: root.level });
 	}
 
-	// Load agents from Claude Code marketplace plugins (respects disabledProviders and opt-in)
+	// Load agents from Claude Code marketplace plugins (respects disabledProviders and opt-in).
+	// User-scope roots whose origin is not the foreign ~/.claude/plugins tree (omp's own
+	// installs and `--plugin-dir` roots) survive the claude-plugins opt-in gate, mirroring
+	// isSourceEnabled in extensibility/skills.ts (#10743). Without this, `--plugin-dir` and
+	// omp-installed agents are dropped at user scope whenever the Claude source is disabled.
 	const claudePluginsUserEnabled = isUserSourceEnabled("claude-plugins") || isUserSourceEnabled("claude");
 	const { roots: pluginRoots } = isProviderEnabled("claude-plugins")
 		? await listClaudePluginRoots(home, resolvedCwd)
 		: { roots: [] };
-	const filteredPluginRoots = claudePluginsUserEnabled ? pluginRoots : pluginRoots.filter(r => r.scope === "project");
+	const filteredPluginRoots = pluginRoots.filter(
+		r => r.scope === "project" || claudePluginsUserEnabled || r.origin !== "claude",
+	);
 	const sortedPluginRoots = [...filteredPluginRoots].sort((a, b) => {
 		if (a.scope === b.scope) return 0;
 		return a.scope === "project" ? -1 : 1;
