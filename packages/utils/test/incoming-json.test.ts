@@ -1,5 +1,6 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { IncomingDoc, IncomingJsonError } from "@oh-my-pi/pi-utils/incoming-json";
+import { JsonLexer } from "@oh-my-pi/pi-utils/json-lexer";
 import { parseJsonWithRepair } from "@oh-my-pi/pi-utils/json-parse";
 
 /** Whether `promise` is still unsettled after the microtask queue and one macrotask drain. */
@@ -426,16 +427,27 @@ describe("incoming JSON cursors", () => {
 		const items = doc.root().object().key("items").array();
 		feed.push('{"items":[');
 		let sum = 0;
-		const started = performance.now();
-		for (let i = 0; i < count; i++) {
-			feed.push(`{"n":${i}},`);
-			const element = await items.next();
-			sum += await element!.object().key("n").number();
+		// Count lexer reads rather than wall-clock time: a resumed scan does a
+		// constant number of reads per element, so total reads stay O(n); a
+		// regression that re-lexed every earlier element would make it O(n²).
+		// Operation count is deterministic, unlike a timing bound that a loaded
+		// CI runner inflates past any threshold (#11109).
+		const peek = spyOn(JsonLexer.prototype, "peek");
+		try {
+			for (let i = 0; i < count; i++) {
+				feed.push(`{"n":${i}},`);
+				const element = await items.next();
+				sum += await element!.object().key("n").number();
+			}
+			feed.push("]}");
+			feed.finish();
+			expect(await items.next()).toBeUndefined();
+			expect(sum).toBe((count * (count - 1)) / 2);
+			// ~42 reads/element in practice; the ceiling only has to sit below the
+			// quadratic blow-up (~count/2 reads/element) to catch a rescan.
+			expect(peek.mock.calls.length).toBeLessThan(count * 250);
+		} finally {
+			peek.mockRestore();
 		}
-		feed.push("]}");
-		feed.finish();
-		expect(await items.next()).toBeUndefined();
-		expect(sum).toBe((count * (count - 1)) / 2);
-		expect(performance.now() - started).toBeLessThan(2_000);
-	});
+	}, 30_000);
 });
