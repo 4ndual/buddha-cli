@@ -310,14 +310,21 @@ export class MarketplaceManager {
 		let version!: string;
 		let cachePath!: string;
 		let packageName!: string;
+		let previousPackageNames!: Set<string>;
 		try {
 			version = await this.#resolvePluginVersion(pluginEntry, sourcePath);
 			packageName = await this.#resolvePluginPackageName(sourcePath, name);
+			// Resolve the runtime names this plugin id currently owns BEFORE cachePlugin
+			// can overwrite the existing cache. A forced reinstall reuses the same cache
+			// key, so reading afterward would see only the new name and strand the old
+			// runtime link and lockfile key (e.g. a case-only rename Foo → foo).
+			previousPackageNames = await this.#resolveInstalledPackageNames(existing ?? [], name);
 			await this.#assertRuntimePackageNameAvailable(
 				scope,
 				packageName,
 				await readInstalledPluginsRegistry(registryPath),
 				pluginId,
+				await this.#resolveOwnedRuntimeNames(pluginId),
 			);
 			cachePath = await cachePlugin(sourcePath, this.#opts.pluginsCacheDir, marketplace, name, version);
 			await this.#writeEmbeddedLspConfig(pluginEntry, cachePath);
@@ -328,8 +335,6 @@ export class MarketplaceManager {
 				await fs.rm(tempCloneRoot, { recursive: true, force: true }).catch(() => {});
 			}
 		}
-
-		const previousPackageNames = await this.#resolveInstalledPackageNames(existing ?? [], name);
 
 		// Only now clean up old entries — new cache succeeded, so it is safe to remove old ones.
 		if (existing && existing.length > 0) {
@@ -832,6 +837,7 @@ export class MarketplaceManager {
 		packageName: string,
 		registry: InstalledPluginsRegistry,
 		pluginId: string,
+		ownNames: ReadonlySet<string>,
 	): Promise<void> {
 		const key = packageName.toLowerCase();
 
@@ -852,16 +858,23 @@ export class MarketplaceManager {
 			}
 		}
 
-		// Ordinary npm plugins live in the runtime root's package.json dependencies,
-		// not installed_plugins.json; their node_modules link would still be
-		// clobbered by registration on a case-insensitive filesystem. Marketplace
-		// installs never add themselves here, so this cannot self-conflict on
-		// reinstall. Runtime-config keys mirror installed_plugins, already covered.
-		for (const dependencyName of await this.#readRuntimeDependencyNames(scope)) {
-			if (dependencyName.toLowerCase() === key) {
-				throw new Error(
-					`Runtime package name "${packageName}" conflicts with installed package "${dependencyName}"`,
-				);
+		// Names this plugin id already owns, so a forced reinstall — including a
+		// case-only rename of its own runtime key — is never a self-collision below.
+		const owned = new Set<string>();
+		for (const ownName of ownNames) owned.add(ownName.toLowerCase());
+
+		// Ordinary npm plugins (package.json dependencies) and linked plugins
+		// (runtime-config entries with no dependency or installed_plugins record)
+		// would still have their node_modules link clobbered by registration on a
+		// case-insensitive filesystem. Other marketplace plugins also appear in the
+		// runtime config but were already rejected by the registry scan above.
+		const runtimeNames = await this.#readRuntimeDependencyNames(scope);
+		const config = await this.#loadRuntimeConfig(scope);
+		for (const configuredName in config.plugins) runtimeNames.add(configuredName);
+		for (const runtimeName of runtimeNames) {
+			const runtimeKey = runtimeName.toLowerCase();
+			if (runtimeKey === key && !owned.has(runtimeKey)) {
+				throw new Error(`Runtime package name "${packageName}" conflicts with installed package "${runtimeName}"`);
 			}
 		}
 	}
@@ -890,6 +903,25 @@ export class MarketplaceManager {
 			packageNames.add(await this.#resolvePluginPackageName(entry.installPath, fallbackName));
 		}
 		return packageNames;
+	}
+
+	// Runtime package names this plugin id already owns in either scope. A plugin
+	// installed in both scopes (shadowing) or force-reinstalled legitimately keeps
+	// its own runtime key, so these are excluded from the collision check.
+	async #resolveOwnedRuntimeNames(pluginId: string): Promise<Set<string>> {
+		const fallback = parsePluginId(pluginId)?.name ?? pluginId;
+		const registryPaths = this.#opts.projectInstalledRegistryPath
+			? [this.#opts.installedRegistryPath, this.#opts.projectInstalledRegistryPath]
+			: [this.#opts.installedRegistryPath];
+		const names = new Set<string>();
+		for (const registryPath of registryPaths) {
+			const entries = getInstalledPlugin(await readInstalledPluginsRegistry(registryPath), pluginId);
+			if (!entries) continue;
+			for (const owned of await this.#resolveInstalledPackageNames(entries, fallback)) {
+				names.add(owned);
+			}
+		}
+		return names;
 	}
 
 	async #registerRuntimePlugin(

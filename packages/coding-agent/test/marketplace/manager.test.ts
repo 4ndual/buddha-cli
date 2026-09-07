@@ -421,6 +421,55 @@ describe("MarketplaceManager", () => {
 		expect(Object.keys(runtimeConfig.plugins).sort()).toEqual(["original-runtime", "taken-runtime"]);
 	});
 
+	it("rejects a marketplace plugin that case-collides with a linked plugin", async () => {
+		// A linked plugin is recorded only in the runtime config + node_modules link,
+		// with no installed_plugins entry and no package.json dependency.
+		const linkedPackage = path.join(ctx.tmpDir, "linked-foo");
+		fs.mkdirSync(linkedPackage, { recursive: true });
+		fs.writeFileSync(path.join(linkedPackage, "package.json"), JSON.stringify({ name: "foo", version: "1.2.3" }));
+		const linkedLink = path.join(ctx.tmpDir, "node_modules", "foo");
+		fs.mkdirSync(path.dirname(linkedLink), { recursive: true });
+		fs.symlinkSync(linkedPackage, linkedLink, "dir");
+		fs.writeFileSync(
+			path.join(ctx.tmpDir, "omp-plugins.lock.json"),
+			JSON.stringify({ plugins: { foo: { version: "1.2.3", enabledFeatures: null, enabled: true } }, settings: {} }),
+		);
+
+		const marketplaceDir = buildNamedMarketplace(path.join(ctx.tmpDir, "upper-marketplace"), "upper-market", "Foo");
+		await ctx.manager.addMarketplace(marketplaceDir);
+
+		await expect(ctx.manager.installPlugin("Foo", "upper-market")).rejects.toThrow(
+			'Runtime package name "Foo" conflicts with installed package "foo"',
+		);
+		expect(fs.realpathSync(linkedLink)).toBe(fs.realpathSync(linkedPackage));
+		expect(fs.existsSync(path.join(ctx.tmpDir, "node_modules", "Foo"))).toBe(false);
+		expect(fs.existsSync(path.join(ctx.tmpDir, "cache", "plugins", "upper-market___Foo___1.0.0"))).toBe(false);
+	});
+
+	it("force reinstall that changes only the runtime-name case drops the stale key", async () => {
+		const marketplaceDir = buildNamedMarketplace(
+			path.join(ctx.tmpDir, "rename-marketplace"),
+			"rename-market",
+			"widget",
+		);
+		const sourcePackage = path.join(marketplaceDir, "plugins", "widget", "package.json");
+		fs.writeFileSync(sourcePackage, JSON.stringify({ name: "Widget", version: "1.0.0" }));
+		await ctx.manager.addMarketplace(marketplaceDir);
+		await ctx.manager.installPlugin("widget", "rename-market");
+		expect(fs.existsSync(path.join(ctx.tmpDir, "node_modules", "Widget"))).toBe(true);
+
+		// Same marketplace/plugin/version cache key; only the manifest's runtime-name casing changes.
+		fs.writeFileSync(sourcePackage, JSON.stringify({ name: "widget", version: "1.0.0" }));
+		await ctx.manager.installPlugin("widget", "rename-market", { force: true });
+
+		expect(fs.existsSync(path.join(ctx.tmpDir, "node_modules", "widget"))).toBe(true);
+		// The stale mixed-case link and lockfile key are removed, not left stranded.
+		expect(fs.existsSync(path.join(ctx.tmpDir, "node_modules", "Widget"))).toBe(false);
+		const runtimeConfig = await Bun.file(path.join(ctx.tmpDir, "omp-plugins.lock.json")).json();
+		expect(Object.keys(runtimeConfig.plugins)).toEqual(["widget"]);
+		expect((await ctx.manager.listInstalledPlugins()).map(plugin => plugin.id)).toEqual(["widget@rename-market"]);
+	});
+
 	it("installPlugin rejects package names that escape node_modules", async () => {
 		const marketplaceDir = path.join(ctx.tmpDir, "bad-package-marketplace");
 		const pluginDir = path.join(marketplaceDir, "plugins", "bad-package");
