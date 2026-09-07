@@ -505,6 +505,37 @@ describe("MarketplaceManager", () => {
 		expect(fs.realpathSync(linkedLink)).toBe(fs.realpathSync(linkedPackage));
 	});
 
+	it("migrates the other scope's runtime key when a shared-cache reinstall renames", async () => {
+		const marketplaceDir = buildNamedMarketplace(
+			path.join(ctx.tmpDir, "gadget-marketplace"),
+			"gadget-market",
+			"gadget",
+		);
+		const sourcePackage = path.join(marketplaceDir, "plugins", "gadget", "package.json");
+		fs.writeFileSync(sourcePackage, JSON.stringify({ name: "Gadget", version: "1.0.0" }));
+		await ctx.manager.addMarketplace(marketplaceDir);
+		// Same plugin+version in both scopes → both reference the one shared cache.
+		await ctx.manager.installPlugin("gadget", "gadget-market", { scope: "user" });
+		await ctx.manager.installPlugin("gadget", "gadget-market", { scope: "project" });
+		const projectRoot = path.join(ctx.tmpDir, "project");
+		expect(fs.existsSync(path.join(ctx.tmpDir, "node_modules", "Gadget"))).toBe(true);
+		expect(fs.existsSync(path.join(projectRoot, "node_modules", "Gadget"))).toBe(true);
+
+		// Force reinstall in the user scope with only the manifest name casing changed.
+		fs.writeFileSync(sourcePackage, JSON.stringify({ name: "gadget", version: "1.0.0" }));
+		await ctx.manager.installPlugin("gadget", "gadget-market", { scope: "user", force: true });
+
+		// Both scopes resolve the shared cache under the new name — no stale link or key.
+		expect(fs.existsSync(path.join(ctx.tmpDir, "node_modules", "gadget"))).toBe(true);
+		expect(fs.existsSync(path.join(ctx.tmpDir, "node_modules", "Gadget"))).toBe(false);
+		expect(fs.existsSync(path.join(projectRoot, "node_modules", "gadget"))).toBe(true);
+		expect(fs.existsSync(path.join(projectRoot, "node_modules", "Gadget"))).toBe(false);
+		const userConfig = await Bun.file(path.join(ctx.tmpDir, "omp-plugins.lock.json")).json();
+		expect(Object.keys(userConfig.plugins)).toEqual(["gadget"]);
+		const projectConfig = await Bun.file(path.join(projectRoot, "omp-plugins.lock.json")).json();
+		expect(Object.keys(projectConfig.plugins)).toEqual(["gadget"]);
+	});
+
 	it("installPlugin rejects package names that escape node_modules", async () => {
 		const marketplaceDir = path.join(ctx.tmpDir, "bad-package-marketplace");
 		const pluginDir = path.join(marketplaceDir, "plugins", "bad-package");

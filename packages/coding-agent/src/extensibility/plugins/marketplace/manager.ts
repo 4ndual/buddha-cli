@@ -304,6 +304,21 @@ export class MarketplaceManager {
 			tmpDir: os.tmpdir(),
 		});
 
+		// The cache is keyed by marketplace/plugin/version and shared across scopes,
+		// so a forced reinstall replaces the copy the OTHER scope also references.
+		// Capture that scope's current runtime names from the cache before it is
+		// replaced, so a manifest rename can migrate its link/lockfile key too.
+		const otherScope: "user" | "project" = scope === "user" ? "project" : "user";
+		const otherRegistryPath =
+			otherScope === "project" ? this.#opts.projectInstalledRegistryPath : this.#opts.installedRegistryPath;
+		const otherScopeEntries = otherRegistryPath
+			? (getInstalledPlugin(await readInstalledPluginsRegistry(otherRegistryPath), pluginId) ?? [])
+			: [];
+		const otherScopeOldNames = new Map<string, string>();
+		for (const entry of otherScopeEntries) {
+			otherScopeOldNames.set(entry.installPath, await this.#resolvePluginPackageName(entry.installPath, name));
+		}
+
 		// 5. Resolve registration identity before replacing an active cache. A
 		// forced reinstall can reuse the same cache key, so validation after
 		// cachePlugin would already have destroyed the prior contents on failure.
@@ -381,6 +396,23 @@ export class MarketplaceManager {
 			}
 		}
 		await this.#registerRuntimePlugin(scope, packageName, cachePath, version, wasDisabled ? false : undefined);
+
+		// If this reinstall renamed the runtime key and the other scope references
+		// the same (now-replaced) cache, migrate that scope's link and lockfile key
+		// too, so it does not resolve the new cache content under the stale name.
+		for (const entry of otherScopeEntries) {
+			if (entry.installPath !== cachePath) continue;
+			const oldName = otherScopeOldNames.get(entry.installPath);
+			if (oldName === undefined || oldName === packageName) continue;
+			await this.#removeRuntimePlugin(otherScope, oldName);
+			await this.#registerRuntimePlugin(
+				otherScope,
+				packageName,
+				cachePath,
+				entry.version,
+				entry.enabled === false ? false : undefined,
+			);
+		}
 
 		this.#clearCache();
 
