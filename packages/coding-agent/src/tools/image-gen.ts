@@ -12,6 +12,7 @@ import {
 	withAuth,
 } from "@oh-my-pi/pi-ai";
 import { ProviderHttpError } from "@oh-my-pi/pi-ai/error";
+import { fetchAntigravityImageModel } from "@oh-my-pi/pi-catalog/discovery/antigravity";
 import {
 	applyCodexResidencyHeader,
 	CODEX_BASE_URL,
@@ -60,12 +61,22 @@ const IMAGE_SYSTEM_INSTRUCTION =
 export type { ImageProvider } from "./image-providers";
 export type ImageProviderPreference = ImageProvider | "auto";
 
-interface ImageApiKey {
-	provider: ImageProvider;
+interface ImageApiKeyBase {
 	apiKey: ApiKey;
-	projectId?: string;
 	model?: Model;
 }
+
+interface AntigravityImageApiKey extends ImageApiKeyBase {
+	provider: "antigravity";
+	apiKey: string;
+	projectId: string;
+}
+
+interface OtherImageApiKey extends ImageApiKeyBase {
+	provider: Exclude<ImageProvider, "antigravity">;
+}
+
+type ImageApiKey = AntigravityImageApiKey | OtherImageApiKey;
 
 const COMMON_IMAGE_ASPECT_RATIOS = ["1:1", "3:4", "4:3", "9:16", "16:9"] as const;
 const XAI_IMAGE_ASPECT_RATIOS = [...COMMON_IMAGE_ASPECT_RATIOS, "3:2", "2:3"] as const;
@@ -592,9 +603,7 @@ async function findAntigravityCredentials(
 	modelRegistry: ModelRegistry,
 	sessionId?: string,
 ): Promise<ImageApiKey | null> {
-	const apiKey = await modelRegistry.getApiKeyForProvider("google-antigravity", sessionId, {
-		modelId: DEFAULT_ANTIGRAVITY_MODEL,
-	});
+	const apiKey = await modelRegistry.getApiKeyForProvider("google-antigravity", sessionId);
 	if (!apiKey) return null;
 
 	const parsed = parseAntigravityCredentials(apiKey);
@@ -605,6 +614,21 @@ async function findAntigravityCredentials(
 		apiKey: parsed.accessToken,
 		projectId: parsed.projectId,
 	};
+}
+
+function resolveAntigravityEndpoints(): string[] {
+	try {
+		const mode = settings.get("providers.antigravityEndpoint");
+		if (mode === "production") {
+			return [DEFAULT_ANTIGRAVITY_ENDPOINT_PROD];
+		}
+		if (mode === "sandbox") {
+			return [DEFAULT_ANTIGRAVITY_ENDPOINT_SANDBOX];
+		}
+	} catch {
+		// Use the default fallback order when settings are unavailable.
+	}
+	return [DEFAULT_ANTIGRAVITY_ENDPOINT_PROD, DEFAULT_ANTIGRAVITY_ENDPOINT_SANDBOX];
 }
 
 async function findXAIImageCredentials(modelRegistry?: ModelRegistry): Promise<ImageApiKey | null> {
@@ -888,7 +912,7 @@ function isOpenAIHostedImageModel(model: Model | undefined): model is Model {
 	return modelId.startsWith("gpt-") || modelId === "o3" || modelId.startsWith("o3-");
 }
 
-function getOpenAIHostedImageProvider(model: Model): ImageProvider {
+function getOpenAIHostedImageProvider(model: Model): "openai" | "openai-codex" {
 	return model.api === "openai-codex-responses" || model.provider === "openai-codex" ? "openai-codex" : "openai";
 }
 
@@ -1257,18 +1281,32 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 
 				const provider = apiKey.provider;
 				try {
-					const model =
-						provider === "openai" || provider === "openai-codex"
-							? (apiKey.model?.id ?? "gpt")
-							: provider === "antigravity"
-								? DEFAULT_ANTIGRAVITY_MODEL
-								: provider === "openrouter"
-									? DEFAULT_OPENROUTER_MODEL
-									: provider === "xai"
-										? DEFAULT_XAI_IMAGE_MODEL
-										: provider === "deepinfra"
-											? DEFAULT_DEEPINFRA_IMAGE_MODEL
-											: DEFAULT_MODEL;
+					let antigravityEndpoints: string[] | undefined;
+					let model: string;
+					if (provider === "openai" || provider === "openai-codex") {
+						model = apiKey.model?.id ?? "gpt";
+					} else if (provider === "antigravity") {
+						antigravityEndpoints = resolveAntigravityEndpoints();
+						const advertised = await fetchAntigravityImageModel({
+							token: apiKey.apiKey,
+							endpoint: antigravityEndpoints.length === 1 ? antigravityEndpoints[0] : undefined,
+							userAgent: getAntigravityUserAgent(),
+							signal: requestSignal,
+							fetcher: fetchImpl,
+						});
+						if (advertised) {
+							antigravityEndpoints = [advertised.endpoint];
+						}
+						model = advertised?.id ?? DEFAULT_ANTIGRAVITY_MODEL;
+					} else if (provider === "openrouter") {
+						model = DEFAULT_OPENROUTER_MODEL;
+					} else if (provider === "xai") {
+						model = DEFAULT_XAI_IMAGE_MODEL;
+					} else if (provider === "deepinfra") {
+						model = DEFAULT_DEEPINFRA_IMAGE_MODEL;
+					} else {
+						model = DEFAULT_MODEL;
+					}
 					const resolvedModel = provider === "openrouter" ? resolveOpenRouterModel(model) : model;
 					if (
 						params.aspect_ratio &&
@@ -1345,7 +1383,7 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 						const prompt = assemblePrompt(params);
 						const antigravityKey: ApiKey = ctx.modelRegistry.resolver("google-antigravity", {
 							sessionId,
-							modelId: DEFAULT_ANTIGRAVITY_MODEL,
+							modelId: model,
 						});
 
 						const response = await withAuth(
@@ -1366,17 +1404,7 @@ export const imageGenTool: CustomTool<typeof imageGenSchema, ImageGenToolDetails
 									resolvedImages,
 								);
 
-								let endpoints = [DEFAULT_ANTIGRAVITY_ENDPOINT_PROD, DEFAULT_ANTIGRAVITY_ENDPOINT_SANDBOX];
-								try {
-									const mode = settings.get("providers.antigravityEndpoint");
-									if (mode === "production") {
-										endpoints = [DEFAULT_ANTIGRAVITY_ENDPOINT_PROD];
-									} else if (mode === "sandbox") {
-										endpoints = [DEFAULT_ANTIGRAVITY_ENDPOINT_SANDBOX];
-									}
-								} catch {
-									// Ignored
-								}
+								const endpoints = antigravityEndpoints ?? resolveAntigravityEndpoints();
 
 								let resp: Response | undefined;
 								let lastError: Error | undefined;
