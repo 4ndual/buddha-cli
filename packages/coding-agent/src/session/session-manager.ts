@@ -2866,7 +2866,6 @@ export class SessionManager {
 		const sourceHeader = sourceEntries.find(entry => entry.type === "session") as SessionHeader | undefined;
 		const history = sourceEntries.filter(entry => entry.type !== "session") as SessionEntry[];
 		if (options?.resetInheritedCost) SessionManager.#resetInheritedUsageCost(history);
-		if (options?.repairInterruptedTail) SessionManager.#repairForkedInterruptedTail(history);
 		manager.#resetToNewSession(
 			{
 				parentSession: sourceHeader?.id,
@@ -2886,6 +2885,10 @@ export class SessionManager {
 		manager.#entries = history;
 		manager.#index.rebuild(history);
 		manager.sanitizeLoadedOpenAIResponsesReplayMetadata();
+		if (options?.repairInterruptedTail) {
+			SessionManager.#repairForkedInterruptedTail(history, manager.#index.pathTo());
+			manager.#index.rebuild(history);
+		}
 		manager.#forceFileCreation = true;
 		await manager.#rewriteAtomically();
 		if (options?.copyArtifacts !== false) {
@@ -2910,7 +2913,7 @@ export class SessionManager {
 	}
 
 	/**
-	 * Pair any tool calls the forked history's final assistant turn left
+	 * Pair any tool calls the forked active branch's final assistant turn left
 	 * unresolved with synthetic aborted results, in place.
 	 *
 	 * A `/tan` fork of a *live* parent is taken while the parent may be mid-turn
@@ -2923,20 +2926,24 @@ export class SessionManager {
 	 * orphan `tool_use` into the model. Synthesizing the same `assistant_stop_
 	 * aborted` results the agent loop records for an interrupted turn makes the
 	 * forked transcript terminal and well-formed before the clone is prompted.
+	 *
+	 * Assistant turns and results on sibling branches are excluded: the clone
+	 * consumes only the root-to-active-leaf path.
 	 */
-	static #repairForkedInterruptedTail(history: SessionEntry[]): void {
-		let assistantIndex = -1;
-		for (let i = history.length - 1; i >= 0; i--) {
-			const entry = history[i]!;
+	static #repairForkedInterruptedTail(history: SessionEntry[], branch: readonly SessionEntry[]): void {
+		const leaf = branch.at(-1);
+		if (!leaf) return;
+		let assistant: AssistantMessage | undefined;
+		for (let i = branch.length - 1; i >= 0; i--) {
+			const entry = branch[i]!;
 			if (entry.type === "message" && entry.message.role === "assistant") {
-				assistantIndex = i;
+				assistant = entry.message;
 				break;
 			}
 		}
-		if (assistantIndex < 0) return;
-		const assistant = (history[assistantIndex] as SessionMessageEntry).message as AssistantMessage;
+		if (!assistant) return;
 		const pairedResultIds = new Set<string>();
-		for (const entry of history) {
+		for (const entry of branch) {
 			if (entry.type === "message" && entry.message.role === "toolResult")
 				pairedResultIds.add(entry.message.toolCallId);
 		}
@@ -2946,9 +2953,9 @@ export class SessionManager {
 		);
 		if (dangling.length === 0) return;
 		const usedIds = new Set(history.map(entry => entry.id));
-		// Chain the synthetic results after the current branch leaf so they sit
-		// alongside any results the parent already recorded for this turn.
-		let parentId = history[history.length - 1]!.id;
+		// Chain the synthetic results after the active leaf so they extend the
+		// selected branch without mutating or depending on sibling paths.
+		let parentId = leaf.id;
 		for (const call of dangling) {
 			const id = generateId(usedIds);
 			usedIds.add(id);

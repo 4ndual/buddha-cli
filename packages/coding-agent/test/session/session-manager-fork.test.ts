@@ -328,6 +328,110 @@ describe("SessionManager.forkFrom", () => {
 		expect(isSyntheticToolResultMessage(result.message)).toBe(true);
 	});
 
+	it("repairs only the active branch when sibling paths contain assistants and results", async () => {
+		using tempDir = TempDir.createSync("@omp-session-fork-branch-repair-");
+		const cwd = path.join(tempDir.path(), "project");
+		const sessionDir = path.join(tempDir.path(), "sessions");
+		await fs.mkdir(sessionDir, { recursive: true });
+		const sourceFile = path.join(sessionDir, "source.jsonl");
+		const timestamp = new Date().toISOString();
+		const header: SessionHeader = {
+			type: "session",
+			version: CURRENT_SESSION_VERSION,
+			id: "branched-parent",
+			timestamp,
+			cwd,
+		};
+		const usage = {
+			input: 10,
+			output: 5,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 15,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		const activeAssistant = {
+			type: "message",
+			id: "active-assistant",
+			parentId: null,
+			timestamp,
+			message: {
+				role: "assistant",
+				content: [{ type: "toolCall", id: "toolu_active", name: "bash", arguments: { command: "sleep 40" } }],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude",
+				stopReason: "toolUse",
+				timestamp: Date.now(),
+				usage,
+			},
+		};
+		const siblingResult = {
+			type: "message",
+			id: "sibling-result",
+			parentId: "active-assistant",
+			timestamp,
+			message: {
+				role: "toolResult",
+				toolCallId: "toolu_active",
+				toolName: "bash",
+				content: [{ type: "text", text: "completed on abandoned branch" }],
+				isError: false,
+				timestamp: Date.now(),
+			},
+		};
+		const siblingAssistant = {
+			type: "message",
+			id: "sibling-assistant",
+			parentId: null,
+			timestamp,
+			message: {
+				role: "assistant",
+				content: [{ type: "toolCall", id: "toolu_sibling", name: "read", arguments: { path: "old.txt" } }],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude",
+				stopReason: "toolUse",
+				timestamp: Date.now(),
+				usage,
+			},
+		};
+		const activeLeaf = {
+			type: "message",
+			id: "active-leaf",
+			parentId: "active-assistant",
+			timestamp,
+			message: { role: "user", content: "continue on this branch", timestamp: Date.now() },
+		};
+		await Bun.write(
+			sourceFile,
+			`${JSON.stringify(header)}\n${JSON.stringify(activeAssistant)}\n${JSON.stringify(siblingResult)}\n${JSON.stringify(siblingAssistant)}\n${JSON.stringify(activeLeaf)}\n`,
+		);
+
+		const forked = await SessionManager.forkFrom(sourceFile, cwd, path.join(tempDir.path(), "fork"), undefined, {
+			suppressBreadcrumb: true,
+			repairInterruptedTail: true,
+		});
+		const branch = forked.getBranch();
+		expect(collectPendingToolCalls(branch)).toEqual([]);
+		const syntheticResults = branch.filter(
+			(entry): entry is SessionMessageEntry =>
+				entry.type === "message" && isSyntheticToolResultMessage(entry.message),
+		);
+		expect(syntheticResults).toHaveLength(1);
+		const result = syntheticResults[0]!.message;
+		if (result.role !== "toolResult") throw new Error("expected a synthetic tool result");
+		expect(result.toolCallId).toBe("toolu_active");
+		expect(
+			(await loadHistory(forked.getSessionFile()!)).some(
+				entry =>
+					entry.type === "message" &&
+					isSyntheticToolResultMessage(entry.message) &&
+					entry.message.toolCallId === "toolu_sibling",
+			),
+		).toBe(false);
+	});
+
 	it("leaves an already-terminal tail untouched when repair is requested", async () => {
 		using tempDir = TempDir.createSync("@omp-session-fork-terminal-");
 		const cwd = path.join(tempDir.path(), "project");
