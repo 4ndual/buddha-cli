@@ -230,6 +230,26 @@ function perFileTemplates(): string {
 		.join("\n\n");
 }
 
+/** A legitimate final answer whose tail is homogeneous structured data: a
+ *  markdown table plus a JSON trailer, both with `n` same-shape rows whose only
+ *  variation is numeric ids/URLs. Normalization drops those numbers, so the rows
+ *  collapse to near-identical trigrams — the issue #11129 false-positive shape.
+ *  This is answer content, not a reasoning loop, and must never trip. */
+function structuredListAnswer(n: number): string {
+	const rows = ["Here are the generated test cases:\n", "| case_id | case_name | case_url |", "| --- | --- | --- |"];
+	for (let i = 0; i < n; i++) {
+		const id = 35350 + i;
+		rows.push(`| ${id} | case ${i + 1} | https://example.com/#/CaseEdit?fs_id=${id} |`);
+	}
+	const cases = Array.from(
+		{ length: n },
+		(_, i) =>
+			`{"case_id": ${35350 + i}, "case_name": "case ${i + 1}", "case_url": "https://example.com/#/CaseEdit?fs_id=${35350 + i}", "case_sheet": 0}`,
+	);
+	rows.push("", `[TA_CASES]#{"cases": [${cases.join(", ")}]}`);
+	return rows.join("\n");
+}
+
 describe("ThinkingLoopDetector", () => {
 	test("trips on a tight near-duplicate paragraph loop via the trigram path", () => {
 		// High word-trigram overlap: the cluster check claims it before the lexical
@@ -308,6 +328,19 @@ describe("ThinkingLoopDetector", () => {
 		// Below the repeated-char floor: a brief on-purpose repeat is not a loop.
 		const detector = new ThinkingLoopDetector();
 		expect(detector.push("🌊 ".repeat(26))).toBeNull();
+	});
+
+	test("does not trip on a homogeneous markdown table + JSON-array answer (issue #11129)", () => {
+		// 33 same-shape table rows and 33 same-shape JSON items whose only variation
+		// is numeric ids/URLs. Their low prose ratio exempts them from the semantic
+		// heuristics, so the complete answer commits instead of being discarded.
+		expect(feed(structuredListAnswer(33))).toBeNull();
+	});
+
+	test("still trips on a reasoning-prose loop even when it follows structured output", () => {
+		// The structured-data exemption must not blind the detector to a genuine
+		// near-duplicate prose loop that arrives after a table.
+		expect(feed(`${structuredListAnswer(6)}\n\n\n${nearDuplicateLoop(12)}`)).not.toBeNull();
 	});
 });
 
