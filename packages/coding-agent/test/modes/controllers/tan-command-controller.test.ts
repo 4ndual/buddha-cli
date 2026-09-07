@@ -499,7 +499,7 @@ describe("TanCommandController", () => {
 		expect(appendSessionInit).toHaveBeenCalledWith(expect.objectContaining({ tools: enabledToolNames }));
 	});
 
-	it("isolates the fork: clears inherited todos, injects the fork notice, and re-injects after compaction", async () => {
+	it("isolates the fork and restores its request after compaction", async () => {
 		const harness = createContext();
 		vi.spyOn(SessionManager, "forkFrom").mockResolvedValue(harness.cloneManager);
 		const compacted = Promise.withResolvers<void>();
@@ -527,16 +527,21 @@ describe("TanCommandController", () => {
 		// onto the parent's task.
 		expect(stub.clone.setTodoPhases).toHaveBeenCalledWith([]);
 		expect(harness.cloneManager.appendCustomEntry).toHaveBeenCalledWith("user_todo_edit", { phases: [] });
-		// Fork notice injected before the prompt and again after compaction.
-		expect(stub.appendMessage).toHaveBeenCalledTimes(2);
-		for (const call of stub.appendMessage.mock.calls) {
-			expect(call[0]).toEqual(
-				expect.objectContaining({
-					role: "developer",
-					content: expect.stringContaining('<system-notice cause="fork">'),
-				}),
-			);
-		}
+		// Initial dispatch places the fork notice before prompt(); after compaction,
+		// the listener must restore both messages in the same order so the notice's
+		// "request below" contract remains true.
+		expect(stub.appendMessage.mock.calls.map(([message]) => message.role)).toEqual([
+			"developer",
+			"developer",
+			"user",
+		]);
+		expect(stub.appendMessage.mock.calls[2]?.[0]).toEqual(
+			expect.objectContaining({
+				role: "user",
+				content: [{ type: "text", text: "follow the tangent" }],
+				attribution: "user",
+			}),
+		);
 		// The compaction listener is released once the tan finishes.
 		expect(stub.compactionListener).toBeUndefined();
 	});

@@ -193,13 +193,18 @@ export class TanCommandController {
 								timestamp: Date.now(),
 							});
 						};
-						// Compaction summarizes the fork notice away with the rest of the
-						// history, after which the clone re-adopts the parent's task as its
-						// own (the summary blends both). Re-inject after every successful
-						// compaction so the fork boundary survives summarization.
+						// Compaction summarizes the fork notice and request into the
+						// history summary. Restore both in their original order so the
+						// fork boundary survives without leaving "request below" empty.
 						const unsubscribeCompaction = clone.subscribe(event => {
 							if (event.type === "auto_compaction_end" && event.result && !event.aborted) {
 								injectContextSwitch();
+								clone?.agent.appendMessage({
+									role: "user",
+									content: [{ type: "text", text: trimmedWork }],
+									attribution: "user",
+									timestamp: Date.now(),
+								});
 							}
 						});
 						try {
