@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
+	AssistantMessage,
 	ImageContent,
 	Message,
 	MessageAttribution,
@@ -8,6 +9,7 @@ import type {
 	TextContent,
 	Usage,
 } from "@oh-my-pi/pi-ai";
+import { createSyntheticToolResultMessage } from "@oh-my-pi/pi-agent-core";
 import {
 	directoryIsEnterable,
 	getBlobsDir,
@@ -2850,6 +2852,7 @@ export class SessionManager {
 			suppressBreadcrumb?: boolean;
 			sessionFile?: string;
 			resetInheritedCost?: boolean;
+			repairInterruptedTail?: boolean;
 		},
 	): Promise<SessionManager> {
 		const dir = sessionDir ?? SessionManager.getDefaultSessionDir(cwd, undefined, storage);
@@ -2863,6 +2866,7 @@ export class SessionManager {
 		const sourceHeader = sourceEntries.find(entry => entry.type === "session") as SessionHeader | undefined;
 		const history = sourceEntries.filter(entry => entry.type !== "session") as SessionEntry[];
 		if (options?.resetInheritedCost) SessionManager.#resetInheritedUsageCost(history);
+		if (options?.repairInterruptedTail) SessionManager.#repairForkedInterruptedTail(history);
 		manager.#resetToNewSession(
 			{
 				parentSession: sourceHeader?.id,
@@ -2903,6 +2907,61 @@ export class SessionManager {
 	 */
 	static #resetInheritedUsageCost(history: SessionEntry[]): void {
 		for (const entry of history) resetUsageCost(entryUsage(entry));
+	}
+
+	/**
+	 * Pair any tool calls the forked history's final assistant turn left
+	 * unresolved with synthetic aborted results, in place.
+	 *
+	 * A `/tan` fork of a *live* parent is taken while the parent may be mid-turn
+	 * — its last assistant turn emitted a tool call whose `toolResult` is
+	 * delivered only to the parent. {@link createInterruptedTurnAbortMessage}
+	 * cannot repair this: it requires a persisted `session_exit` after the tail,
+	 * which a running parent never wrote. Left unpaired, the clone renders the
+	 * parent's in-flight tool call as its own perpetually pending work (the
+	 * transcript keeps dangling calls while the clone streams) and replays an
+	 * orphan `tool_use` into the model. Synthesizing the same `assistant_stop_
+	 * aborted` results the agent loop records for an interrupted turn makes the
+	 * forked transcript terminal and well-formed before the clone is prompted.
+	 */
+	static #repairForkedInterruptedTail(history: SessionEntry[]): void {
+		let assistantIndex = -1;
+		for (let i = history.length - 1; i >= 0; i--) {
+			const entry = history[i]!;
+			if (entry.type === "message" && entry.message.role === "assistant") {
+				assistantIndex = i;
+				break;
+			}
+		}
+		if (assistantIndex < 0) return;
+		const assistant = (history[assistantIndex] as SessionMessageEntry).message as AssistantMessage;
+		const pairedResultIds = new Set<string>();
+		for (const entry of history) {
+			if (entry.type === "message" && entry.message.role === "toolResult")
+				pairedResultIds.add(entry.message.toolCallId);
+		}
+		const dangling = assistant.content.filter(
+			(block): block is Extract<AssistantMessage["content"][number], { type: "toolCall" }> =>
+				block.type === "toolCall" && !pairedResultIds.has(block.id),
+		);
+		if (dangling.length === 0) return;
+		const usedIds = new Set(history.map(entry => entry.id));
+		// Chain the synthetic results after the current branch leaf so they sit
+		// alongside any results the parent already recorded for this turn.
+		let parentId = history[history.length - 1]!.id;
+		for (const call of dangling) {
+			const id = generateId(usedIds);
+			usedIds.add(id);
+			const entry: SessionMessageEntry = {
+				type: "message",
+				id,
+				parentId,
+				timestamp: nowIso(),
+				message: createSyntheticToolResultMessage(call, "aborted"),
+			};
+			history.push(entry);
+			parentId = id;
+		}
 	}
 
 	/**
