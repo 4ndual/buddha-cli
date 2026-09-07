@@ -90,7 +90,8 @@ function createTestContext(): TestContext {
 	const dirs = {
 		mktRegistry: path.join(tmpDir, "marketplaces.json"),
 		instRegistry: path.join(tmpDir, "installed_plugins.json"),
-		projectInstRegistry: path.join(tmpDir, "project_installed_plugins.json"),
+		// Distinct runtime root from user scope, mirroring production (~/.omp/plugins vs <project>/.omp/plugins).
+		projectInstRegistry: path.join(tmpDir, "project", "installed_plugins.json"),
 		mktCache: path.join(tmpDir, "cache", "marketplaces"),
 		plugCache: path.join(tmpDir, "cache", "plugins"),
 	};
@@ -470,6 +471,40 @@ describe("MarketplaceManager", () => {
 		expect((await ctx.manager.listInstalledPlugins()).map(plugin => plugin.id)).toEqual(["widget@rename-market"]);
 	});
 
+	it("does not exempt other-scope ownership from the target scope's collision check", async () => {
+		const marketplaceDir = buildNamedMarketplace(
+			path.join(ctx.tmpDir, "shared-marketplace"),
+			"shared-market",
+			"shared",
+		);
+		await ctx.manager.addMarketplace(marketplaceDir);
+		// The same plugin id is installed in the user scope; its runtime name is "shared".
+		await ctx.manager.installPlugin("shared", "shared-market", { scope: "user" });
+
+		// An unrelated linked package named "shared" independently occupies the project scope.
+		const projectRoot = path.join(ctx.tmpDir, "project");
+		const linkedPackage = path.join(ctx.tmpDir, "linked-shared");
+		fs.mkdirSync(linkedPackage, { recursive: true });
+		fs.writeFileSync(path.join(linkedPackage, "package.json"), JSON.stringify({ name: "shared", version: "9.9.9" }));
+		const linkedLink = path.join(projectRoot, "node_modules", "shared");
+		fs.mkdirSync(path.dirname(linkedLink), { recursive: true });
+		fs.symlinkSync(linkedPackage, linkedLink, "dir");
+		fs.writeFileSync(
+			path.join(projectRoot, "omp-plugins.lock.json"),
+			JSON.stringify({
+				plugins: { shared: { version: "9.9.9", enabledFeatures: null, enabled: true } },
+				settings: {},
+			}),
+		);
+
+		// The user-scope ownership must NOT exempt the project scope: installing the
+		// same plugin id there is rejected so the unrelated project link is preserved.
+		await expect(ctx.manager.installPlugin("shared", "shared-market", { scope: "project" })).rejects.toThrow(
+			'Runtime package name "shared" conflicts with installed package "shared"',
+		);
+		expect(fs.realpathSync(linkedLink)).toBe(fs.realpathSync(linkedPackage));
+	});
+
 	it("installPlugin rejects package names that escape node_modules", async () => {
 		const marketplaceDir = path.join(ctx.tmpDir, "bad-package-marketplace");
 		const pluginDir = path.join(marketplaceDir, "plugins", "bad-package");
@@ -815,7 +850,7 @@ describe("MarketplaceManager", () => {
 		expect(fs.existsSync(instEntry.installPath)).toBe(true);
 
 		// Persisted to the project registry with project scope — and absent from the user registry.
-		const projectReg = await readInstalledPluginsRegistry(path.join(ctx.tmpDir, "project_installed_plugins.json"));
+		const projectReg = await readInstalledPluginsRegistry(path.join(ctx.tmpDir, "project", "installed_plugins.json"));
 		expect(projectReg.plugins["hello-plugin@test-marketplace"]?.[0].scope).toBe("project");
 		const userReg = await readInstalledPluginsRegistry(path.join(ctx.tmpDir, "installed_plugins.json"));
 		expect(userReg.plugins["hello-plugin@test-marketplace"]).toBeUndefined();
@@ -978,7 +1013,7 @@ describe("MarketplaceManager", () => {
 		await ctx.manager.uninstallPlugin("hello-plugin@test-marketplace", "user", { dryRun: true });
 
 		const userReg = await readInstalledPluginsRegistry(path.join(ctx.tmpDir, "installed_plugins.json"));
-		const projectReg = await readInstalledPluginsRegistry(path.join(ctx.tmpDir, "project_installed_plugins.json"));
+		const projectReg = await readInstalledPluginsRegistry(path.join(ctx.tmpDir, "project", "installed_plugins.json"));
 		expect(userReg.plugins["hello-plugin@test-marketplace"]).toBeDefined();
 		expect(projectReg.plugins["hello-plugin@test-marketplace"]).toBeDefined();
 	});
@@ -991,7 +1026,7 @@ describe("MarketplaceManager", () => {
 			ctx.manager.uninstallPlugin("hello-plugin@test-marketplace", "user", { dryRun: true }),
 		).rejects.toThrow(/not installed in user scope/);
 
-		const projectReg = await readInstalledPluginsRegistry(path.join(ctx.tmpDir, "project_installed_plugins.json"));
+		const projectReg = await readInstalledPluginsRegistry(path.join(ctx.tmpDir, "project", "installed_plugins.json"));
 		expect(projectReg.plugins["hello-plugin@test-marketplace"]).toBeDefined();
 	});
 
@@ -1005,7 +1040,7 @@ describe("MarketplaceManager", () => {
 		const userReg = await readInstalledPluginsRegistry(path.join(ctx.tmpDir, "installed_plugins.json"));
 		expect(userReg.plugins["hello-plugin@test-marketplace"]).toBeUndefined();
 
-		const projectReg = await readInstalledPluginsRegistry(path.join(ctx.tmpDir, "project_installed_plugins.json"));
+		const projectReg = await readInstalledPluginsRegistry(path.join(ctx.tmpDir, "project", "installed_plugins.json"));
 		expect(projectReg.plugins["hello-plugin@test-marketplace"]).toBeDefined();
 		expect(projectReg.plugins["hello-plugin@test-marketplace"]![0].scope).toBe("project");
 	});

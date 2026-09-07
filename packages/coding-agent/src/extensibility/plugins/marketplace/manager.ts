@@ -324,7 +324,7 @@ export class MarketplaceManager {
 				packageName,
 				await readInstalledPluginsRegistry(registryPath),
 				pluginId,
-				await this.#resolveOwnedRuntimeNames(pluginId),
+				previousPackageNames,
 			);
 			cachePath = await cachePlugin(sourcePath, this.#opts.pluginsCacheDir, marketplace, name, version);
 			await this.#writeEmbeddedLspConfig(pluginEntry, cachePath);
@@ -837,7 +837,7 @@ export class MarketplaceManager {
 		packageName: string,
 		registry: InstalledPluginsRegistry,
 		pluginId: string,
-		ownNames: ReadonlySet<string>,
+		targetScopeOwnNames: ReadonlySet<string>,
 	): Promise<void> {
 		const key = packageName.toLowerCase();
 
@@ -858,10 +858,13 @@ export class MarketplaceManager {
 			}
 		}
 
-		// Names this plugin id already owns, so a forced reinstall — including a
-		// case-only rename of its own runtime key — is never a self-collision below.
+		// Names this plugin id already owns in the target scope, so a forced reinstall
+		// — including a case-only rename of its own runtime key — is never a
+		// self-collision below. Names owned only in the other scope are excluded:
+		// that scope has a separate runtime root and node_modules, so they never
+		// alias a package in this scope's tree.
 		const owned = new Set<string>();
-		for (const ownName of ownNames) owned.add(ownName.toLowerCase());
+		for (const ownName of targetScopeOwnNames) owned.add(ownName.toLowerCase());
 
 		// Ordinary npm plugins (package.json dependencies) and linked plugins
 		// (runtime-config entries with no dependency or installed_plugins record)
@@ -903,25 +906,6 @@ export class MarketplaceManager {
 			packageNames.add(await this.#resolvePluginPackageName(entry.installPath, fallbackName));
 		}
 		return packageNames;
-	}
-
-	// Runtime package names this plugin id already owns in either scope. A plugin
-	// installed in both scopes (shadowing) or force-reinstalled legitimately keeps
-	// its own runtime key, so these are excluded from the collision check.
-	async #resolveOwnedRuntimeNames(pluginId: string): Promise<Set<string>> {
-		const fallback = parsePluginId(pluginId)?.name ?? pluginId;
-		const registryPaths = this.#opts.projectInstalledRegistryPath
-			? [this.#opts.installedRegistryPath, this.#opts.projectInstalledRegistryPath]
-			: [this.#opts.installedRegistryPath];
-		const names = new Set<string>();
-		for (const registryPath of registryPaths) {
-			const entries = getInstalledPlugin(await readInstalledPluginsRegistry(registryPath), pluginId);
-			if (!entries) continue;
-			for (const owned of await this.#resolveInstalledPackageNames(entries, fallback)) {
-				names.add(owned);
-			}
-		}
-		return names;
 	}
 
 	async #registerRuntimePlugin(
