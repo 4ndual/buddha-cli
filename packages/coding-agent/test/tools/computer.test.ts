@@ -1017,6 +1017,32 @@ describe("computer worker round trips", () => {
 		if (reply.type !== "capabilities" || !reply.ok) throw new Error("expected a successful capabilities reply");
 		expect(reply.capabilities).toEqual(capabilities);
 	});
+
+	it("creates the native session once when a run and capabilities race a cold worker", async () => {
+		const transport = new MemoryTransport();
+		const native = new FakeNativeSession();
+		let creations = 0;
+		const release = Promise.withResolvers<void>();
+		// Async factory reproduces the real `import(...)` suspension so both
+		// handlers reach session creation before it resolves.
+		new ComputerWorkerCore(transport, async () => {
+			creations += 1;
+			await release.promise;
+			return native;
+		});
+
+		transport.inbound({ type: "run", id: "race-run", code: "42", timeoutMs: 2_000, session: snapshot(true) });
+		transport.inbound({ type: "capabilities", id: "race-caps", session: snapshot(true) });
+		release.resolve();
+
+		const runReply = await transport.waitFor(message => message.type === "result" && message.id === "race-run");
+		const capsReply = await transport.waitFor(
+			message => message.type === "capabilities" && message.id === "race-caps",
+		);
+		expect(runReply.type === "result" && runReply.ok).toBe(true);
+		expect(capsReply.type === "capabilities" && capsReply.ok).toBe(true);
+		expect(creations).toBe(1);
+	});
 });
 
 class SupervisorWorker implements ComputerWorkerHandle {
