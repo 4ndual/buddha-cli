@@ -193,18 +193,31 @@ export class TanCommandController {
 								timestamp: Date.now(),
 							});
 						};
-						// Compaction summarizes the fork notice and request into the
-						// history summary. Restore both in their original order so the
-						// fork boundary survives without leaving "request below" empty.
+						// The fork's request enters the transcript only once the initial
+						// prompt dispatches (its first `agent_start`). Compaction that
+						// fires before then is the pre-prompt pass on the inherited
+						// context: the pending request has not been appended yet and the
+						// dispatch adds it immediately after, so restoring it here would
+						// send the assignment twice. Restore only the notice in that
+						// window; once the request is genuinely in history, a later
+						// compaction summarizes it away and both must return in order so
+						// the notice never claims a request that no longer follows it.
+						let requestDispatched = false;
 						const unsubscribeCompaction = clone.subscribe(event => {
+							if (event.type === "agent_start") {
+								requestDispatched = true;
+								return;
+							}
 							if (event.type === "auto_compaction_end" && event.result && !event.aborted) {
 								injectContextSwitch();
-								clone?.agent.appendMessage({
-									role: "user",
-									content: [{ type: "text", text: trimmedWork }],
-									attribution: "user",
-									timestamp: Date.now(),
-								});
+								if (requestDispatched) {
+									clone?.agent.appendMessage({
+										role: "user",
+										content: [{ type: "text", text: trimmedWork }],
+										attribution: "user",
+										timestamp: Date.now(),
+									});
+								}
 							}
 						});
 						try {

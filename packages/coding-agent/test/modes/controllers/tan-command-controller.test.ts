@@ -499,14 +499,16 @@ describe("TanCommandController", () => {
 		expect(appendSessionInit).toHaveBeenCalledWith(expect.objectContaining({ tools: enabledToolNames }));
 	});
 
-	it("isolates the fork and restores its request after compaction", async () => {
+	it("restores the request when compaction summarizes an already-dispatched turn", async () => {
 		const harness = createContext();
 		vi.spyOn(SessionManager, "forkFrom").mockResolvedValue(harness.cloneManager);
 		const compacted = Promise.withResolvers<void>();
 		const stub = createCloneStub({
 			prompt: async () => {
-				// Simulate the clone's history compacting mid-run: the summarizer
-				// erases the fork notice, so the controller must append it again.
+				// The request has been dispatched (agent_start), then the summarizer
+				// erases both the fork notice and the request from history, so the
+				// controller must append both again in order.
+				stub.compactionListener?.({ type: "agent_start" });
 				stub.compactionListener?.({ type: "auto_compaction_end", result: {}, aborted: false });
 				compacted.resolve();
 			},
@@ -527,9 +529,9 @@ describe("TanCommandController", () => {
 		// onto the parent's task.
 		expect(stub.clone.setTodoPhases).toHaveBeenCalledWith([]);
 		expect(harness.cloneManager.appendCustomEntry).toHaveBeenCalledWith("user_todo_edit", { phases: [] });
-		// Initial dispatch places the fork notice before prompt(); after compaction,
-		// the listener must restore both messages in the same order so the notice's
-		// "request below" contract remains true.
+		// Initial dispatch places the fork notice before prompt(); after a
+		// post-dispatch compaction, the listener restores both messages in order
+		// so the notice's "request below" contract holds.
 		expect(stub.appendMessage.mock.calls.map(([message]) => message.role)).toEqual([
 			"developer",
 			"developer",
@@ -544,5 +546,35 @@ describe("TanCommandController", () => {
 		);
 		// The compaction listener is released once the tan finishes.
 		expect(stub.compactionListener).toBeUndefined();
+	});
+
+	it("does not duplicate the request when compaction runs before the initial dispatch", async () => {
+		const harness = createContext();
+		vi.spyOn(SessionManager, "forkFrom").mockResolvedValue(harness.cloneManager);
+		const compacted = Promise.withResolvers<void>();
+		const stub = createCloneStub({
+			prompt: async () => {
+				// Pre-prompt compaction on the inherited context fires before the
+				// pending request is dispatched (no agent_start yet). The dispatch
+				// appends the request itself, so the listener must restore only the
+				// notice here — appending the request would send it twice.
+				stub.compactionListener?.({ type: "auto_compaction_end", result: {}, aborted: false });
+				compacted.resolve();
+			},
+		});
+		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
+			session: stub.clone,
+		} as unknown as CreateAgentSessionResult);
+		const controller = new TanCommandController(harness.ctx);
+
+		await controller.start("follow the tangent");
+		const run = harness.capturedRun;
+		if (!run) throw new Error("run function was not captured");
+		await run({ jobId: "job-123", signal: new AbortController().signal, reportProgress: async () => {} });
+		await compacted.promise;
+
+		// Only the two fork notices are re-appended (dispatch + pre-prompt
+		// restore); the request is left for the real dispatch, never duplicated.
+		expect(stub.appendMessage.mock.calls.map(([message]) => message.role)).toEqual(["developer", "developer"]);
 	});
 });
