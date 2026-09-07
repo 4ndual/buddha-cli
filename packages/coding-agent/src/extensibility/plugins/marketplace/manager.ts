@@ -13,7 +13,7 @@ import * as path from "node:path";
 import { isEnoent, logger, pathIsWithin } from "@oh-my-pi/pi-utils";
 import { expandTilde } from "../../../tools/path-utils";
 import { normalizePluginRuntimeConfig } from "../runtime-config";
-import type { PluginRuntimeConfig } from "../types";
+import type { PluginRuntimeConfig, PluginRuntimeState } from "../types";
 
 import { cachePlugin } from "./cache";
 import { classifySource, fetchMarketplace, parseMarketplaceCatalog, promoteCloneToCache } from "./fetcher";
@@ -49,6 +49,12 @@ function assertRuntimePackageName(name: string): string {
 		throw new Error(`Invalid marketplace plugin package name: ${JSON.stringify(name)}`);
 	}
 	return name;
+}
+
+/** Runtime state captured when a plugin key is removed, carried to a renamed key. */
+interface RemovedRuntimeState {
+	state?: PluginRuntimeState;
+	settings?: Record<string, unknown>;
 }
 
 // ── Options ──────────────────────────────────────────────────────────────────
@@ -390,12 +396,23 @@ export class MarketplaceManager {
 		const newInstReg = addInstalledPlugin(freshInstReg, pluginId, installedEntry);
 		await writeInstalledPluginsRegistry(registryPath, newInstReg);
 
+		// Carry the renamed-from key's runtime state (feature selection + settings)
+		// so a case-only rename preserves the user's configuration.
+		let carried: RemovedRuntimeState | undefined;
 		for (const previousPackageName of previousPackageNames) {
 			if (previousPackageName !== packageName) {
-				await this.#removeRuntimePlugin(scope, previousPackageName);
+				const removed = await this.#removeRuntimePlugin(scope, previousPackageName);
+				carried ??= removed;
 			}
 		}
-		await this.#registerRuntimePlugin(scope, packageName, cachePath, version, wasDisabled ? false : undefined);
+		await this.#registerRuntimePlugin(
+			scope,
+			packageName,
+			cachePath,
+			version,
+			wasDisabled ? false : undefined,
+			carried,
+		);
 
 		// If this reinstall renamed the runtime key and the other scope references
 		// the same (now-replaced) cache, migrate that scope's link and lockfile key
@@ -404,13 +421,14 @@ export class MarketplaceManager {
 			if (entry.installPath !== cachePath) continue;
 			const oldName = otherScopeOldNames.get(entry.installPath);
 			if (oldName === undefined || oldName === packageName) continue;
-			await this.#removeRuntimePlugin(otherScope, oldName);
+			const removed = await this.#removeRuntimePlugin(otherScope, oldName);
 			await this.#registerRuntimePlugin(
 				otherScope,
 				packageName,
 				cachePath,
 				entry.version,
 				entry.enabled === false ? false : undefined,
+				removed,
 			);
 		}
 
@@ -946,6 +964,7 @@ export class MarketplaceManager {
 		cachePath: string,
 		version: string,
 		enabled: boolean | undefined,
+		carry?: RemovedRuntimeState,
 	): Promise<void> {
 		const linkPath = this.#runtimePackagePath(scope, packageName);
 		await fs.mkdir(path.dirname(linkPath), { recursive: true });
@@ -956,19 +975,28 @@ export class MarketplaceManager {
 		const previous = config.plugins[packageName];
 		config.plugins[packageName] = {
 			version,
-			enabledFeatures: previous?.enabledFeatures ?? null,
-			enabled: enabled ?? previous?.enabled ?? true,
+			// Carry the renamed-from key's feature/enabled selection so a case-only
+			// rename does not silently reset them; an existing entry under the new
+			// key still wins.
+			enabledFeatures: previous?.enabledFeatures ?? carry?.state?.enabledFeatures ?? null,
+			enabled: enabled ?? previous?.enabled ?? carry?.state?.enabled ?? true,
 		};
+		if (carry?.settings !== undefined && config.settings[packageName] === undefined) {
+			config.settings[packageName] = carry.settings;
+		}
 		await this.#writeRuntimeConfig(scope, config);
 	}
 
-	async #removeRuntimePlugin(scope: "user" | "project", packageName: string): Promise<void> {
+	async #removeRuntimePlugin(scope: "user" | "project", packageName: string): Promise<RemovedRuntimeState> {
 		await fs.rm(this.#runtimePackagePath(scope, packageName), { recursive: true, force: true });
 
 		const config = await this.#loadRuntimeConfig(scope);
+		const state = config.plugins[packageName];
+		const settings = config.settings[packageName];
 		delete config.plugins[packageName];
 		delete config.settings[packageName];
 		await this.#writeRuntimeConfig(scope, config);
+		return { state, settings };
 	}
 
 	async #setRuntimePluginEnabled(scope: "user" | "project", packageName: string, enabled: boolean): Promise<void> {

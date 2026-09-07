@@ -536,6 +536,33 @@ describe("MarketplaceManager", () => {
 		expect(Object.keys(projectConfig.plugins)).toEqual(["gadget"]);
 	});
 
+	it("preserves feature selection and settings across a case-only rename", async () => {
+		const marketplaceDir = buildNamedMarketplace(path.join(ctx.tmpDir, "cfg-marketplace"), "cfg-market", "widget");
+		const sourcePackage = path.join(marketplaceDir, "plugins", "widget", "package.json");
+		fs.writeFileSync(sourcePackage, JSON.stringify({ name: "Widget", version: "1.0.0" }));
+		await ctx.manager.addMarketplace(marketplaceDir);
+		await ctx.manager.installPlugin("widget", "cfg-market");
+
+		// The user has selected features, disabled the plugin, and set settings under the current key.
+		const lockPath = path.join(ctx.tmpDir, "omp-plugins.lock.json");
+		const lock = await Bun.file(lockPath).json();
+		lock.plugins.Widget.enabledFeatures = ["alpha"];
+		lock.plugins.Widget.enabled = false;
+		lock.settings = { Widget: { theme: "dark" } };
+		fs.writeFileSync(lockPath, JSON.stringify(lock));
+
+		// Force reinstall with only the manifest name casing changed.
+		fs.writeFileSync(sourcePackage, JSON.stringify({ name: "widget", version: "1.0.0" }));
+		await ctx.manager.installPlugin("widget", "cfg-market", { force: true });
+
+		const updated = await Bun.file(lockPath).json();
+		expect(updated.plugins.Widget).toBeUndefined();
+		expect(updated.plugins.widget.enabledFeatures).toEqual(["alpha"]);
+		expect(updated.plugins.widget.enabled).toBe(false);
+		expect(updated.settings.Widget).toBeUndefined();
+		expect(updated.settings.widget).toEqual({ theme: "dark" });
+	});
+
 	it("installPlugin rejects package names that escape node_modules", async () => {
 		const marketplaceDir = path.join(ctx.tmpDir, "bad-package-marketplace");
 		const pluginDir = path.join(marketplaceDir, "plugins", "bad-package");
