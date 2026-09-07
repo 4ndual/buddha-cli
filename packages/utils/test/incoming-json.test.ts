@@ -1,4 +1,4 @@
-import { describe, expect, it, spyOn } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { IncomingDoc, IncomingJsonError } from "@oh-my-pi/pi-utils/incoming-json";
 import { JsonLexer } from "@oh-my-pi/pi-utils/json-lexer";
 import { parseJsonWithRepair } from "@oh-my-pi/pi-utils/json-parse";
@@ -431,8 +431,15 @@ describe("incoming JSON cursors", () => {
 		// constant number of reads per element, so total reads stay O(n); a
 		// regression that re-lexed every earlier element would make it O(n²).
 		// Operation count is deterministic, unlike a timing bound that a loaded
-		// CI runner inflates past any threshold (#11109).
-		const peek = spyOn(JsonLexer.prototype, "peek");
+		// CI runner inflates past any threshold (#11109). A scalar counter, not
+		// a call-recording spy: retaining a mock entry per ~840k reads would be
+		// the allocation-heavy flake this test removes.
+		const originalPeek = JsonLexer.prototype.peek;
+		let reads = 0;
+		JsonLexer.prototype.peek = function (this: JsonLexer): number {
+			reads++;
+			return originalPeek.call(this);
+		};
 		try {
 			for (let i = 0; i < count; i++) {
 				feed.push(`{"n":${i}},`);
@@ -445,9 +452,9 @@ describe("incoming JSON cursors", () => {
 			expect(sum).toBe((count * (count - 1)) / 2);
 			// ~42 reads/element in practice; the ceiling only has to sit below the
 			// quadratic blow-up (~count/2 reads/element) to catch a rescan.
-			expect(peek.mock.calls.length).toBeLessThan(count * 250);
+			expect(reads).toBeLessThan(count * 250);
 		} finally {
-			peek.mockRestore();
+			JsonLexer.prototype.peek = originalPeek;
 		}
 	}, 30_000);
 });
