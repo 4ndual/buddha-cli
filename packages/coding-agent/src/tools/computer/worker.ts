@@ -444,6 +444,9 @@ export class ComputerWorkerCore {
 			case "run":
 				void this.#run(message);
 				return;
+			case "capabilities":
+				void this.#capabilities(message);
+				return;
 			case "abort":
 				if (this.#active?.id === message.id) this.#active.ac.abort(new ToolAbortError());
 				return;
@@ -595,6 +598,34 @@ export class ComputerWorkerCore {
 				id: message.id,
 				ok: true,
 				payload: { displays: output.finish(), returnValue: cloneSafe(returnValue), screenshots, capabilities },
+			});
+		}
+	}
+
+	/**
+	 * Answers a direct capabilities request without executing a script. Unlike a
+	 * run, this never touches `#active`, so it resolves even while a run is in
+	 * flight and always reports the session's current permission/backend state.
+	 */
+	async #capabilities(message: Extract<ComputerWorkerInbound, { type: "capabilities" }>): Promise<void> {
+		if (this.#closed) {
+			this.#transport.send({
+				type: "capabilities",
+				id: message.id,
+				ok: false,
+				error: errorPayload(new ToolError("Computer worker is closed")),
+			});
+			return;
+		}
+		try {
+			const session = await this.#ensureSession(message.session);
+			this.#transport.send({ type: "capabilities", id: message.id, ok: true, capabilities: session.capabilities });
+		} catch (error) {
+			this.#transport.send({
+				type: "capabilities",
+				id: message.id,
+				ok: false,
+				error: errorPayload(error instanceof ToolAbortError ? error : nativeError(error)),
 			});
 		}
 	}

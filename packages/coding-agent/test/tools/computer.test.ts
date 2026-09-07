@@ -1007,6 +1007,16 @@ describe("computer worker round trips", () => {
 		expect(second.ok).toBe(true);
 		if (second.ok) expect(second.payload.returnValue).toEqual({ x: 7, y: 8, width: 9, height: 10 });
 	});
+
+	it("answers a direct capabilities request without a prior run", async () => {
+		const transport = new MemoryTransport();
+		new ComputerWorkerCore(transport, () => new FakeNativeSession());
+		transport.inbound({ type: "capabilities", id: "caps", session: snapshot(true) });
+		const reply = await transport.waitFor(message => message.type === "capabilities" && message.id === "caps");
+		expect(reply.type).toBe("capabilities");
+		if (reply.type !== "capabilities" || !reply.ok) throw new Error("expected a successful capabilities reply");
+		expect(reply.capabilities).toEqual(capabilities);
+	});
 });
 
 class SupervisorWorker implements ComputerWorkerHandle {
@@ -1027,6 +1037,8 @@ class SupervisorWorker implements ComputerWorkerHandle {
 					payload: { displays: [], returnValue: "fresh", screenshots: [], capabilities },
 				}),
 			);
+		} else if (message.type === "capabilities" && this.#respond) {
+			queueMicrotask(() => this.#emit({ type: "capabilities", id: message.id, ok: true, capabilities }));
 		} else if (message.type === "close") {
 			queueMicrotask(() => this.#emit({ type: "closed" }));
 		}
@@ -1064,6 +1076,18 @@ describe("computer supervisor recovery", () => {
 		const result = await supervisor.run("41 + 1", 1_000, snapshot());
 		expect(result.returnValue).toBe("fresh");
 		expect(workers).toBe(2);
+		await supervisor.close();
+	});
+
+	it("resolves direct capabilities before any run instead of a stale cache", async () => {
+		const supervisor = new ComputerSupervisor(toolSession(), () => new SupervisorWorker(true), {
+			startMs: 200,
+			closeMs: 200,
+		});
+		// Regression (#11169): capabilities() used to return the run-populated
+		// cache, so a fresh session yielded undefined until a run happened.
+		const direct = await supervisor.capabilities(snapshot(true));
+		expect(direct).toEqual(capabilities);
 		await supervisor.close();
 	});
 });
