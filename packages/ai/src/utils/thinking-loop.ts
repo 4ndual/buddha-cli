@@ -99,6 +99,11 @@ const LEX_STALL_MIN_RUN = 8;
 /** Structural punctuation that dominates tables / JSON / code but is rare in
  *  prose. Used to score a segment's prose-likeness. */
 const STRUCTURAL_PUNCT = /[|{}[\]"`:;,/=<>#]/u;
+/** A quoted `"key":` pair — the shape of a JSON/object record field. Present in
+ *  structured output regardless of how long the key name is, and essentially
+ *  absent from prose; used to recognize JSON independently of {@link proseRatio}.
+ *  Global flag: collected with matchAll, never used with the stateful test(). */
+const JSON_KEY_FIELD = /"[^"\n]{1,200}"\s*:/g;
 /** Minimum fraction of prose characters (Unicode letters + whitespace, versus
  *  structural punctuation) a segment must reach to feed the near-duplicate and
  *  lexical-stall heuristics. Homogeneous structured output — a markdown table of
@@ -247,10 +252,11 @@ export class ThinkingLoopDetector {
 		// legitimate answer content, not a reasoning loop, yet consecutive rows
 		// normalize to near-identical trigrams (their varying data is numeric,
 		// which normalizeSegment drops) and would falsely trip the cluster path.
-		// Exempt low-prose segments from the semantic heuristics; a NEW output
-		// block also breaks any in-progress prose stall. Verbatim structured loops
-		// are still caught by the exact suffix-cycle detector in push()/flush().
-		if (proseRatio(segment) < SEGMENT_MIN_PROSE_RATIO) {
+		// Exempt it two ways: by shape (JSON/table recognized regardless of key
+		// length) and by a low prose ratio (punctuation-heavy data generally). A
+		// NEW output block also breaks any in-progress prose stall. Verbatim
+		// structured loops are still caught by the exact suffix-cycle detector.
+		if (isStructuredSegment(segment) || proseRatio(segment) < SEGMENT_MIN_PROSE_RATIO) {
 			this.#lexStallRun = 0;
 			return null;
 		}
@@ -596,6 +602,27 @@ function proseRatio(segment: string): number {
 	}
 	const denom = prose + structural;
 	return denom === 0 ? 1 : prose / denom;
+}
+
+/** True when a segment is structured data — a JSON value/record or a markdown
+ *  table — rather than reasoning prose, recognized by shape so it holds even
+ *  when long descriptive key names push {@link proseRatio} above its threshold
+ *  (issue #11132 review). Complements the prose-ratio check, which catches other
+ *  punctuation-heavy data (CSV, code). */
+function isStructuredSegment(segment: string): boolean {
+	const trimmed = segment.trim();
+	// A JSON object/array value, whole or force-flush-chunked.
+	if (/^[{[]/.test(trimmed) && /[}\]]$/.test(trimmed)) return true;
+	// Two or more named fields: the shape of a record, independent of key length.
+	if ((segment.match(JSON_KEY_FIELD)?.length ?? 0) >= 2) return true;
+	// Markdown table: most non-blank lines are multi-column pipe rows.
+	const lines = segment.split("\n").filter(line => line.trim() !== "");
+	if (lines.length >= 2) {
+		let pipeRows = 0;
+		for (const line of lines) if ((line.match(/\|/g)?.length ?? 0) >= 2) pipeRows++;
+		if (pipeRows >= Math.ceil(lines.length * 0.6)) return true;
+	}
+	return false;
 }
 
 /** Word-trigram shingle set of a normalized segment. */

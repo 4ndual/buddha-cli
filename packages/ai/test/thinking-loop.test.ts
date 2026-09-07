@@ -250,6 +250,19 @@ function structuredListAnswer(n: number): string {
 	return rows.join("\n");
 }
 
+/** Blank-line-separated JSON objects with long descriptive key names and numeric
+ *  values. The long keys inflate the prose ratio above its threshold, so this
+ *  shape must be recognized as structured by JSON shape, not by that ratio
+ *  (issue #11132 review). Answer content, not a reasoning loop — must never trip. */
+function longKeyJsonAnswer(n: number): string {
+	const objs = Array.from(
+		{ length: n },
+		(_, i) =>
+			`{\n  "very_long_descriptive_customer_account_identifier": ${1000 + i},\n  "very_long_descriptive_customer_account_balance_amount": ${5000 + i}\n}`,
+	);
+	return `Here is the requested account data:\n\n${objs.join("\n\n")}`;
+}
+
 describe("ThinkingLoopDetector", () => {
 	test("trips on a tight near-duplicate paragraph loop via the trigram path", () => {
 		// High word-trigram overlap: the cluster check claims it before the lexical
@@ -335,6 +348,12 @@ describe("ThinkingLoopDetector", () => {
 		// is numeric ids/URLs. Their low prose ratio exempts them from the semantic
 		// heuristics, so the complete answer commits instead of being discarded.
 		expect(feed(structuredListAnswer(33))).toBeNull();
+	});
+
+	test("does not trip on JSON objects with long descriptive keys (issue #11132 review)", () => {
+		// Long key names push the prose ratio above its threshold, so the JSON must
+		// be recognized by shape rather than by the letter-to-punctuation ratio.
+		expect(feed(longKeyJsonAnswer(12))).toBeNull();
 	});
 
 	test("still trips on a reasoning-prose loop even when it follows structured output", () => {
