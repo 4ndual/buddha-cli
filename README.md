@@ -1,116 +1,36 @@
-<p align="center">
-  <img src="https://github.com/can1357/oh-my-pi/blob/main/assets/hero.png?raw=true" alt="omp">
-</p>
+# Buddha
 
-<p align="center">
-  <strong>A coding agent with the IDE wired in.</strong>
-  <strong><a href="https://omp.sh">omp.sh</a></strong>
-</p>
+**Buddha** is a personal fork of [Oh My Pi](https://github.com/can1357/oh-my-pi), pinned to OMP `18.1.13`.
+It keeps the upstream engine and package topology while exposing the CLI as `buddha` and isolating user state under `~/.buddha`.
 
-<p align="center">
-  <a href="https://www.npmjs.com/package/@oh-my-pi/pi-coding-agent"><img src="https://img.shields.io/npm/v/@oh-my-pi/pi-coding-agent?style=flat&colorA=222222&colorB=CB3837" alt="npm version"></a>
-  <a href="https://github.com/can1357/oh-my-pi/blob/main/packages/coding-agent/CHANGELOG.md"><img src="https://img.shields.io/badge/changelog-keep-E05735?style=flat&colorA=222222" alt="Changelog"></a>
-  <a href="https://github.com/can1357/oh-my-pi/actions"><img src="https://img.shields.io/github/actions/workflow/status/can1357/oh-my-pi/ci.yml?style=flat&colorA=222222&colorB=3FB950" alt="CI"></a>
-  <a href="https://github.com/can1357/oh-my-pi/blob/main/LICENSE"><img src="https://img.shields.io/github/license/can1357/oh-my-pi?style=flat&colorA=222222&colorB=58A6FF" alt="License"></a>
-  <a href="https://www.typescriptlang.org"><img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat&colorA=222222&logo=typescript&logoColor=white" alt="TypeScript"></a>
-  <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Rust-DEA584?style=flat&colorA=222222&logo=rust&logoColor=white" alt="Rust"></a>
-  <a href="https://bun.sh"><img src="https://img.shields.io/badge/runtime-Bun-f472b6?style=flat&colorA=222222" alt="Bun"></a>
-  <a href="https://discord.gg/4NMW9cdXZa"><img src="https://img.shields.io/badge/Discord-5865F2?style=flat&colorA=222222&logo=discord&logoColor=white" alt="Discord"></a>
-</p>
+## Install from this fork
 
-<p align="center">
-  Fork of <a href="https://github.com/badlogic/pi-mono">Pi</a> by <a href="https://github.com/mariozechner">@mariozechner</a> 
-</p>
-
-The most capable agent surface that ships. Continuously tuned by real-world use — complete out of the box, open all the way down.
-
-**60+** providers · **31** built-in tools · **14** lsp ops · **28** dap ops · **~80k** lines of Rust core.
-
-> [!NOTE]
-> Pull requests are **temporarily open to everyone** as a trial. We previously
-> required a vouch before accepting PRs; that requirement is lifted for now
-> while we evaluate how open contributions go. Depending on the results, the
-> vouch system may return.
-
-## Install
-
-**macOS · Linux**
+Requires Bun 1.3.14 or newer.
 
 ```sh
-curl -fsSL https://omp.sh/install | sh
+git clone https://github.com/4ndual/buddha-cli.git
+cd buddha-cli
+bun install --frozen-lockfile
+sh scripts/link-buddha.sh
+buddha --version
 ```
 
-> **Alpine / musl:** the prebuilt musl binary links `libstdc++`/`libgcc` dynamically, which stock Alpine does not ship. Install them first: `apk add libstdc++ libgcc`.
-
-**Homebrew**
+The development launcher is installed at `~/.bun/bin/buddha`. Build a standalone executable with:
 
 ```sh
-brew install can1357/tap/omp
+bun --cwd packages/coding-agent run build
+./packages/coding-agent/dist/buddha --version
 ```
 
-**Bun (recommended)**
+OAuth credentials and user configuration are runtime state and are never committed. This installation reads `~/.buddha/agent/agent.db` and `~/.buddha/agent/config.yml`.
 
-```sh
-bun install -g @oh-my-pi/pi-coding-agent
-```
+## Upstream
 
-**Nix**
-
-```sh
-# Run without installing
-nix run github:can1357/oh-my-pi
-
-# Or install into the active profile
-nix profile install github:can1357/oh-my-pi
-```
-
-Flake consumers can use `packages.<system>.omp`, `overlays.default`, `nixosModules.default`, or `homeManagerModules.default`. A Home Manager configuration can install OMP and own its settings declaratively:
-
-```nix
-{
-  inputs.omp.url = "github:can1357/oh-my-pi";
-
-  # In your Home Manager module:
-  imports = [ inputs.omp.homeManagerModules.default ];
-  programs.omp = {
-    enable = true;
-    settings.startup.quiet = true;
-  };
-}
-```
-
-**Windows (PowerShell)**
-
-```powershell
-irm https://omp.sh/install.ps1 | iex
-```
-
-**Pinned versions (mise)**
-
-```sh
-mise use -g github:can1357/oh-my-pi
-```
-
-macOS · Linux · Windows · bun ≥ 1.3.14
-
-### Shell completions
-
-`omp` generates its own completion scripts for **bash**, **zsh**, and **fish** from the live command/flag metadata, so they never drift from the actual CLI. Subcommands, flags, and enum values complete statically; model names (`--model`, `--smol`, `--slow`, `--plan`) resolve against the bundled model catalog and `--resume` against your on-disk sessions.
-
-```sh
-# zsh — add to ~/.zshrc (or write the output into a file on your $fpath)
-eval "$(omp completions zsh)"
-
-# bash — add to ~/.bashrc
-eval "$(omp completions bash)"
-
-# fish
-omp completions fish > ~/.config/fish/completions/omp.fish
-```
+Buddha preserves the MIT-licensed Oh My Pi implementation and its attribution. Add `https://github.com/can1357/oh-my-pi.git` as the `upstream` remote when syncing future releases.
 
 ## Every tool, _benchmaxxed_.
 
-Edits that land on the first attempt. Reads that summarize files instead of dumping their content. Searches that return instantly. Pick any model — omp will get it right.
+Edits that land on the first attempt. Reads that summarize files instead of dumping their content. Searches that return instantly. Pick any model — Buddha will get it right.
 
 | model            | metric       | what                                                                  |
 | ---------------- | ------------ | --------------------------------------------------------------------- |
@@ -128,7 +48,7 @@ Edits that land on the first attempt. Reads that summarize files instead of dump
 
 ## The Pi _you love_, with **batteries included**.
 
-Originally built on [Mario Zechner](https://github.com/mariozechner)'s wonderful [Pi](https://github.com/badlogic/pi-mono), omp adds everything you're missing.
+Originally built on [Mario Zechner](https://github.com/mariozechner)'s wonderful [Pi](https://github.com/badlogic/pi-mono), Buddha carries forward Oh My Pi's batteries-included agent surface.
 
 ### 01 · Code execution w/ tool-calling
 
@@ -493,7 +413,7 @@ Inside `pi-natives`, the per-module breakdown (glue and tests omitted):
 
 ## Four entry points: _interactive_, _one-shot_, RPC, and ACP.
 
-Same engine, four wrappers. `omp` runs the TUI. `omp -p` answers a single prompt and exits. The Node SDK embeds the session in your process. `omp --mode rpc` and `omp acp` hand the wheel to another program over stdio.
+Same engine, four wrappers. `buddha` runs the TUI. `buddha -p` answers a single prompt and exits. The Node SDK embeds the session in your process. `buddha --mode rpc` and `buddha acp` hand the wheel to another program over stdio.
 
 ### Interactive — when in doubt, the agent asks
 
@@ -560,7 +480,7 @@ Full reference: [omp.sh/docs/sdk](https://omp.sh/docs/sdk).
 
 ## A harness worth keeping is one you _don't_ outgrow.
 
-Pick it up at **[omp.sh](https://omp.sh)**.
+This fork runs as **Buddha**; upstream releases and documentation remain at **[omp.sh](https://omp.sh)**.
 
 omp is a fork of [Pi](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://github.com/mariozechner), rewritten as a coding-first surface: sessions, subagents, slash commands, extensions — all TypeScript, all MIT, all on [GitHub](https://github.com/can1357/oh-my-pi). Shape it from config, hook it from outside, or read the source when you need to.
 
@@ -578,7 +498,7 @@ Ask omp to write the piece you're missing, then `/reload-plugins`. Keep it local
 
 ## Philosophy
 
-omp is a fork of [pi-mono](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://github.com/mariozechner), extended with a batteries-included coding workflow.
+Buddha is derived from [Oh My Pi](https://github.com/can1357/oh-my-pi), itself a fork of [pi-mono](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://github.com/mariozechner).
 
 Key ideas:
 
@@ -677,7 +597,7 @@ guidelines on contributing.
 
 ## License
 
-OMP is licensed under the [MIT License](LICENSE).
+Buddha retains Oh My Pi's [MIT License](LICENSE).
 
 Third-party and vendored code, including `crates/vendor/brush-core` and the
 third-party portions identified in `crates/pi-builtins/LICENSE`, remains under

@@ -1,7 +1,7 @@
 {
-	"name": "omp",
+	"name": "buddha",
 	"private": true,
-	"homepage": "https://omp.sh",
+	"homepage": "https://github.com/4ndual/buddha-cli",
 	"license": "MIT",
 	"author": "Stencil Labs, Inc.",
 	"workspaces": {
