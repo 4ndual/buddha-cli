@@ -315,6 +315,7 @@ export const VALUELESS_FLAGS: ReadonlySet<string> = new Set([
 	"--no-title",
 	"--auto-approve",
 	"--yolo",
+	"--buddha",
 ]);
 
 /**

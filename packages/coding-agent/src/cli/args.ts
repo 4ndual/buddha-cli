@@ -81,6 +81,7 @@ export interface Args {
 	noRules?: boolean;
 	noTitle?: boolean;
 	autoApprove?: boolean;
+	buddha?: boolean;
 	approvalMode?: "always-ask" | "write" | "yolo";
 	messages: string[];
 	fileArgs: string[];
@@ -278,6 +279,8 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 			result.noTitle = true;
 		} else if (arg === "--auto-approve" || arg === "--yolo") {
 			result.autoApprove = true;
+		} else if (arg === "--buddha") {
+			result.buddha = true;
 		} else if (arg.startsWith("@")) {
 			let filePath = arg.slice(1);
 			if (filePath.startsWith('"') && filePath.endsWith('"') && filePath.length > 1) {

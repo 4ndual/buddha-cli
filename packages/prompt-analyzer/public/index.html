@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Buddha — Prompt Analyzer</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="app">
+
+  <header class="app-header">
+    <div class="app-header__brand">
+      <span class="app-header__mark" aria-hidden="true"></span>
+      <div class="app-header__title">
+        <h1>Buddha Prompt Analyzer</h1>
+        <p class="app-header__subtitle">Live speech-act analysis of your prompt</p>
+      </div>
+    </div>
+    <div class="app-header__meta">
+      <span id="model-badge" class="badge badge--model">model: —</span>
+      <span id="conn-status" class="status-dot status-dot--idle" role="status" aria-live="polite">
+        <span class="status-dot__dot" aria-hidden="true"></span>
+        <span id="conn-status-text">connecting…</span>
+      </span>
+    </div>
+  </header>
+
+  <main class="app-main">
+
+    <div class="workbench">
+
+    <section class="editor-panel" aria-label="Prompt editor">
+      <label for="prompt-input" class="editor-panel__label">Prompt</label>
+      <textarea
+        id="prompt-input"
+        class="editor-panel__textarea"
+        placeholder="Type or paste the prompt you want analyzed…"
+        spellcheck="false"
+        rows="6"
+      ></textarea>
+      <div class="editor-panel__toolbar">
+        <div class="editor-panel__hints">
+          <span>Ctrl/Cmd + Enter to analyze now</span>
+          <span>auto-runs on paste, sentence end, or blur</span>
+        </div>
+        <div class="editor-panel__actions">
+          <button id="retry-global" type="button" class="btn btn--ghost" hidden>Retry analysis</button>
+          <button id="analyze-now" type="button" class="btn btn--primary">Analyze</button>
+        </div>
+      </div>
+      <p id="run-status" class="run-status" role="status" aria-live="polite">Idle — waiting for a prompt.</p>
+    </section>
+
+    <section class="stage-strip" aria-label="Pipeline progress">
+      <div class="stage-strip__wave">
+        <span class="stage-strip__wave-label">wave 1</span>
+        <div class="stage-chip" data-stage="paraphrase" data-state="pending">
+          <span class="stage-chip__icon" aria-hidden="true"></span>
+          <span class="stage-chip__name">Paraphrase</span>
+        </div>
+        <div class="stage-chip" data-stage="categorize" data-state="pending">
+          <span class="stage-chip__icon" aria-hidden="true"></span>
+          <span class="stage-chip__name">Categorize</span>
+        </div>
+      </div>
+      <div class="stage-strip__arrow" aria-hidden="true">→</div>
+      <div class="stage-strip__wave">
+        <span class="stage-strip__wave-label">wave 2</span>
+        <div class="stage-chip" data-stage="analyze" data-state="pending">
+          <span class="stage-chip__icon" aria-hidden="true"></span>
+          <span class="stage-chip__name">Analyze</span>
+        </div>
+      </div>
+      <div class="stage-strip__arrow" aria-hidden="true">→</div>
+      <div class="stage-strip__wave">
+        <span class="stage-strip__wave-label">wave 3</span>
+        <div class="stage-chip" data-stage="verify" data-state="pending">
+          <span class="stage-chip__icon" aria-hidden="true"></span>
+          <span class="stage-chip__name">Verify</span>
+        </div>
+      </div>
+    </section>
+
+    <section id="live-generation" class="live-generation" aria-label="Live model output"></section>
+
+      <ul id="run-notices" class="run-notices" aria-label="Superseded and cancelled runs"></ul>
+
+    </div>
+
+
+    <section class="results" aria-label="Analysis results">
+      <div class="tabs">
+        <div class="tablist" role="tablist" aria-label="Analysis views">
+          <button role="tab" id="tab-overview" aria-controls="panel-overview" aria-selected="true" tabindex="0" class="tab" data-tab="overview">Overview</button>
+          <button role="tab" id="tab-parts" aria-controls="panel-parts" aria-selected="false" tabindex="-1" class="tab" data-tab="parts">Parts</button>
+          <button role="tab" id="tab-intent" aria-controls="panel-intent" aria-selected="false" tabindex="-1" class="tab" data-tab="intent">Intent</button>
+          <button role="tab" id="tab-verification" aria-controls="panel-verification" aria-selected="false" tabindex="-1" class="tab" data-tab="verification">Verification</button>
+          <button role="tab" id="tab-raw" aria-controls="panel-raw" aria-selected="false" tabindex="-1" class="tab" data-tab="raw">Raw JSON</button>
+        </div>
+
+        <div id="panel-overview" role="tabpanel" aria-labelledby="tab-overview" tabindex="0" class="tabpanel" data-panel="overview">
+          <p class="empty-state" data-empty>No analysis yet. Enter a prompt to begin.</p>
+          <div class="overview" data-content hidden>
+            <div class="overview__paraphrase">
+              <h2>Paraphrase</h2>
+              <p id="overview-paraphrase"></p>
+            </div>
+            <div class="overview__grid">
+              <div class="overview__cell">
+                <h3>Detected categories</h3>
+                <div id="overview-categories" class="badge-row"></div>
+              </div>
+              <div class="overview__cell">
+                <h3>Tags</h3>
+                <div id="overview-tags" class="badge-row"></div>
+              </div>
+              <div class="overview__cell">
+                <h3>Meaning match</h3>
+                <div class="meter" role="img" id="overview-meter-wrap">
+                  <div class="meter__track"><div id="overview-meter-fill" class="meter__fill"></div></div>
+                  <span id="overview-meter-value" class="meter__value">—</span>
+                </div>
+              </div>
+              <div class="overview__cell">
+                <h3>Pipeline state</h3>
+                <span id="overview-state" class="pill pill--neutral">idle</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="panel-parts" role="tabpanel" aria-labelledby="tab-parts" tabindex="0" class="tabpanel" data-panel="parts" hidden>
+          <p class="empty-state" data-empty>No parts yet. Parts appear once analysis completes.</p>
+          <div id="parts-list" class="cards-list" data-content></div>
+        </div>
+
+        <div id="panel-intent" role="tabpanel" aria-labelledby="tab-intent" tabindex="0" class="tabpanel" data-panel="intent" hidden>
+          <p class="empty-state" data-empty>No intent answers yet.</p>
+          <div id="intent-list" class="cards-list" data-content></div>
+        </div>
+
+        <div id="panel-verification" role="tabpanel" aria-labelledby="tab-verification" tabindex="0" class="tabpanel" data-panel="verification" hidden>
+          <p class="empty-state" data-empty>Verification has not run yet.</p>
+          <div id="verification-content" class="verification" data-content hidden></div>
+        </div>
+
+        <div id="panel-raw" role="tabpanel" aria-labelledby="tab-raw" tabindex="0" class="tabpanel" data-panel="raw" hidden>
+          <p class="empty-state" data-empty>Nothing assembled yet.</p>
+          <details id="raw-json-details" class="raw-json" data-content hidden>
+            <summary>Raw JSON <span class="raw-json__hint">(diagnostic data — collapsed by default)</span></summary>
+            <div class="raw-json__toolbar">
+              <button id="raw-json-copy" type="button" class="btn btn--ghost btn--small">Copy</button>
+              <button id="raw-json-download" type="button" class="btn btn--ghost btn--small">Download</button>
+              <span id="raw-json-status" class="raw-json__status" role="status" aria-live="polite"></span>
+            </div>
+            <pre id="raw-json-pre" class="raw-json__pre" tabindex="0"><code id="raw-json-code"></code></pre>
+          </details>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="app-footer">
+    <span>Buddha live prompt analyzer · MVP</span>
+  </footer>
+</div>
+
+<template id="tmpl-stage-live">
+  <details class="stage-live" data-stage-live>
+    <summary>
+      <span class="stage-live__name" data-stage-live-name></span>
+      <span class="stage-live__status" data-stage-live-status></span>
+    </summary>
+    <pre class="stage-live__text" data-stage-live-text></pre>
+    <div class="stage-live__error" data-stage-live-error hidden>
+      <p data-stage-live-error-text></p>
+      <button type="button" class="btn btn--danger btn--small" data-stage-live-retry>Retry this stage</button>
+    </div>
+  </details>
+</template>
+
+<template id="tmpl-part-card">
+  <details class="card part-card">
+    <summary>
+      <span class="badge-row" data-part-categories></span>
+      <span class="part-card__preview" data-part-preview></span>
+      <span class="badge-row badge-row--sub" data-part-subcategories></span>
+    </summary>
+    <div class="card__body">
+      <div class="card__field">
+        <h4>Source</h4>
+        <blockquote data-part-source></blockquote>
+      </div>
+      <div class="card__field">
+        <h4>Meaning</h4>
+        <p data-part-paraphrase></p>
+      </div>
+      <div class="card__field">
+        <h4>Categories</h4>
+        <div class="badge-row" data-part-categories-full></div>
+      </div>
+      <div class="card__field">
+        <h4>Subcategories</h4>
+        <div class="badge-row badge-row--sub" data-part-subcategories-full></div>
+      </div>
+      <div class="card__field">
+        <h4>Tags</h4>
+        <div class="badge-row badge-row--tag" data-part-tags></div>
+      </div>
+      <div class="card__field" data-part-intent-field hidden>
+        <h4>Linked intent answers</h4>
+        <div class="mini-intent-list" data-part-intent-list></div>
+      </div>
+    </div>
+  </details>
+</template>
+
+<template id="tmpl-intent-card">
+  <details class="card intent-card">
+    <summary>
+      <span class="pill pill--id" data-intent-id></span>
+      <span class="intent-card__question" data-intent-question></span>
+    </summary>
+    <div class="card__body">
+      <div class="card__field">
+        <h4>Answer</h4>
+        <p data-intent-answer></p>
+      </div>
+      <div class="card__field">
+        <h4>Supporting source</h4>
+        <blockquote data-intent-source></blockquote>
+      </div>
+    </div>
+  </details>
+</template>
+
+<template id="tmpl-problem-card">
+  <li class="problem-card" data-problem-severity>
+    <span class="problem-card__type" data-problem-type></span>
+    <p class="problem-card__message" data-problem-message></p>
+    <blockquote class="problem-card__source" data-problem-source hidden></blockquote>
+  </li>
+</template>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

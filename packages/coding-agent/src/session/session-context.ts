@@ -6,6 +6,7 @@ import {
 } from "@oh-my-pi/pi-ai";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { isRecord } from "@oh-my-pi/pi-utils";
+import { SIDDHI_RESULT_MESSAGE_TYPE } from "../buddha/types";
 import {
 	createBranchSummaryMessage,
 	createCompactionSummaryMessage,
@@ -351,7 +352,12 @@ export function buildSessionContext(
 		} else if (entry.type === "custom_message") {
 			if (
 				!options?.transcript &&
-				(entry.customType === PREWALK_PLAN_MESSAGE_TYPE || entry.customType === VIBE_MODE_CONTEXT_MESSAGE_TYPE)
+				(entry.customType === PREWALK_PLAN_MESSAGE_TYPE ||
+					entry.customType === VIBE_MODE_CONTEXT_MESSAGE_TYPE ||
+					// Buddha mode: the promoted full worker answer lives in the
+					// transcript for the user. Replaying it into a rebuilt LLM context
+					// would put raw worker output back into Buddha's window.
+					entry.customType === SIDDHI_RESULT_MESSAGE_TYPE)
 			) {
 				return;
 			}

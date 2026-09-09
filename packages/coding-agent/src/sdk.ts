@@ -561,6 +561,14 @@ export interface CreateAgentSessionOptions {
 	 * and ambient custom tools remain disabled. Default: false.
 	 */
 	allowRestrictedCustomTools?: boolean;
+	/**
+	 * Buddha mode: this session is the root Buddha agent. Set only by
+	 * `applyBuddhaSessionOptions`, never by hand — it marks the session whose
+	 * provider context is asserted clean (5-line prompt + one `siddhi` tool)
+	 * before every request. Subagent options are built fresh, so hidden workers
+	 * never inherit it.
+	 */
+	buddhaMode?: boolean;
 
 	/** Output schema for structured completion (subagents). */
 	outputSchema?: unknown;
@@ -759,6 +767,23 @@ export async function discoverExtensions(cwd?: string): Promise<LoadExtensionsRe
 	const resolvedCwd = cwd ?? getProjectDir();
 
 	return discoverAndLoadExtensions([], resolvedCwd);
+}
+
+/**
+ * Fail-closed guard for a Buddha-mode provider request. Buddha's context is a
+ * structural invariant, not a prompting convention: exactly one tool (`siddhi`)
+ * and one system-prompt block. Anything else means an option, extension, or
+ * transform leaked into the root agent, so the request is refused instead of
+ * silently shipping a polluted context.
+ */
+function assertBuddhaProviderContext(context: Context): void {
+	const toolNames = context.tools?.map(tool => tool.name) ?? [];
+	const promptBlocks = context.systemPrompt?.length ?? 0;
+	if (toolNames.length === 1 && toolNames[0] === "siddhi" && promptBlocks === 1) return;
+	logger.error("Buddha context violation", { toolNames, promptBlocks });
+	throw new Error(
+		`Buddha context violation: expected exactly one tool "siddhi" and a single system prompt block, got tools [${toolNames.join(", ")}] and ${promptBlocks} prompt block(s).`,
+	);
 }
 
 /**
@@ -3415,7 +3440,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			return obfuscateMessages(obfuscator, converted);
 		};
 
+		// Computed once per session: never a per-request settings read, and never
+		// inherited by hidden workers (their options are built from scratch).
+		const buddhaMode = options.buddhaMode === true;
 		const transformContext = async (messages: AgentMessage[], _signal?: AbortSignal) => {
+			// Buddha's context is the raw user conversation. No extension context
+			// blocks, and no steering envelope: both would inject harness text into
+			// the one window that must stay clean.
+			if (buddhaMode) return messages;
 			const withContext = await extensionRunner.emitContext(messages);
 			return wrapSteeringForModel(withContext);
 		};
@@ -3458,6 +3490,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// else, and it runs before the blob broker uploads any of these bytes.
 			transformed = await dropUnreadableContextImages(transformed, transformModel);
 			if (blobBroker) transformed = await blobBroker.decorateContext(transformed, transformModel);
+			if (buddhaMode) {
+				// Skip the date/cwd reminder: it injects per-request ambient context
+				// into the first user turn, which Buddha must not carry. Then refuse
+				// the request outright unless the outgoing context is still exactly
+				// the 5-line prompt plus `siddhi`.
+				assertBuddhaProviderContext(transformed);
+				return transformed;
+			}
 			// Keep per-request volatility out of the system prompt: the date/cwd
 			// reminder rides on the first user turn so open-weight providers keep
 			// their tool-schema prefix cache (#7404).

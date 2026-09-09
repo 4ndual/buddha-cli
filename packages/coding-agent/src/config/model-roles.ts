@@ -19,7 +19,18 @@ export function formatModelRoleAlias(role: string): string {
 	return `${MODEL_ROLE_ALIAS_PREFIX}${role}`;
 }
 
-export type ModelRole = "default" | "smol" | "slow" | "vision" | "plan" | "commit" | "tiny" | "task" | "advisor";
+export type ModelRole =
+	| "default"
+	| "smol"
+	| "slow"
+	| "vision"
+	| "plan"
+	| "commit"
+	| "tiny"
+	| "task"
+	| "advisor"
+	| "buddha"
+	| "delegator";
 
 export interface ModelRoleInfo {
 	tag?: string;
@@ -39,6 +50,12 @@ export const MODEL_ROLES: Record<ModelRole, ModelRoleInfo> = {
 	tiny: { tag: "TINY", name: "Tiny", color: "dim" },
 	task: { tag: "TASK", name: "Subtask", color: "muted" },
 	advisor: { tag: "ADVISOR", name: "Advisor", color: "accent" },
+	// Buddha-mode-only roles: functional in every session but only ever
+	// selected by buddha/router code, so they stay out of the model-selector
+	// carousel (see `hidden` and getKnownRoleIds below) unless a user
+	// explicitly configures them.
+	buddha: { tag: "BUDDHA", name: "Buddha", color: "success", hidden: true },
+	delegator: { tag: "DELEG", name: "Delegator", color: "warning", hidden: true },
 };
 
 export const MODEL_ROLE_IDS: ModelRole[] = [
@@ -51,6 +68,8 @@ export const MODEL_ROLE_IDS: ModelRole[] = [
 	"tiny",
 	"task",
 	"advisor",
+	"buddha",
+	"delegator",
 ];
 
 export type RoleInfo = ModelRoleInfo;
