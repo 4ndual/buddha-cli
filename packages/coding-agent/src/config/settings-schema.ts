@@ -1858,6 +1858,9 @@ export const SETTINGS_SCHEMA = {
 	// Retries
 	"retry.enabled": { type: "boolean", default: true },
 
+	// Buddha mode
+	"buddha.enabled": { type: "boolean", default: false },
+
 	"retry.maxRetries": {
 		type: "number",
 		default: 10,

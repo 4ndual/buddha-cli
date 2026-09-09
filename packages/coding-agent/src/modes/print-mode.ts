@@ -8,8 +8,15 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
+import { isBuddhaEnabled } from "../buddha/session-overrides";
+import { SIDDHI_RESULT_MESSAGE_TYPE } from "../buddha/types";
 import { type AgentSession, type AgentSessionEvent, SHUTDOWN_CONSOLIDATE_BUDGET_MS } from "../session/agent-session";
-import { isSilentAbort } from "../session/messages";
+import { type CustomMessage, isSilentAbort } from "../session/messages";
+import {
+	SUBAGENT_WARNING_MISSING_YIELD,
+	SUBAGENT_WARNING_NULL_YIELD,
+	SUBAGENT_WARNING_SCHEMA_OVERRIDDEN,
+} from "../task/executor";
 import { flushTelemetryExport } from "../telemetry-export";
 import { initializeExtensions } from "./runtime-init";
 
@@ -41,6 +48,43 @@ function stripProviderPayload<T extends AgentMessage>(message: T): T {
 	if (!("providerPayload" in message) || message.providerPayload === undefined) return message;
 	const { providerPayload: _providerPayload, ...rest } = message;
 	return rest as T;
+}
+
+/**
+ * Plain text of a `CustomMessage` payload. Buddha's promoted worker answer
+ * (`promote.ts`) always sets `content` to a raw string, but the type also
+ * allows a content-block array (extension-injected messages), so handle both.
+ */
+function customMessageText(content: CustomMessage["content"]): string {
+	if (typeof content === "string") return content;
+	return content
+		.filter(part => part.type === "text")
+		.map(part => part.text)
+		.join("\n");
+}
+
+/**
+ * Subagent banners that `task/executor.ts` prepends to a worker's raw output
+ * (`${warning}\n\n${rawOutput}`), or emits alone when the worker produced no
+ * output at all. A promotion consisting of nothing but a banner carries no
+ * answer, so it must not supersede the real answer of an earlier round.
+ */
+const WARNING_ONLY_PROMOTION: Record<string, true> = {
+	[SUBAGENT_WARNING_NULL_YIELD]: true,
+	[SUBAGENT_WARNING_MISSING_YIELD]: true,
+	[SUBAGENT_WARNING_SCHEMA_OVERRIDDEN]: true,
+};
+
+/**
+ * The worker answer carried by a promoted `siddhi-result` payload, or
+ * `undefined` when it carries none — an empty payload, or a bare harness
+ * banner from a round whose worker yielded nothing.
+ */
+export function promotedAnswerText(content: CustomMessage["content"]): string | undefined {
+	const answer = customMessageText(content);
+	const probe = answer.trim();
+	if (probe.length === 0 || WARNING_ONLY_PROMOTION[probe] === true) return undefined;
+	return answer;
 }
 
 /**
@@ -153,11 +197,45 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 		);
 	}
 
+	// Buddha mode delivers the user-visible answer out-of-band from the model's
+	// own reply: a promoted `siddhi-result` custom message is persisted and
+	// relayed for display but deliberately excluded from Buddha's rebuilt
+	// context (`session-context.ts`), so the final-assistant-text loop below
+	// only ever sees Buddha's own short acknowledgement and the worker's answer
+	// would never reach stdout. Capture it from the same live `irc_message`
+	// event the interactive TUI renders (`event-controller.ts`
+	// `#handleIrcMessage`). Text mode only: `--mode json` already serializes
+	// every event, this one included, so nothing is hidden from that consumer.
+	//
+	// One prompt can produce several promotions: `siddhi-tool.ts` promotes once
+	// per routing round that carried `answerText` (execute, then verify/repair),
+	// and Buddha — which cannot see any of them — re-delegates until its own
+	// context tells it the job is done. Every one of those is another attempt at
+	// the same request, each superseding the last, so keep only the newest real
+	// answer and print it once at settle. Printing on arrival would emit the
+	// superseded attempts too, turning a single-shot `-p` answer into a
+	// transcript.
+	const forwardBuddhaAnswers = mode === "text" && isBuddhaEnabled(session.settings);
+	let promotedBuddhaAnswer: string | undefined;
+	let flushedBuddhaAnswer = false;
+	const flushBuddhaAnswer = (): void => {
+		if (flushedBuddhaAnswer || promotedBuddhaAnswer === undefined) return;
+		flushedBuddhaAnswer = true;
+		writeStdoutLine(`${sanitizeText(promotedBuddhaAnswer)}\n`);
+	};
+
 	// Always subscribe to enable session persistence via _handleAgentEvent
 	session.subscribe(event => {
 		// In JSON mode, output all events
 		if (mode === "json") {
 			writeStdoutLine(`${JSON.stringify(printableEvent(event))}\n`);
+		}
+		if (
+			forwardBuddhaAnswers &&
+			event.type === "irc_message" &&
+			event.message.customType === SIDDHI_RESULT_MESSAGE_TYPE
+		) {
+			promotedBuddhaAnswer = promotedAnswerText(event.message.content) ?? promotedBuddhaAnswer;
 		}
 	});
 
@@ -185,6 +263,11 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 	// From this point onward a late blocker must be recorded without starting a
 	// primary turn whose response print mode would never emit.
 	session.prepareForHeadlessAdvisorDrain();
+
+	// Emit the promoted worker answer before Buddha's own reply — and before
+	// the error branch below — so the user receives the work product even when
+	// Buddha's own final turn failed.
+	if (mode === "text") flushBuddhaAnswer();
 
 	// Read via the session accessor, not the raw state tail: a classifier
 	// refusal is pruned from active context at settle, and an aborted turn
