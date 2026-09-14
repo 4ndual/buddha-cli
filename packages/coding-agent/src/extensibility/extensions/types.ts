@@ -60,6 +60,7 @@ import type { ExecOptions, ExecResult } from "../../exec/exec";
 import type * as PiCodingAgent from "../../index";
 import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import type { MemoryRuntimeContext } from "../../memory-backend";
+import type { HubInboxService } from "../../tools/hub/inbox";
 import type { CustomEditor } from "../../modes/components/custom-editor";
 import type { Theme } from "../../modes/theme/theme";
 import type { AsyncJobSnapshot } from "../../session/agent-session";
@@ -473,6 +474,8 @@ export interface ExtensionContext {
 	modelRegistry: ModelRegistry;
 	/** Calling session's `local://` root mapping for external tool bridges. */
 	localProtocolOptions?: LocalProtocolOptions;
+	/** Native process-global Hub inbox for this session tree. */
+	hubInbox?: HubInboxService;
 	/** Current model (may be undefined) */
 	model: Model | undefined;
 	/** Read-only model query facade: list / current / resolve / family. */

@@ -2,6 +2,8 @@
  * Extension runner - executes extensions and manages their lifecycle.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
+import * as os from "node:os";
+import * as path from "node:path";
 import type {
 	AgentMessage,
 	AgentTool,
@@ -19,6 +21,8 @@ import type { MemoryRuntimeContext } from "../../memory-backend";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { AsyncJobSnapshot } from "../../session/agent-session";
 import type { SessionManager } from "../../session/session-manager";
+import { AgentRegistry } from "../../registry/agent-registry";
+import { HubInboxService, HubInboxStore } from "../../tools/hub/inbox";
 import { addFileDeleteFallback, addFileWriteFallback } from "../../tools/file-write-fallback";
 import type { BranchHandler, NavigateTreeHandler, NewSessionHandler } from "../session-handler-types";
 import { ManagedTimers } from "./managed-timers";
@@ -434,6 +438,7 @@ interface ToolRegistrationScope {
 }
 
 export class ExtensionRunner {
+	readonly #hubInbox: HubInboxService;
 	#uiContext: ExtensionUIContext;
 	#mode: ExtensionMode = "print";
 	#toolApprovalPreviewWaiter?: (toolCallId: string) => Promise<void>;
@@ -609,6 +614,16 @@ export class ExtensionRunner {
 		getAsyncJobSnapshot?: () => AsyncJobSnapshot | null,
 	) {
 		this.#uiContext = noOpUIContext;
+		const hubDataDirectory = path.dirname(
+			this.sessionManager.getSessionFile() ?? path.join(os.homedir(), ".omp", "agent", "sessions", "unsaved.jsonl"),
+		);
+		this.#hubInbox = new HubInboxService(
+			new HubInboxStore(hubDataDirectory, {
+				kind: "root",
+				id: this.sessionManager.getSessionId(),
+			}),
+			AgentRegistry.global(),
+		);
 		this.#getMemoryFn = getMemory;
 		this.#getAsyncJobSnapshotFn = getAsyncJobSnapshot ?? (() => null);
 	}
@@ -1188,6 +1203,7 @@ export class ExtensionRunner {
 			shutdown: () => this.#shutdownHandler(),
 			getSystemPrompt: () => this.#getSystemPromptFn(),
 			localProtocolOptions: this.localProtocolOptions,
+			hubInbox: this.#hubInbox,
 			memory: this.#getMemoryFn?.(),
 			setInterval: (callback, ms, ...args) => this.#managedTimers.setInterval(callback, ms, ...args),
 			setTimeout: (callback, ms, ...args) => this.#managedTimers.setTimeout(callback, ms, ...args),
