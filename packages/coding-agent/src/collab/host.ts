@@ -984,7 +984,11 @@ export class CollabHost {
 					.ensureLive(agentId)
 					.then(session => {
 						if (!this.#guestTrafficAllowed() || !this.#guestActionsReady()) return;
-						return session.prompt(trimmed, { streamingBehavior: "steer" });
+						const registry = AgentRegistry.global();
+						const generation = registry.beginAssignment(agentId, trimmed, session);
+						return session
+							.prompt(trimmed, { streamingBehavior: "steer" })
+							.finally(() => registry.completeAssignment(agentId, generation, "idle", session));
 					})
 					.catch(fail);
 				break;

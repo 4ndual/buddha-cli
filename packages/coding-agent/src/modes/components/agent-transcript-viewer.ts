@@ -525,13 +525,19 @@ export class AgentTranscriptViewer implements Component {
 		const lifecycle = this.deps.lifecycle;
 		if (!lifecycle) return;
 		void (async () => {
+			let generation: number | undefined;
+			let session: Awaited<ReturnType<AgentLifecycleManager["ensureLive"]>> | undefined;
 			try {
 				// Revives a parked agent; returns the live session for running/idle.
-				const session = await lifecycle().ensureLive(id);
+				session = await lifecycle().ensureLive(id);
+				generation = this.deps.registry.beginAssignment(id, trimmed, session);
 				// Steers a mid-turn agent; sends a normal prompt to an idle one.
 				await session.prompt(trimmed, { streamingBehavior: "steer" });
 			} catch (error) {
 				this.#notice = error instanceof Error ? error.message : String(error);
+			} finally {
+				if (session && generation !== undefined)
+					this.deps.registry.completeAssignment(id, generation, "idle", session);
 			}
 			this.deps.requestRender();
 		})();

@@ -84,6 +84,10 @@ export interface AgentRef {
 	lastActivity: number;
 	/** Short gist of what the agent is currently doing (latest intent or tool), for the work-aware roster. Display-only. */
 	activity?: string;
+	/** Exact model-facing work owned by the current running generation. */
+	assignment?: string;
+	/** Monotonic lease generation used to reject late completion from an earlier turn. */
+	assignmentGeneration?: number;
 	/** Persisted identity and telemetry restored after the live observer is gone. */
 	history?: AgentHistorySummary;
 }
@@ -108,6 +112,8 @@ export interface RegisterInput {
 	status?: AgentStatus;
 	/** Last persisted task summary, when restoring a historical agent. */
 	activity?: string;
+	/** Required for a newly-running subagent; ignored for the exempt main agent. */
+	assignment?: string;
 	/** Original registration timestamp, when known from persisted history. */
 	createdAt?: number;
 	/** Last transcript activity timestamp, when known from persisted history. */
@@ -145,17 +151,25 @@ export class AgentRegistry {
 
 	register(input: RegisterInput): AgentRef {
 		const now = Date.now();
+		const assignment = input.assignment?.trim();
+		let status = input.status ?? "running";
+		if (input.kind !== "main" && status === "running" && !assignment) {
+			// Preserve legacy refs, but never publish an assignment-less child as running.
+			status = "idle";
+		}
 		const ref: AgentRef = {
 			id: input.id,
 			displayName: input.displayName,
 			kind: input.kind,
 			parentId: input.parentId,
-			status: input.status ?? "running",
+			status,
 			session: input.session,
 			sessionFile: input.sessionFile ?? null,
 			createdAt: input.createdAt ?? now,
 			lastActivity: input.lastActivity ?? now,
 			activity: input.activity,
+			assignment: status === "running" ? assignment : undefined,
+			assignmentGeneration: assignment ? 1 : 0,
 			history: input.history,
 		};
 		this.#refs.set(ref.id, ref);
@@ -199,13 +213,45 @@ export class AgentRegistry {
 			return status === "aborted" || this.#rejectStatusUpdate(id, status, "aborted-is-terminal");
 		}
 		if (ref.status === status) return true;
+		if (status === "running" && ref.kind !== "main" && !ref.assignment) {
+			return this.#rejectStatusUpdate(id, status, "running-requires-assignment");
+		}
 		ref.status = status;
 		// Activity describes current work; it is meaningless once the agent
 		// leaves `running`, so drop it to avoid showing stale work in rosters.
-		if (status !== "running") ref.activity = undefined;
+		if (status !== "running") {
+			ref.activity = undefined;
+			ref.assignment = undefined;
+		}
 		ref.lastActivity = Date.now();
 		this.#emit({ type: "status_changed", ref });
 		return true;
+	}
+
+	/** Claim a fresh model-work generation before prompting a subagent. */
+	beginAssignment(id: string, assignment: string, expected?: AgentRefExpectation): number {
+		const ref = this.#refs.get(id);
+		const normalized = assignment.trim();
+		if (!ref) throw new Error(`Unknown agent "${id}".`);
+		if (!this.#matchesExpected(ref, expected)) throw new Error(`Agent "${id}" ownership changed.`);
+		if (ref.kind === "main") return ref.assignmentGeneration ?? 0;
+		if (!normalized) throw new Error(`Subagent "${id}" requires a nonempty new assignment.`);
+		ref.assignment = normalized;
+		ref.assignmentGeneration = (ref.assignmentGeneration ?? 0) + 1;
+		ref.lastActivity = Date.now();
+		return ref.assignmentGeneration;
+	}
+
+	/** Complete only the generation the caller actually ran. */
+	completeAssignment(
+		id: string,
+		generation: number,
+		status: Exclude<AgentStatus, "running">,
+		expected?: AgentRefExpectation,
+	): boolean {
+		const ref = this.#refs.get(id);
+		if (!ref || !this.#matchesExpected(ref, expected) || ref.assignmentGeneration !== generation) return false;
+		return this.setStatus(id, status, expected);
 	}
 
 	/**
@@ -292,6 +338,11 @@ export class AgentRegistry {
 	/** Mirror a session's authoritative run-state notifications into its owned registry ref. */
 	syncSessionStatus(id: string, session: AgentSession): () => void {
 		const unsubscribe = session.subscribeRunState(status => {
+			const ref = this.#refs.get(id);
+			// Subagent completion is lease-owned by its executor/Hub/collab/IRC
+			// dispatch path. A generic late idle notification cannot safely identify
+			// which assignment generation it completed.
+			if (status === "idle" && ref?.kind !== "main") return;
 			this.setStatus(id, status, session);
 		});
 		return unsubscribe;

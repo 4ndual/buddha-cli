@@ -2632,6 +2632,8 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 				.filter(Boolean)
 				.join("\n\n") || "IRC follow-up";
 		const turnStartTime = Date.now();
+		const assignmentRef = AgentRegistry.global().get(id);
+		const assignmentGeneration = AgentRegistry.global().beginAssignment(id, ircTask, assignmentRef);
 		const relay = Promise.withResolvers<void>();
 		session.trackIrcReply(relay.promise);
 		const sessionFile = AgentRegistry.global().get(id)?.sessionFile ?? options.sessionFile ?? undefined;
@@ -2725,6 +2727,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 					error: finalizeError instanceof Error ? finalizeError.message : String(finalizeError),
 				});
 			} finally {
+				AgentRegistry.global().completeAssignment(id, assignmentGeneration, "idle", assignmentRef);
 				relay.resolve();
 			}
 		};
@@ -2748,6 +2751,8 @@ export async function finalizeSubagentLifecycle(args: {
 	isolated: boolean;
 	agentIdleTtlMs: number;
 	reviveSession: AgentReviver | null;
+	/** Assignment lease owned by this run; omitted by legacy/direct callers. */
+	assignmentGeneration?: number;
 	cleanupDeadlineAt?: number;
 	onCleanupDeferred?: (completion: Promise<void>) => void;
 }): Promise<void> {
@@ -2832,7 +2837,10 @@ export async function finalizeSubagentLifecycle(args: {
 		// transcript stays reachable (history://), but ensureLive will throw.
 		// Status must flip to "parked" before dispose so the sdk dispose
 		// wrapper skips unregister.
-		if (ref && ownsRef) registry.setStatus(args.id, "parked", ref);
+		if (ref && ownsRef) {
+			if (args.assignmentGeneration === undefined) registry.setStatus(args.id, "parked", ref);
+			else if (!registry.completeAssignment(args.id, args.assignmentGeneration, "parked", ref)) return;
+		}
 		await disposeSession();
 		if (ref && ownsRef) registry.detachSession(args.id, ref);
 		return;
@@ -2840,7 +2848,14 @@ export async function finalizeSubagentLifecycle(args: {
 
 	// Keep-alive: finished and failed subagents both stay interrogable.
 	// The lifecycle manager owns idle-TTL parking + revival from here on.
-	if (!ref || !ownsRef || !registry.setStatus(args.id, "idle", ref)) {
+	const settled =
+		ref &&
+		ownsRef &&
+		(args.assignmentGeneration === undefined
+			? registry.setStatus(args.id, "idle", ref)
+			: registry.completeAssignment(args.id, args.assignmentGeneration, "idle", ref));
+	if (!settled && args.assignmentGeneration !== undefined && ref && ownsRef) return;
+	if (!settled) {
 		await disposeSession();
 		return;
 	}
@@ -2946,6 +2961,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 		await acquireOwnership();
 	}
 	const ref = AgentRegistry.global().get(id);
+	const assignmentGeneration = AgentRegistry.global().beginAssignment(id, message, session);
 	const sessionFile = ref?.sessionFile ?? undefined;
 
 	const monitor = createSubagentRunMonitor({
@@ -3017,27 +3033,31 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 		monitor.finish();
 	}
 
-	return finalizeRunResult({
-		monitor,
-		done: { ...outcome, abortReason: outcome.abortReasonText, durationMs: Date.now() - startTime },
-		index,
-		id,
-		agent,
-		task: message,
-		modelRole: options.modelRole,
-		outputSchema: options.outputSchema,
-		outputSchemaMode: options.outputSchemaMode,
-		outputSchemaSource: options.outputSchemaSource,
-		signal,
-		artifactsDir: options.artifactsDir,
-		eventBus: options.eventBus,
-		subagentEventBus: options.subagentEventBus,
-		parentToolCallId: options.parentToolCallId,
-		detached: true,
-		followUpTurn: true,
-		sessionFile,
-		startTime,
-	});
+	try {
+		return await finalizeRunResult({
+			monitor,
+			done: { ...outcome, abortReason: outcome.abortReasonText, durationMs: Date.now() - startTime },
+			index,
+			id,
+			agent,
+			task: message,
+			modelRole: options.modelRole,
+			outputSchema: options.outputSchema,
+			outputSchemaMode: options.outputSchemaMode,
+			outputSchemaSource: options.outputSchemaSource,
+			signal,
+			artifactsDir: options.artifactsDir,
+			eventBus: options.eventBus,
+			subagentEventBus: options.subagentEventBus,
+			parentToolCallId: options.parentToolCallId,
+			detached: true,
+			followUpTurn: true,
+			sessionFile,
+			startTime,
+		});
+	} finally {
+		AgentRegistry.global().completeAssignment(id, assignmentGeneration, "idle", session);
+	}
 }
 
 /**
@@ -3065,6 +3085,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	// Set by the session's onFirstChatDispatch hook the first time the agent
 	// loop dispatches a chat request to the provider — the launch-complete boundary.
 	let firstChatDispatchAt: number | undefined;
+	let assignmentGeneration: number | undefined;
 
 	// Check if already aborted
 	if (signal?.aborted) {
@@ -3565,6 +3586,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				parentMnemopiSessionState: options.parentMnemopiSessionState,
 				parentTaskPrefix: id,
 				parentAgentId: options.parentAgentId,
+				assignment: forRevive ? undefined : (assignment ?? task),
 				agentId: id,
 				agentDisplayName: agent.name,
 				agentName: agent.name,
@@ -3610,6 +3632,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				throw err;
 			}
 			sessionCreatedAt = performance.now();
+			assignmentGeneration = AgentRegistry.global().get(id)?.assignmentGeneration;
 
 			monitor.setActiveSession(session);
 			// Run-state notifications precede deferrable wire-level `agent_end`,
@@ -3898,6 +3921,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					isolated: worktree !== undefined,
 					agentIdleTtlMs,
 					reviveSession,
+					assignmentGeneration,
 					cleanupDeadlineAt,
 					onCleanupDeferred: completion => {
 						deferredSessionShutdown = completion;

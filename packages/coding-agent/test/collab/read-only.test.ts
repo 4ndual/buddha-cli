@@ -356,6 +356,7 @@ describe("collab read-only links", () => {
 			session,
 			sessionFile: "/tmp/Remote-Killed-Sub.jsonl",
 			status: "running",
+			assignment: "work interrupted by the remote kill",
 		});
 		const killed = Promise.withResolvers<void>();
 		const unsubscribe = registry.onChange(event => {
