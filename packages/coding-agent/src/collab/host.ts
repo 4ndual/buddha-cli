@@ -615,7 +615,13 @@ export class CollabHost {
 				// Mirrors the hub's #submitChatMessage: revive if parked, steer if mid-turn.
 				AgentLifecycleManager.global()
 					.ensureLive(agentId)
-					.then(session => session.prompt(trimmed, { streamingBehavior: "steer" }))
+					.then(session => {
+						const registry = AgentRegistry.global();
+						const generation = registry.beginAssignment(agentId, trimmed, session);
+						return session
+							.prompt(trimmed, { streamingBehavior: "steer" })
+							.finally(() => registry.completeAssignment(agentId, generation, "idle", session));
+					})
 					.catch(fail);
 				break;
 			}

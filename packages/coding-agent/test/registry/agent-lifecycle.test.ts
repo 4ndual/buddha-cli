@@ -110,6 +110,7 @@ describe("AgentLifecycleManager", () => {
 		const stub = makeSessionStub();
 		registerIdleSub("2-Sub", stub.session);
 		lifecycle.adopt("2-Sub", { idleTtlMs: TTL });
+		registry.beginAssignment("2-Sub", "new work");
 		registry.setStatus("2-Sub", "running");
 
 		vi.advanceTimersByTime(TTL * 10);
@@ -193,7 +194,14 @@ describe("AgentLifecycleManager", () => {
 		expect(await lifecycle.reclaimDeadCorpse("Corpse-Sub", corpse)).toBe(true);
 		expect(registry.get("Corpse-Sub")).toBeUndefined();
 		const respawn = registry.registerIfAvailable(
-			{ id: "Corpse-Sub", displayName: "task", kind: "sub", session: null, status: "running" },
+			{
+				id: "Corpse-Sub",
+				displayName: "task",
+				kind: "sub",
+				session: null,
+				status: "running",
+				assignment: "replacement work",
+			},
 			null,
 		);
 		expect(respawn?.status).toBe("running");

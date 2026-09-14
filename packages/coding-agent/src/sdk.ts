@@ -593,6 +593,8 @@ export interface CreateAgentSessionOptions {
 	agentId?: string;
 	/** Display name for the agent in IRC. Default: "main" or "sub". */
 	agentDisplayName?: string;
+	/** Explicit work owned by the initial running generation of a subagent. */
+	assignment?: string;
 	/**
 	 * Agent definition name used to evaluate rule `agents` scoping. Defaults to
 	 * "main" for a top-level session / "sub" for a subagent.
@@ -3355,7 +3357,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			session: null,
 			sessionFile: sessionManager.getSessionFile() ?? null,
 			status: "running" as const,
+			assignment: options.assignment,
 		};
+		if (agentKind !== "main" && !options.assignment?.trim() && options.expectedAgentRef === null) {
+			throw new Error(`Running subagent "${resolvedAgentId}" requires a nonempty explicit assignment.`);
+		}
 		registeredAgentRef =
 			options.expectedAgentRef === undefined
 				? agentRegistry.register(registrationInput)
