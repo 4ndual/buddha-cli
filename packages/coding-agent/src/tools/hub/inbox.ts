@@ -12,20 +12,44 @@ export interface HubInboxScope {
 	id: string;
 }
 
-export type HubConversationKind = "direct" | "group";
+export type HubConversationKind = "direct" | "group" | "broadcast";
 export type HubTimelineKind = "message" | "async_result" | "lifecycle";
 
-export interface HubTimelineEntry {
+interface HubTimelineEntryBase {
 	id: string;
 	conversationId: string;
-	kind: HubTimelineKind;
 	senderId?: string;
 	body: string;
 	ts: number;
 	replyTo?: string;
 	delivery?: IrcDeliveryReceipt[];
-	metadata?: Record<string, unknown>;
 }
+
+export type HubAsyncResultStatus = "succeeded" | "failed" | "cancelled";
+export type HubLifecycleAction = "delivery" | "wake" | "revive" | "park" | "join" | "leave";
+export type HubTimelineEntry =
+	| (HubTimelineEntryBase & {
+			kind: "message";
+			metadata?: Record<string, unknown>;
+	  })
+	| (HubTimelineEntryBase & {
+			kind: "async_result";
+			metadata: {
+				jobId: string;
+				status: HubAsyncResultStatus;
+				recipientId?: string;
+				outputPath?: string;
+			};
+	  })
+	| (HubTimelineEntryBase & {
+			kind: "lifecycle";
+			metadata: {
+				action: HubLifecycleAction;
+				agentId?: string;
+				outcome?: IrcDeliveryReceipt["outcome"];
+				detail?: string;
+			};
+	  });
 
 export interface HubChannel {
 	id: string;
@@ -53,9 +77,16 @@ interface PersistedInbox {
 	readThrough: Record<string, Record<string, number>>;
 }
 
-const EMPTY: PersistedInbox = { version: 1, channels: [], entries: [], readThrough: {} };
+const EMPTY: PersistedInbox = {
+	version: 1,
+	channels: [],
+	entries: [],
+	readThrough: {},
+};
+const HUB_SCOPE_KINDS = new Set<HubInboxScopeKind>(["root", "workspace", "tree", "global"]);
 
 export function hubScopeKey(scope: HubInboxScope): string {
+	if (!HUB_SCOPE_KINDS.has(scope.kind)) throw new Error(`Unsupported Hub inbox scope "${String(scope.kind)}"`);
 	const id = scope.id.trim();
 	if (!id) throw new Error("Hub inbox scope id is required");
 	return `${scope.kind}-${createHash("sha256").update(id).digest("hex").slice(0, 24)}`;
@@ -84,11 +115,22 @@ function validateState(value: unknown): PersistedInbox {
 /** JSON-backed scope store. Writes are serialized and replaced atomically. */
 export class HubInboxStore {
 	readonly file: string;
+	readonly scope: HubInboxScope;
+	readonly dataDirectory: string;
 	#state?: PersistedInbox;
 	#writeTail: Promise<void> = Promise.resolve();
 
 	constructor(dataDirectory: string, scope: HubInboxScope) {
+		this.dataDirectory = dataDirectory;
+		hubScopeKey(scope);
+		this.scope = { kind: scope.kind, id: scope.id.trim() };
 		this.file = path.join(dataDirectory, "hub-inbox", `${hubScopeKey(scope)}.json`);
+	}
+
+	forScope(scope: HubInboxScope): HubInboxStore {
+		return scope.kind === this.scope.kind && scope.id === this.scope.id
+			? this
+			: new HubInboxStore(this.dataDirectory, scope);
 	}
 
 	async #load(): Promise<PersistedInbox> {
@@ -109,7 +151,9 @@ export class HubInboxStore {
 			result = change(state);
 			await fs.mkdir(path.dirname(this.file), { recursive: true, mode: 0o700 });
 			const temporary = `${this.file}.${process.pid}.${randomUUID()}.tmp`;
-			await fs.writeFile(temporary, `${JSON.stringify(state)}\n`, { mode: 0o600 });
+			await fs.writeFile(temporary, `${JSON.stringify(state)}\n`, {
+				mode: 0o600,
+			});
 			await fs.rename(temporary, this.file);
 		});
 		await this.#writeTail;
@@ -169,8 +213,13 @@ export class HubInboxStore {
 
 	async append(entry: HubTimelineEntry): Promise<HubTimelineEntry> {
 		return this.#mutate(state => {
+			const existing = state.entries.find(item => item.id === entry.id);
+			if (existing) return structuredClone(existing);
 			const latestTs = state.entries.at(-1)?.ts ?? 0;
-			const stored = { ...structuredClone(entry), ts: Math.max(entry.ts, latestTs + 1) };
+			const stored = {
+				...structuredClone(entry),
+				ts: Math.max(entry.ts, latestTs + 1),
+			};
 			state.entries.push(stored);
 			const channel = state.channels.find(item => item.id === entry.conversationId);
 			if (channel) channel.updatedAt = Math.max(channel.updatedAt, stored.ts);
@@ -184,9 +233,19 @@ export class HubInboxStore {
 			.map(entry => structuredClone(entry));
 	}
 
-	async markRead(agentId: string, conversationId: string, through = Date.now()): Promise<void> {
+	async replyTarget(conversationId: string, replyTo: string): Promise<HubTimelineEntry> {
+		const target = (await this.#load()).entries.find(entry => entry.id === replyTo);
+		if (!target) throw new Error(`Unknown Hub reply target "${replyTo}"`);
+		if (target.conversationId !== conversationId) throw new Error("Hub replies cannot cross conversations");
+		return structuredClone(target);
+	}
+
+	async markRead(agentId: string, conversationId: string, through?: number): Promise<void> {
 		await this.#mutate(state => {
-			(state.readThrough[agentId] ??= {})[conversationId] = through;
+			const latest = state.entries.filter(entry => entry.conversationId === conversationId).at(-1)?.ts ?? 0;
+			const next = Math.min(through ?? latest, latest);
+			const reads = (state.readThrough[agentId] ??= {});
+			reads[conversationId] = Math.max(reads[conversationId] ?? 0, next);
 		});
 	}
 
@@ -194,22 +253,29 @@ export class HubInboxStore {
 		const state = await this.#load();
 		const ids = new Set<string>();
 		for (const entry of state.entries) {
-			if (entry.senderId === agentId || entry.conversationId.includes(encodeURIComponent(agentId)))
-				ids.add(entry.conversationId);
+			const directMembers = entry.conversationId.startsWith("direct:")
+				? entry.conversationId.slice("direct:".length).split(":").map(decodeURIComponent)
+				: [];
+			if (entry.senderId === agentId || directMembers.includes(agentId)) ids.add(entry.conversationId);
 		}
+		for (const peer of agents.values()) if (peer.id !== agentId) ids.add(directConversationId(agentId, peer.id));
 		for (const channel of state.channels) if (channel.members.includes(agentId)) ids.add(channel.id);
+		ids.add("broadcast:all");
 		const summaries: HubConversationSummary[] = [];
 		for (const id of ids) {
 			const channel = state.channels.find(item => item.id === id);
 			const entries = state.entries.filter(entry => entry.conversationId === id);
 			const last = entries.at(-1);
-			const members = channel?.members ?? [...id.slice("direct:".length).split(":").map(decodeURIComponent)];
+			const broadcast = id === "broadcast:all";
+			const members = broadcast
+				? []
+				: (channel?.members ?? [...id.slice("direct:".length).split(":").map(decodeURIComponent)]);
 			const peer = members.find(member => member !== agentId);
 			const readThrough = state.readThrough[agentId]?.[id] ?? 0;
 			summaries.push({
 				id,
-				kind: channel ? "group" : "direct",
-				title: channel?.name ?? agents.get(peer ?? "")?.displayName ?? peer ?? id,
+				kind: broadcast ? "broadcast" : channel ? "group" : "direct",
+				title: broadcast ? "Broadcasts" : (channel?.name ?? agents.get(peer ?? "")?.displayName ?? peer ?? id),
 				members,
 				preview: last?.body,
 				updatedAt: last?.ts ?? channel?.updatedAt ?? 0,
@@ -222,16 +288,77 @@ export class HubInboxStore {
 
 export type HubLiveEvent =
 	| { type: "entry"; entry: HubTimelineEntry }
-	| { type: "broadcast"; id: string; from: string; body: string; ts: number; receipts: IrcDeliveryReceipt[] };
+	| {
+			type: "broadcast";
+			id: string;
+			from: string;
+			body: string;
+			ts: number;
+			receipts: IrcDeliveryReceipt[];
+	  };
 
 /** Host-facing native inbox API layered on the existing IrcBus. */
 export class HubInboxService {
 	readonly #listeners = new Set<(event: HubLiveEvent) => void>();
+	readonly #busRecordsDeliveries: boolean;
+	readonly #stores = new Map<string, HubInboxStore>();
 	constructor(
 		readonly store: HubInboxStore,
 		readonly registry: AgentRegistry,
 		readonly bus = IrcBus.global(),
-	) {}
+	) {
+		this.#stores.set(hubScopeKey(store.scope), store);
+		this.#busRecordsDeliveries =
+			typeof this.bus.onDelivery === "function" && typeof this.bus.sendTracked === "function";
+		this.bus.onDelivery?.(async (message, receipt) => {
+			const entry = await this.storeFor(message.hubScope).append({
+				id: message.id,
+				conversationId: directConversationId(message.from, message.to),
+				kind: "message",
+				senderId: message.from,
+				body: message.body,
+				ts: message.ts,
+				replyTo: message.replyTo,
+				delivery: [receipt],
+			});
+			this.#emit({ type: "entry", entry });
+		});
+	}
+	storeFor(scope: HubInboxScope = this.store.scope): HubInboxStore {
+		const key = hubScopeKey(scope);
+		let selected = this.#stores.get(key);
+		if (!selected) {
+			selected = this.store.forScope(scope);
+			this.#stores.set(key, selected);
+		}
+		return selected;
+	}
+
+	async snapshot(agentId: string, scope: HubInboxScope = this.store.scope) {
+		this.#agent(agentId);
+		const agents = this.identities();
+		return {
+			agents,
+			conversations: await this.storeFor(scope).conversations(
+				agentId,
+				new Map(agents.map(agent => [agent.id, agent])),
+			),
+			channels: await this.storeFor(scope).listChannels(),
+			scope: { ...scope },
+		};
+	}
+	history(conversationId: string, scope: HubInboxScope = this.store.scope): Promise<HubTimelineEntry[]> {
+		return this.storeFor(scope).history(conversationId);
+	}
+	markRead(
+		agentId: string,
+		conversationId: string,
+		through?: number,
+		scope: HubInboxScope = this.store.scope,
+	): Promise<void> {
+		this.#agent(agentId);
+		return this.storeFor(scope).markRead(agentId, conversationId, through);
+	}
 
 	onEvent(listener: (event: HubLiveEvent) => void): () => void {
 		this.#listeners.add(listener);
@@ -249,54 +376,89 @@ export class HubInboxService {
 	identities(): AgentRef[] {
 		return this.registry.list().filter(ref => ref.kind !== "advisor" && ref.status !== "aborted");
 	}
-	async createChannel(from: string, name: string, members: string[]): Promise<HubChannel> {
+	async createChannel(
+		from: string,
+		name: string,
+		members: string[],
+		scope: HubInboxScope = this.store.scope,
+	): Promise<HubChannel> {
 		this.#agent(from);
 		for (const member of members) this.#agent(member);
-		return this.store.createChannel(name, members, from);
+		return this.storeFor(scope).createChannel(name, members, from);
 	}
-	listChannels(agentId?: string): Promise<HubChannel[]> {
+	listChannels(agentId?: string, scope: HubInboxScope = this.store.scope): Promise<HubChannel[]> {
 		if (agentId) this.#agent(agentId);
-		return this.store.listChannels(agentId);
+		return this.storeFor(scope).listChannels(agentId);
 	}
-	async joinChannel(channelId: string, agentId: string): Promise<HubChannel> {
+	async joinChannel(channelId: string, agentId: string, scope: HubInboxScope = this.store.scope): Promise<HubChannel> {
 		this.#agent(agentId);
-		return this.store.join(channelId, agentId);
+		return this.storeFor(scope).join(channelId, agentId);
 	}
-	leaveChannel(channelId: string, agentId: string): Promise<HubChannel> {
+	leaveChannel(channelId: string, agentId: string, scope: HubInboxScope = this.store.scope): Promise<HubChannel> {
 		this.#agent(agentId);
-		return this.store.leave(channelId, agentId);
+		return this.storeFor(scope).leave(channelId, agentId);
 	}
 
-	async sendDirect(from: string, to: string, body: string, replyTo?: string): Promise<HubTimelineEntry> {
+	async sendDirect(
+		from: string,
+		to: string,
+		body: string,
+		replyTo?: string,
+		scope: HubInboxScope = this.store.scope,
+	): Promise<HubTimelineEntry> {
 		this.#agent(from);
 		this.#agent(to);
 		if (from === to) throw new Error("Cannot send a message to yourself");
 		if (!body.trim()) throw new Error("Message body is required");
-		const receipt = await this.bus.send({ from, to, body: body.trim(), replyTo });
-		const entry = await this.store.append({
-			id: randomUUID(),
-			conversationId: directConversationId(from, to),
-			kind: "message",
-			senderId: from,
-			body: body.trim(),
-			ts: Date.now(),
-			replyTo,
-			delivery: [receipt],
-		});
-		this.#emit({ type: "entry", entry });
+		const conversationId = directConversationId(from, to);
+		if (replyTo) await this.storeFor(scope).replyTarget(conversationId, replyTo);
+		const tracked = this.#busRecordsDeliveries
+			? await this.bus.sendTracked({ from, to, body: body.trim(), replyTo, hubScope: scope })
+			: undefined;
+		const receipt =
+			tracked?.receipt ?? (await this.bus.send({ from, to, body: body.trim(), replyTo, hubScope: scope }));
+		if (!this.#busRecordsDeliveries) {
+			const entry = await this.storeFor(scope).append({
+				id: randomUUID(),
+				conversationId,
+				kind: "message",
+				senderId: from,
+				body: body.trim(),
+				ts: Date.now(),
+				replyTo,
+				delivery: [receipt],
+			});
+			this.#emit({ type: "entry", entry });
+			return entry;
+		}
+		const entries = await this.storeFor(scope).history(conversationId);
+		const entry = entries.find(item => item.id === tracked?.message.id);
+		if (!entry) throw new Error(`Hub message delivery to "${receipt.to}" was not recorded`);
 		return entry;
 	}
 
-	async sendGroup(from: string, channelId: string, body: string, replyTo?: string): Promise<HubTimelineEntry> {
+	async sendGroup(
+		from: string,
+		channelId: string,
+		body: string,
+		replyTo?: string,
+		scope: HubInboxScope = this.store.scope,
+	): Promise<HubTimelineEntry> {
 		this.#agent(from);
-		const channel = await this.store.channel(channelId);
+		const selectedStore = this.storeFor(scope);
+		const channel = await selectedStore.channel(channelId);
 		if (!channel || !channel.members.includes(from))
 			throw new Error(`Agent "${from}" is not a member of "${channelId}"`);
 		if (!body.trim()) throw new Error("Message body is required");
+		if (replyTo) await selectedStore.replyTarget(channelId, replyTo);
 		const receipts = await Promise.all(
-			channel.members.filter(id => id !== from).map(to => this.bus.send({ from, to, body: body.trim(), replyTo })),
+			channel.members
+				.filter(id => id !== from)
+				.map(to =>
+					this.bus.send({ from, to, body: body.trim(), replyTo, hubScope: scope }, { suppressInbox: true }),
+				),
 		);
-		const entry = await this.store.append({
+		const entry = await selectedStore.append({
 			id: randomUUID(),
 			conversationId: channelId,
 			kind: "message",
@@ -310,32 +472,69 @@ export class HubInboxService {
 		return entry;
 	}
 
-	async broadcast(from: string, body: string): Promise<HubLiveEvent> {
+	async broadcast(from: string, body: string, scope: HubInboxScope = this.store.scope): Promise<HubTimelineEntry> {
 		this.#agent(from);
 		if (!body.trim()) throw new Error("Message body is required");
 		const receipts = await Promise.all(
-			this.registry.listVisibleTo(from).map(ref => this.bus.send({ from, to: ref.id, body: body.trim() })),
+			this.registry
+				.listVisibleTo(from)
+				.map(ref =>
+					this.bus.send({ from, to: ref.id, body: body.trim(), hubScope: scope }, { suppressInbox: true }),
+				),
 		);
-		const event: HubLiveEvent = {
-			type: "broadcast",
+		const entry = await this.storeFor(scope).append({
 			id: randomUUID(),
-			from,
+			conversationId: "broadcast:all",
+			kind: "message",
+			senderId: from,
 			body: body.trim(),
 			ts: Date.now(),
+			delivery: receipts,
+		});
+		const event: HubLiveEvent = {
+			type: "broadcast",
+			id: entry.id,
+			from,
+			body: entry.body,
+			ts: entry.ts,
 			receipts,
 		};
 		this.#emit(event);
-		return event;
+		return entry;
 	}
 
 	async recordEvent(
 		conversationId: string,
 		kind: Exclude<HubTimelineKind, "message">,
 		body: string,
-		metadata?: Record<string, unknown>,
+		metadata: HubTimelineEntry["metadata"],
+		scope: HubInboxScope = this.store.scope,
 	): Promise<HubTimelineEntry> {
-		const entry = await this.store.append({ id: randomUUID(), conversationId, kind, body, ts: Date.now(), metadata });
+		const entry = await this.storeFor(scope).append({
+			id: randomUUID(),
+			conversationId,
+			kind,
+			body,
+			ts: Date.now(),
+			metadata,
+		} as HubTimelineEntry);
 		this.#emit({ type: "entry", entry });
 		return entry;
+	}
+	async recordAsyncResult(
+		conversationId: string,
+		body: string,
+		metadata: Extract<HubTimelineEntry, { kind: "async_result" }>["metadata"],
+		scope?: HubInboxScope,
+	): Promise<HubTimelineEntry> {
+		return this.recordEvent(conversationId, "async_result", body, metadata, scope);
+	}
+	async recordLifecycle(
+		conversationId: string,
+		body: string,
+		metadata: Extract<HubTimelineEntry, { kind: "lifecycle" }>["metadata"],
+		scope?: HubInboxScope,
+	): Promise<HubTimelineEntry> {
+		return this.recordEvent(conversationId, "lifecycle", body, metadata, scope);
 	}
 }

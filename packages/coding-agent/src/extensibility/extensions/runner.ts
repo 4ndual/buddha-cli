@@ -438,6 +438,7 @@ interface ToolRegistrationScope {
 }
 
 export class ExtensionRunner {
+	static #sharedHubInbox: HubInboxService | undefined;
 	readonly #hubInbox: HubInboxService;
 	#uiContext: ExtensionUIContext;
 	#mode: ExtensionMode = "print";
@@ -449,6 +450,8 @@ export class ExtensionRunner {
 	#abortFn: () => void = () => {};
 	#hasPendingMessagesFn: () => boolean = () => false;
 	#getContextUsageFn: () => ContextUsage | undefined = () => undefined;
+	#getTodoPhasesFn: () => unknown[] = () => [];
+	#setTodoPhasesFn: (phases: unknown[]) => void = () => {};
 	#compactFn: (instructionsOrOptions?: string | CompactOptions) => Promise<void> = async () => {};
 	#getSystemPromptFn: () => string[] = () => [];
 	#getAsyncJobSnapshotFn: () => AsyncJobSnapshot | null = () => null;
@@ -458,6 +461,7 @@ export class ExtensionRunner {
 	#switchSessionHandler: SwitchSessionHandler = async () => ({ cancelled: false });
 	#reloadHandler: () => Promise<void> = async () => {};
 	#shutdownHandler: ShutdownHandler = () => {};
+	#setToolApprovalHandler?: (toolName: string, policy: "allow" | "deny" | "prompt") => void;
 	#getMemoryFn?: () => MemoryRuntimeContext | undefined;
 	#commandDiagnostics: Array<{ type: string; message: string; path: string }> = [];
 	#toolRegistrationScope = new AsyncLocalStorage<ToolRegistrationScope>();
@@ -614,14 +618,14 @@ export class ExtensionRunner {
 		getAsyncJobSnapshot?: () => AsyncJobSnapshot | null,
 	) {
 		this.#uiContext = noOpUIContext;
+		const sessionFile = (this.sessionManager as SessionManager & { getSessionFile?: () => string | undefined })
+			.getSessionFile?.();
+		const sessionID = (this.sessionManager as SessionManager & { getSessionId?: () => string }).getSessionId?.() ?? "unsaved";
 		const hubDataDirectory = path.dirname(
-			this.sessionManager.getSessionFile() ?? path.join(os.homedir(), ".omp", "agent", "sessions", "unsaved.jsonl"),
+			sessionFile ?? path.join(os.homedir(), ".omp", "agent", "sessions", "unsaved.jsonl"),
 		);
-		this.#hubInbox = new HubInboxService(
-			new HubInboxStore(hubDataDirectory, {
-				kind: "root",
-				id: this.sessionManager.getSessionId(),
-			}),
+		this.#hubInbox = ExtensionRunner.#sharedHubInbox ??= new HubInboxService(
+			new HubInboxStore(hubDataDirectory, { kind: "root", id: sessionID }),
 			AgentRegistry.global(),
 		);
 		this.#getMemoryFn = getMemory;
@@ -697,8 +701,14 @@ export class ExtensionRunner {
 		this.#abortFn = contextActions.abort;
 		this.#hasPendingMessagesFn = contextActions.hasPendingMessages;
 		this.#shutdownHandler = contextActions.shutdown;
+		this.#setToolApprovalHandler = contextActions.setToolApproval;
 		this.#getContextUsageFn = contextActions.getContextUsage;
+		this.#getTodoPhasesFn = contextActions.getTodoPhases ?? (() => []);
+		this.#setTodoPhasesFn = contextActions.setTodoPhases ?? (() => {});
 		this.#compactFn = contextActions.compact;
+		if (contextActions.newSession) this.#newSessionHandler = contextActions.newSession;
+		if (contextActions.branch) this.#branchHandler = contextActions.branch;
+		if (contextActions.navigateTree) this.#navigateTreeHandler = contextActions.navigateTree;
 		this.#getSystemPromptFn = contextActions.getSystemPrompt;
 
 		// Command context actions (optional, only for interactive mode)
@@ -1186,7 +1196,12 @@ export class ExtensionRunner {
 			ui: this.#uiContext,
 			mode: this.#mode,
 			getContextUsage: () => this.#getContextUsageFn(),
+			getTodoPhases: () => this.#getTodoPhasesFn(),
+			setTodoPhases: phases => this.#setTodoPhasesFn(phases),
 			compact: instructionsOrOptions => this.#compactFn(instructionsOrOptions),
+			newSession: options => this.#newSessionHandler(options),
+			branch: entryId => this.#branchHandler(entryId),
+			navigateTree: (targetId, options) => this.#navigateTreeHandler(targetId, options),
 			getAsyncJobSnapshot: () => this.#getAsyncJobSnapshotFn(),
 			hasUI: this.hasUI(),
 			cwd: this.cwd,
@@ -1201,6 +1216,9 @@ export class ExtensionRunner {
 			abort: () => this.#abortFn(),
 			hasPendingMessages: () => this.#hasPendingMessagesFn(),
 			shutdown: () => this.#shutdownHandler(),
+			setToolApproval: this.#setToolApprovalHandler
+				? (toolName, policy) => this.#setToolApprovalHandler?.(toolName, policy)
+				: undefined,
 			getSystemPrompt: () => this.#getSystemPromptFn(),
 			localProtocolOptions: this.localProtocolOptions,
 			hubInbox: this.#hubInbox,

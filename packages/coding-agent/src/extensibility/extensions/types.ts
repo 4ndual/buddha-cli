@@ -462,8 +462,21 @@ export interface ExtensionContext {
 	getContextUsage(): ContextUsage | undefined;
 	/** Get a read-only snapshot of async jobs owned by this session. */
 	getAsyncJobSnapshot(): AsyncJobSnapshot | null;
+	/** Read the owning session's structured Todo-tool phases. */
+	getTodoPhases(): unknown[];
+	/** Replace the owning session's structured Todo-tool phases. */
+	setTodoPhases(phases: unknown[]): void;
 	/** Compact the session context (interactive mode shows UI). */
 	compact(instructionsOrOptions?: string | CompactOptions): Promise<void>;
+	/** Start a new session, optionally with initialization. */
+	newSession(options?: {
+		parentSession?: string;
+		setup?: (sessionManager: SessionManager) => Promise<void>;
+	}): Promise<{ cancelled: boolean }>;
+	/** Branch from a specific entry, creating a new session file. */
+	branch(entryId: string): Promise<{ cancelled: boolean }>;
+	/** Navigate to a different point in the session tree. */
+	navigateTree(targetId: string, options?: { summarize?: boolean }): Promise<{ cancelled: boolean }>;
 	/** Whether UI is available (false in print/RPC mode) */
 	hasUI: boolean;
 	/** Current working directory */
@@ -488,6 +501,8 @@ export interface ExtensionContext {
 	hasPendingMessages(): boolean;
 	/** Gracefully shutdown and exit. */
 	shutdown(): void;
+	/** Persist a per-tool approval policy for subsequent calls. */
+	setToolApproval?(toolName: string, policy: "allow" | "deny" | "prompt"): void;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string[];
 	/** Structured memory runtime for status/search/save across the configured backend. */
@@ -1722,8 +1737,17 @@ export interface ExtensionContextActions {
 	abort: () => void;
 	hasPendingMessages: () => boolean;
 	shutdown: () => void;
+	setToolApproval?: (toolName: string, policy: "allow" | "deny" | "prompt") => void;
 	getContextUsage: () => ContextUsage | undefined;
+	getTodoPhases?: () => unknown[];
+	setTodoPhases?: (phases: unknown[]) => void;
 	compact: (instructionsOrOptions?: string | CompactOptions) => Promise<void>;
+	newSession?: (options?: {
+		parentSession?: string;
+		setup?: (sessionManager: SessionManager) => Promise<void>;
+	}) => Promise<{ cancelled: boolean }>;
+	branch?: (entryId: string) => Promise<{ cancelled: boolean }>;
+	navigateTree?: (targetId: string, options?: { summarize?: boolean }) => Promise<{ cancelled: boolean }>;
 	getSystemPrompt: () => string[];
 }
 

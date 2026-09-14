@@ -31,6 +31,7 @@ import { HookSelectorComponent, type HookSelectorSlider } from "../../modes/comp
 import { getAvailableThemesWithPaths, getThemeByName, setTheme, type Theme, theme } from "../../modes/theme/theme";
 import type { InteractiveModeContext, InteractiveSelectorDialogOptions } from "../../modes/types";
 import { normalizeCustomMessagePayload, USER_INTERRUPT_LABEL } from "../../session/messages";
+import type { TodoPhase } from "../../tools/todo";
 import { setExtensionTerminalTitle, setSessionTerminalTitle } from "../../utils/title-generator";
 
 const MAX_WIDGET_LINES = 10;
@@ -211,12 +212,21 @@ export class ExtensionUiController {
 				// steering / follow-up messages drain first (see issue #1020).
 				this.ctx.shutdownRequested = true;
 			},
+			setToolApproval: (toolName, policy) => {
+				const policies = { ...((this.ctx.settings.get("tools.approval") ?? {}) as Record<string, unknown>) };
+				policies[toolName] = policy;
+				this.ctx.settings.set("tools.approval", policies);
+			},
 			getContextUsage: () => this.ctx.session.getContextUsage(),
+			getTodoPhases: () => this.ctx.session.getTodoPhases(),
+			setTodoPhases: phases => this.ctx.session.setTodoPhases(phases as TodoPhase[]),
 			compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
 		};
 		const commandActions: ExtensionCommandContextActions = {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
+			getTodoPhases: () => this.ctx.session.getTodoPhases(),
+			setTodoPhases: phases => this.ctx.session.setTodoPhases(phases as TodoPhase[]),
 			waitForIdle: () => this.ctx.session.agent.waitForIdle(),
 			reload: async () => {
 				await this.ctx.session.reload();
@@ -443,6 +453,11 @@ export class ExtensionUiController {
 				// `checkShutdownRequested()` at idle boundaries so any queued
 				// steering / follow-up messages drain first (see issue #1020).
 				this.ctx.shutdownRequested = true;
+			},
+			setToolApproval: (toolName, policy) => {
+				const policies = { ...((this.ctx.settings.get("tools.approval") ?? {}) as Record<string, unknown>) };
+				policies[toolName] = policy;
+				this.ctx.settings.set("tools.approval", policies);
 			},
 			getContextUsage: () => this.ctx.session.getContextUsage(),
 			compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),

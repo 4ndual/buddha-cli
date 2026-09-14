@@ -39,6 +39,8 @@ export interface IrcMessage {
 	 * ping-pong forever.
 	 */
 	wakeRelay?: boolean;
+	/** Durable Hub partition provenance. Omitted for legacy/tool-only IRC traffic. */
+	hubScope?: { kind: "root" | "workspace" | "tree" | "global"; id: string };
 }
 
 export interface IrcDeliveryReceipt {
@@ -91,12 +93,18 @@ export class IrcBus {
 	readonly #waiters = new Map<string, IrcWaiter[]>();
 	/** Timestamp of the latest successful send per `from` → `to`; see {@link sentSince}. */
 	readonly #lastSent = new Map<string, Map<string, number>>();
+	readonly #deliveryListeners = new Set<(message: IrcMessage, receipt: IrcDeliveryReceipt) => void | Promise<void>>();
 
 	constructor(registry: AgentRegistry = AgentRegistry.global(), lifecycle?: AgentLifecycleManager) {
 		this.#registry = registry;
 		// Lazy: the lifecycle global self-constructs against the global registry,
 		// so only touch it when a parked recipient actually needs reviving.
 		this.#lifecycle = () => lifecycle ?? AgentLifecycleManager.global();
+	}
+
+	onDelivery(listener: (message: IrcMessage, receipt: IrcDeliveryReceipt) => void | Promise<void>): () => void {
+		this.#deliveryListeners.add(listener);
+		return () => this.#deliveryListeners.delete(listener);
 	}
 
 	/**
@@ -125,9 +133,29 @@ export class IrcBus {
 	 */
 	async send(
 		msg: Omit<IrcMessage, "id" | "ts">,
-		opts?: { expectsReply?: boolean; suppressRelay?: boolean },
+		opts?: {
+			expectsReply?: boolean;
+			suppressRelay?: boolean;
+			suppressInbox?: boolean;
+		},
 	): Promise<IrcDeliveryReceipt> {
-		const message: IrcMessage = { ...msg, id: Snowflake.next(), ts: Date.now() };
+		return (await this.sendTracked(msg, opts)).receipt;
+	}
+
+	/** Same delivery as {@link send}, plus the generated identity used by durable inbox storage. */
+	async sendTracked(
+		msg: Omit<IrcMessage, "id" | "ts">,
+		opts?: {
+			expectsReply?: boolean;
+			suppressRelay?: boolean;
+			suppressInbox?: boolean;
+		},
+	): Promise<{ message: IrcMessage; receipt: IrcDeliveryReceipt }> {
+		const message: IrcMessage = {
+			...msg,
+			id: Snowflake.next(),
+			ts: Date.now(),
+		};
 		const receipt = await this.#deliver(message, opts);
 		if (receipt.outcome !== "failed") {
 			let sent = this.#lastSent.get(message.from);
@@ -137,7 +165,9 @@ export class IrcBus {
 			}
 			sent.set(message.to, message.ts);
 		}
-		return receipt;
+		if (!opts?.suppressInbox)
+			await Promise.all([...this.#deliveryListeners].map(listener => listener(message, receipt)));
+		return { message, receipt };
 	}
 
 	/**
@@ -152,7 +182,11 @@ export class IrcBus {
 
 	async #deliver(
 		message: IrcMessage,
-		opts?: { expectsReply?: boolean; suppressRelay?: boolean },
+		opts?: {
+			expectsReply?: boolean;
+			suppressRelay?: boolean;
+			suppressInbox?: boolean;
+		},
 	): Promise<IrcDeliveryReceipt> {
 		const ref = this.#registry.get(message.to);
 		if (!ref) {
@@ -223,7 +257,11 @@ export class IrcBus {
 
 		const session = this.#registry.get(message.to)?.session;
 		if (!session) {
-			return { to: message.to, outcome: "failed", error: `Agent "${message.to}" has no live session.` };
+			return {
+				to: message.to,
+				outcome: "failed",
+				error: `Agent "${message.to}" has no live session.`,
+			};
 		}
 
 		try {
@@ -501,7 +539,10 @@ export class IrcBus {
 			mainSession.emitIrcRelayObservation(record);
 		} catch (error) {
 			// Display-only forwarding must never affect delivery semantics.
-			logger.debug("IrcBus: main UI relay failed", { to: message.to, error: String(error) });
+			logger.debug("IrcBus: main UI relay failed", {
+				to: message.to,
+				error: String(error),
+			});
 		}
 	}
 }

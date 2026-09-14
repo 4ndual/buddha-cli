@@ -56,13 +56,14 @@ describe("native Hub inbox", () => {
 		expect(await new HubInboxStore(directory, { kind: "workspace", id: "root-a" }).listChannels()).toEqual([]);
 	});
 
-	test("broadcast is emitted once and never persisted", async () => {
+	test("broadcast is emitted and persisted exactly once", async () => {
 		const { service, store, sent } = await fixture();
 		const events: unknown[] = [];
 		service.onEvent(event => events.push(event));
 		await service.broadcast("Main", "heads up");
 		expect(sent.map(item => item.to).sort()).toEqual(["Child", "Sibling"]);
 		expect(events).toHaveLength(1);
-		expect(await store.conversations("Main", new Map())).toEqual([]);
+		expect((await store.history("broadcast:all")).map(entry => entry.body)).toEqual(["heads up"]);
+		expect((await store.conversations("Main", new Map())).filter(item => item.id === "broadcast:all")).toHaveLength(1);
 	});
 });
