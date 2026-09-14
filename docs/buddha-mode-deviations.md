@@ -1,4 +1,10 @@
-# Buddha mode — accepted deviations from the original MVP spec
+# Buddha mode — historical MVP deviation record
+
+This records the original fork implementation before profile extraction. Paths
+and the `buddhaMode` mechanism below are historical. The current architecture is
+documented in `docs/buddha-profile-migration.md`: profile-owned runtime and
+extensions replaced the static core coupling while preserving these behavioral
+decisions.
 
 Status: **all deviations below reviewed and accepted by Andres on 2026-09-09.**
 
@@ -133,17 +139,16 @@ a scope reduction: every acceptance requirement is still met by another route.
 
 ---
 
-## Known remaining limitations
+## Historical limitations resolved by profile extraction
 
 1. **Steering envelope.** `convertToLlm` re-applies `wrapSteeringUserMessage`
    (`src/session/messages.ts:1267-1271`), so a steering interjection still reaches Buddha wrapped
    in its envelope. Suppressing it needs a Buddha flag threaded into `messages.ts`, which every
    session shares. Not done.
-2. **Import graph coupling.** `main.ts` statically imports `buddha/session-overrides` →
-   `siddhi-tool` → `router`/`workers`/`metrics`. A resolution failure in any of those four files
-   breaks **every** session, not only Buddha ones.
+2. **Import graph coupling (resolved).** `main.ts` now loads only the active
+   named profile's `runtime.ts`; Buddha modules live below
+   `profiles/buddha-v1/agent/runtime` and cannot break stock startup.
 3. **Worker token spend** is not in the `/usage` rollup (see §4).
-4. **User-authored worker agents don't load in this fork.** `src/task/discovery.ts:32` compares
-   against the literal `".omp"` while `CONFIG_DIR_NAME` is `".buddha"`, so
-   `~/.buddha/agent/agents/*.md` is never discovered. Pre-existing fork bug, unrelated to Buddha
-   mode, left alone.
+4. **User-authored worker discovery (resolved).** Discovery uses the active
+   configuration directory and the installer imports the allowlisted agent
+   definitions into `buddha-v1`.
