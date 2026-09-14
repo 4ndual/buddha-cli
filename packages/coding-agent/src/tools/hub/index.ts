@@ -75,6 +75,7 @@ import {
 export { isWaitingPollDetails } from "./jobs";
 export type { LaunchParams, LaunchToolDetails } from "./launch";
 export { createIrcMessageCard, isIrcEnabled } from "./messaging";
+export * from "./inbox";
 export * from "./types";
 
 const hubSchema = type({
