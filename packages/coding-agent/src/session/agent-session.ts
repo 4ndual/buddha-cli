@@ -6733,6 +6733,9 @@ export class AgentSession {
 			},
 			getContextUsage: () => this.getContextUsage(),
 			getAsyncJobSnapshot: () => this.getAsyncJobSnapshot(),
+			getTodoPhases: () => this.getTodoPhases(),
+			setTodoPhases: phases => this.setTodoPhases(phases),
+			getExtensionService: () => undefined,
 			waitForIdle: () => this.waitForIdle(),
 			newSession: async options => {
 				const success = await this.newSession({ parentSession: options?.parentSession });

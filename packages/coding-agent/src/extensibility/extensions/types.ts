@@ -78,6 +78,7 @@ import type {
 	WriteToolInput,
 } from "../../tools";
 import type { ApprovalMode } from "../../tools/approval";
+import type { TodoPhase } from "../../tools/todo";
 import type { FileDeleteFallbackHandler, FileWriteFallbackHandler } from "../../tools/file-write-fallback";
 import type { EventBus } from "../../utils/event-bus";
 import type {
@@ -461,8 +462,16 @@ export interface ExtensionContext {
 	getContextUsage(): ContextUsage | undefined;
 	/** Get a read-only snapshot of async jobs owned by this session. */
 	getAsyncJobSnapshot(): AsyncJobSnapshot | null;
+	/** Read the owning session's structured Todo state. */
+	getTodoPhases(): TodoPhase[];
+	/** Replace the owning session's structured Todo state. */
+	setTodoPhases(phases: TodoPhase[]): void;
 	/** Compact the session context (interactive mode shows UI). */
 	compact(instructionsOrOptions?: string | CompactOptions): Promise<void>;
+	/** Branch the owning session at an existing entry. */
+	branch(entryId: string): Promise<{ cancelled: boolean }>;
+	/** Navigate the owning session tree without requiring a slash-command shim. */
+	navigateTree(targetId: string, options?: { summarize?: boolean }): Promise<{ cancelled: boolean }>;
 	/** Whether UI is available (false in print/RPC mode) */
 	hasUI: boolean;
 	/** Current working directory */
@@ -485,6 +494,8 @@ export interface ExtensionContext {
 	hasPendingMessages(): boolean;
 	/** Gracefully shutdown and exit. */
 	shutdown(): void;
+	/** Persist a per-tool approval policy when the current host supports it. */
+	setToolApproval?(toolName: string, policy: "allow" | "deny" | "prompt"): void;
 	/**
 	 * Whether the current project/workspace is trusted. OMP performs no
 	 * project-trust gating — project-level settings and extensions load
@@ -495,6 +506,8 @@ export interface ExtensionContext {
 	isProjectTrusted(): boolean;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string[];
+	/** Resolve a runtime service published by another loaded extension. */
+	getExtensionService<T = unknown>(name: string): T | undefined;
 	/** Structured memory runtime for status/search/save across the configured backend. */
 	memory?: MemoryRuntimeContext;
 	/**
@@ -1307,6 +1320,15 @@ export interface ExtensionAPI {
 	registerTool<TParams extends TSchema = TSchema, TDetails = unknown>(tool: ToolDefinition<TParams, TDetails>): void;
 
 	/**
+	 * Publish a namespaced runtime service for other loaded extensions.
+	 *
+	 * Services are scoped to this extension runtime and are not visible to other
+	 * profiles or sessions. Names must use a reverse-domain or package-style
+	 * namespace (for example `buddha.hub-inbox`). Duplicate names are rejected.
+	 */
+	registerExtensionService<T>(name: string, service: T): void;
+
+	/**
 	 * Register a fallback writer consulted when a native `write`/`edit` byte-write is
 	 * denied with a permission error (`EPERM`/`EACCES`/`EROFS`). Every other write
 	 * error is unaffected. Handlers run in registration order; the first one to
@@ -1693,6 +1715,8 @@ export type SetServiceTierHandler = (family: ServiceTierFamily, tier: ServiceTie
 /** Shared state created by loader, used during registration and runtime. */
 export interface ExtensionRuntimeState {
 	flagValues: Map<string, boolean | string>;
+	/** Services published by extensions in deterministic load order. */
+	extensionServices: Map<string, { value: unknown; sourceId: string }>;
 	/** Provider registrations queued during extension loading, processed during session initialization */
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; sourceId: string }>;
 	/** Queue a provider registration until initialization, then apply it immediately. */
@@ -1727,7 +1751,10 @@ export interface ExtensionContextActions {
 	abort: () => void;
 	hasPendingMessages: () => boolean;
 	shutdown: () => void;
+	setToolApproval?: (toolName: string, policy: "allow" | "deny" | "prompt") => void;
 	getContextUsage: () => ContextUsage | undefined;
+	getTodoPhases?: () => TodoPhase[];
+	setTodoPhases?: (phases: TodoPhase[]) => void;
 	compact: (instructionsOrOptions?: string | CompactOptions) => Promise<void>;
 	getSystemPrompt: () => string[];
 }

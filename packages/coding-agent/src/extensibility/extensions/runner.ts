@@ -19,6 +19,7 @@ import type { MemoryRuntimeContext } from "../../memory-backend";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { AsyncJobSnapshot } from "../../session/agent-session";
 import type { SessionManager } from "../../session/session-manager";
+import type { TodoPhase } from "../../tools/todo";
 import { addFileDeleteFallback, addFileWriteFallback } from "../../tools/file-write-fallback";
 import type { BranchHandler, NavigateTreeHandler, NewSessionHandler } from "../session-handler-types";
 import { ManagedTimers } from "./managed-timers";
@@ -444,6 +445,8 @@ export class ExtensionRunner {
 	#abortFn: () => void = () => {};
 	#hasPendingMessagesFn: () => boolean = () => false;
 	#getContextUsageFn: () => ContextUsage | undefined = () => undefined;
+	#getTodoPhasesFn: () => TodoPhase[] = () => [];
+	#setTodoPhasesFn: (phases: TodoPhase[]) => void = () => {};
 	#compactFn: (instructionsOrOptions?: string | CompactOptions) => Promise<void> = async () => {};
 	#getSystemPromptFn: () => string[] = () => [];
 	#getAsyncJobSnapshotFn: () => AsyncJobSnapshot | null = () => null;
@@ -453,6 +456,7 @@ export class ExtensionRunner {
 	#switchSessionHandler: SwitchSessionHandler = async () => ({ cancelled: false });
 	#reloadHandler: () => Promise<void> = async () => {};
 	#shutdownHandler: ShutdownHandler = () => {};
+	#setToolApprovalHandler?: (toolName: string, policy: "allow" | "deny" | "prompt") => void;
 	#getMemoryFn?: () => MemoryRuntimeContext | undefined;
 	#commandDiagnostics: Array<{ type: string; message: string; path: string }> = [];
 	#toolRegistrationScope = new AsyncLocalStorage<ToolRegistrationScope>();
@@ -682,7 +686,10 @@ export class ExtensionRunner {
 		this.#abortFn = contextActions.abort;
 		this.#hasPendingMessagesFn = contextActions.hasPendingMessages;
 		this.#shutdownHandler = contextActions.shutdown;
+		this.#setToolApprovalHandler = contextActions.setToolApproval;
 		this.#getContextUsageFn = contextActions.getContextUsage;
+		this.#getTodoPhasesFn = contextActions.getTodoPhases ?? (() => []);
+		this.#setTodoPhasesFn = contextActions.setTodoPhases ?? (() => {});
 		this.#compactFn = contextActions.compact;
 		this.#getSystemPromptFn = contextActions.getSystemPrompt;
 
@@ -1173,6 +1180,10 @@ export class ExtensionRunner {
 			getContextUsage: () => this.#getContextUsageFn(),
 			compact: instructionsOrOptions => this.#compactFn(instructionsOrOptions),
 			getAsyncJobSnapshot: () => this.#getAsyncJobSnapshotFn(),
+			getTodoPhases: () => this.#getTodoPhasesFn(),
+			setTodoPhases: phases => this.#setTodoPhasesFn(phases),
+			branch: entryId => this.#branchHandler(entryId),
+			navigateTree: (targetId, options) => this.#navigateTreeHandler(targetId, options),
 			hasUI: this.hasUI(),
 			cwd: this.cwd,
 			sessionManager: this.sessionManager,
@@ -1186,7 +1197,12 @@ export class ExtensionRunner {
 			abort: () => this.#abortFn(),
 			hasPendingMessages: () => this.#hasPendingMessagesFn(),
 			shutdown: () => this.#shutdownHandler(),
+			setToolApproval: this.#setToolApprovalHandler
+				? (toolName, policy) => this.#setToolApprovalHandler?.(toolName, policy)
+				: undefined,
 			getSystemPrompt: () => this.#getSystemPromptFn(),
+			getExtensionService: <T = unknown>(name: string): T | undefined =>
+				this.runtime.extensionServices.get(name)?.value as T | undefined,
 			localProtocolOptions: this.localProtocolOptions,
 			memory: this.#getMemoryFn?.(),
 			setInterval: (callback, ms, ...args) => this.#managedTimers.setInterval(callback, ms, ...args),

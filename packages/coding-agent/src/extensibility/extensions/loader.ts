@@ -74,6 +74,7 @@ export class ExtensionRuntimeNotInitializedError extends Error {
  */
 export class ExtensionRuntime implements IExtensionRuntime {
 	flagValues = new Map<string, boolean | string>();
+	extensionServices = new Map<string, { value: unknown; sourceId: string }>();
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; sourceId: string }> = [];
 
 	registerProvider(name: string, config: ProviderConfig, sourceId: string): void {
@@ -157,6 +158,7 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 	readonly arktype = type;
 	readonly zod = zod;
 	readonly flagValues = new Map<string, boolean | string>();
+	readonly extensionServices = new Map<string, { value: unknown; sourceId: string }>();
 	readonly pendingProviderRegistrations: Array<{
 		name: string;
 		config: ProviderConfig;
@@ -184,6 +186,20 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 		};
 		this.extension.tools.set(tool.name, registered);
 		for (const listener of this.extension.toolRegistrationListeners ?? []) listener(tool.name);
+	}
+
+	registerExtensionService<T>(name: string, service: T): void {
+		const normalized = name.trim();
+		if (!normalized || !normalized.includes(".")) {
+			throw new TypeError("Extension service names must be non-empty and namespaced");
+		}
+		const existing = this.runtime.extensionServices.get(normalized);
+		if (existing) {
+			throw new Error(
+				`Extension service "${normalized}" is already registered by ${existing.sourceId}`,
+			);
+		}
+		this.runtime.extensionServices.set(normalized, { value: service, sourceId: this.extension.path });
 	}
 
 	registerFileWriteFallback(handler: FileWriteFallbackHandler): void {
@@ -366,6 +382,7 @@ async function runExtensionFactory(
 	runtime: IExtensionRuntime,
 ): Promise<void> {
 	const providerRegistrationCheckpoint = [...runtime.pendingProviderRegistrations];
+	const serviceCheckpoint = new Map(runtime.extensionServices);
 
 	try {
 		await factory(api);
@@ -375,6 +392,8 @@ async function runExtensionFactory(
 			runtime.pendingProviderRegistrations.length,
 			...providerRegistrationCheckpoint,
 		);
+		runtime.extensionServices.clear();
+		for (const [name, registration] of serviceCheckpoint) runtime.extensionServices.set(name, registration);
 		throw error;
 	}
 }

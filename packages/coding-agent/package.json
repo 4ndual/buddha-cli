@@ -499,6 +499,10 @@
       "types": "./src/registry/*.ts",
       "import": "./src/registry/*.ts"
     },
+	"./irc/*": {
+	  "types": "./src/irc/*.ts",
+	  "import": "./src/irc/*.ts"
+	},
     "./secrets": {
       "types": "./src/secrets/index.ts",
       "import": "./src/secrets/index.ts"

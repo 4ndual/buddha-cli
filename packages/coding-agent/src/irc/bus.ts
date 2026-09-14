@@ -39,6 +39,8 @@ export interface IrcMessage {
 	 * ping-pong forever.
 	 */
 	wakeRelay?: boolean;
+	/** Optional extension-owned partition provenance for durable message projections. */
+	extensionScope?: { kind: string; id: string };
 }
 
 export interface IrcDeliveryReceipt {
@@ -91,12 +93,19 @@ export class IrcBus {
 	readonly #waiters = new Map<string, IrcWaiter[]>();
 	/** Timestamp of the latest successful send per `from` → `to`; see {@link sentSince}. */
 	readonly #lastSent = new Map<string, Map<string, number>>();
+	readonly #deliveryListeners = new Set<(message: IrcMessage, receipt: IrcDeliveryReceipt) => void | Promise<void>>();
 
 	constructor(registry: AgentRegistry = AgentRegistry.global(), lifecycle?: AgentLifecycleManager) {
 		this.#registry = registry;
 		// Lazy: the lifecycle global self-constructs against the global registry,
 		// so only touch it when a parked recipient actually needs reviving.
 		this.#lifecycle = () => lifecycle ?? AgentLifecycleManager.global();
+	}
+
+	/** Observe completed deliveries without changing the built-in mailbox semantics. */
+	onDelivery(listener: (message: IrcMessage, receipt: IrcDeliveryReceipt) => void | Promise<void>): () => void {
+		this.#deliveryListeners.add(listener);
+		return () => this.#deliveryListeners.delete(listener);
 	}
 
 	/**
@@ -125,8 +134,16 @@ export class IrcBus {
 	 */
 	async send(
 		msg: Omit<IrcMessage, "id" | "ts">,
-		opts?: { expectsReply?: boolean; suppressRelay?: boolean },
+		opts?: { expectsReply?: boolean; suppressRelay?: boolean; suppressObservers?: boolean },
 	): Promise<IrcDeliveryReceipt> {
+		return (await this.sendTracked(msg, opts)).receipt;
+	}
+
+	/** Deliver a message and return the generated identity used by external projections. */
+	async sendTracked(
+		msg: Omit<IrcMessage, "id" | "ts">,
+		opts?: { expectsReply?: boolean; suppressRelay?: boolean; suppressObservers?: boolean },
+	): Promise<{ message: IrcMessage; receipt: IrcDeliveryReceipt }> {
 		const message: IrcMessage = { ...msg, id: Snowflake.next(), ts: Date.now() };
 		const receipt = await this.#deliver(message, opts);
 		if (receipt.outcome !== "failed") {
@@ -137,7 +154,10 @@ export class IrcBus {
 			}
 			sent.set(message.to, message.ts);
 		}
-		return receipt;
+		if (!opts?.suppressObservers) {
+			await Promise.all([...this.#deliveryListeners].map(listener => listener(message, receipt)));
+		}
+		return { message, receipt };
 	}
 
 	/**
@@ -152,7 +172,7 @@ export class IrcBus {
 
 	async #deliver(
 		message: IrcMessage,
-		opts?: { expectsReply?: boolean; suppressRelay?: boolean },
+		opts?: { expectsReply?: boolean; suppressRelay?: boolean; suppressObservers?: boolean },
 	): Promise<IrcDeliveryReceipt> {
 		const ref = this.#registry.get(message.to);
 		if (!ref) {
