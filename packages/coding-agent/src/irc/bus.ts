@@ -94,6 +94,10 @@ export class IrcBus {
 	readonly #waiters = new Map<string, IrcWaiter[]>();
 	/** Timestamp of the latest successful send per `from` → `to`; see {@link sentSince}. */
 	readonly #lastSent = new Map<string, Map<string, number>>();
+	/** Extension projection provenance, inherited by replies through replyTo. */
+	readonly #extensionScopes = new Map<string, IrcMessage["extensionScope"]>();
+	/** Extension projection provenance, inherited by replies through replyTo. */
+	readonly #extensionScopes = new Map<string, IrcMessage["extensionScope"]>();
 	readonly #deliveryListeners = new Set<(message: IrcMessage, receipt: IrcDeliveryReceipt) => void | Promise<void>>();
 
 	constructor(registry: AgentRegistry = AgentRegistry.global(), lifecycle?: AgentLifecycleManager) {
@@ -154,11 +158,37 @@ export class IrcBus {
 			suppressObservers?: boolean;
 		},
 	): Promise<{ message: IrcMessage; receipt: IrcDeliveryReceipt }> {
+<<<<<<< HEAD
+		const inheritedScope = msg.extensionScope ?? (msg.replyTo ? this.#extensionScopes.get(msg.replyTo) : undefined);
 		const message: IrcMessage = {
 			...msg,
+			...(inheritedScope ? { extensionScope: inheritedScope } : {}),
 			id: Snowflake.next(),
 			ts: Date.now(),
 		};
+		if (message.extensionScope) {
+			this.#extensionScopes.set(message.id, message.extensionScope);
+			if (this.#extensionScopes.size > MAILBOX_CAP * 10) {
+				const oldest = this.#extensionScopes.keys().next().value;
+				if (oldest) this.#extensionScopes.delete(oldest);
+			}
+		}
+=======
+		const inheritedScope = msg.extensionScope ?? (msg.replyTo ? this.#extensionScopes.get(msg.replyTo) : undefined);
+		const message: IrcMessage = {
+			...msg,
+			...(inheritedScope ? { extensionScope: inheritedScope } : {}),
+			id: Snowflake.next(),
+			ts: Date.now(),
+		};
+		if (message.extensionScope) {
+			this.#extensionScopes.set(message.id, message.extensionScope);
+			if (this.#extensionScopes.size > MAILBOX_CAP * 10) {
+				const oldest = this.#extensionScopes.keys().next().value;
+				if (oldest) this.#extensionScopes.delete(oldest);
+			}
+		}
+>>>>>>> dbe50f837d (fix: persist Hub replies in scoped conversations)
 		const receipt = await this.#deliver(message, opts);
 		if (receipt.outcome !== "failed") {
 			let sent = this.#lastSent.get(message.from);
