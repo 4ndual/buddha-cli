@@ -48,6 +48,9 @@ The installer refuses an existing destination and writes through a temporary
 directory followed by one rename. It never changes `~/.buddha`, the default
 `~/.omp/agent`, the global `omp` link, or a running CodeNomad/OMP process.
 
-CodeNomad's bridge must run with `OMP_PROFILE=buddha-v1`; child terminals inherit
-that selector. Historical scanning includes the active profile and retains the
-legacy `.omp` and `.buddha` roots during migration.
+The bridge may run with `OMP_PROFILE=buddha-v1` as its default. Its profile-aware
+backend also exposes `GET /profile` and accepts `profile` on `POST /session`, so a
+client can select `stock`, `buddha-v1`, or future workflow profiles per new
+terminal without mutating the bridge process or global OMP state. Historical
+scanning includes the active profile and retains the legacy `.omp` and `.buddha`
+roots during migration.
