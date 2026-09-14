@@ -6,24 +6,11 @@
  * the session options built here (prompt replacement + a restricted single-tool
  * registry) and re-checked fail-closed on every provider request in `sdk.ts`.
  */
-import type { ModelRoleLookup } from "../config/model-resolver";
-import { formatModelRoleAlias } from "../config/model-roles";
-import type { CreateAgentSessionOptions } from "../sdk";
+import type { ModelRoleLookup } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
+import { formatModelRoleAlias } from "@oh-my-pi/pi-coding-agent/config/model-roles";
+import type { CreateAgentSessionOptions } from "@oh-my-pi/pi-coding-agent/sdk";
 import { BUDDHA_SYSTEM_PROMPT } from "./prompts";
 import { createSiddhiTool } from "./siddhi-tool";
-
-/**
- * Whether Buddha mode is on for this launch. True when the `--buddha` flag was
- * passed or the hidden `buddha.enabled` setting is set. `settings` is `unknown`
- * so both `main.ts` (a real `Settings`, whose `get` is generic over
- * `SettingPath` and therefore not assignable to a `(key: string) => unknown`
- * parameter) and SDK embedders with any settings-like object can call it.
- */
-export function isBuddhaEnabled(settings?: unknown, argFlag?: boolean): boolean {
-	if (argFlag === true) return true;
-	const get = (settings as { get?: (key: string) => unknown } | undefined)?.get;
-	return typeof get === "function" && get.call(settings, "buddha.enabled") === true;
-}
 
 /**
  * Mutate root-session options into Buddha shape. MUST run after every other
@@ -53,6 +40,7 @@ export function applyBuddhaSessionOptions(
 	options.toolNames = ["siddhi"];
 	options.restrictToolNames = true;
 	options.allowRestrictedCustomTools = true;
+	options.allowRestrictedExtensions = true;
 	options.disableExtensionDiscovery = true;
 	options.customTools = [createSiddhiTool()];
 	// Root Buddha runs the `buddha` role, but only when it is actually
@@ -69,5 +57,9 @@ export function applyBuddhaSessionOptions(
 	}
 	// `requireYieldTool` is intentionally NOT set: it would force a second tool
 	// (`yield`) into Buddha's active set.
-	options.buddhaMode = true;
+	options.providerContextPolicy = {
+		rawMessages: true,
+		skipRequestReminder: true,
+		invariant: { toolNames: ["siddhi"], systemPromptBlocks: 1 },
+	};
 }

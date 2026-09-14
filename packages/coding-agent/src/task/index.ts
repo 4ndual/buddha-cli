@@ -28,6 +28,7 @@ import { truncateForPrompt } from "../tools/approval";
 import { isIrcEnabled } from "../tools/hub";
 import { ToolResultOutput, zodWire } from "../tools/zod-wire";
 import { isReadOnlyAgent } from "./read-only-policy";
+import { TASK_LIFECYCLE_SERVICE, type TaskLifecycleService } from "./lifecycle-service";
 import { formatTaskResultSummary } from "./result-summary";
 import { isScoutSpawnable, resolveSpawnPolicy } from "./spawn-policy";
 import {
@@ -588,6 +589,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				effortEnabled: this.session.settings.get("task.enableEffort"),
 				evalToolsEnabled: evalToolsEnabled(this.session),
 				defaultAgent,
+				runtimeTierEnabled: this.session.getExtensionService?.(TASK_LIFECYCLE_SERVICE) !== undefined,
 			}),
 		);
 	}
@@ -707,6 +709,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			effortEnabled: true,
 			evalToolsEnabled: true,
 			defaultAgent,
+			runtimeTierEnabled: this.session.getExtensionService?.(TASK_LIFECYCLE_SERVICE) !== undefined,
 		}).parse(params);
 
 		const spawnItems = resolveSpawnItems(params);
@@ -724,6 +727,14 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			}
 		}
 		const normalizedSpawnParams = spawnItems.map(item => spawnParamsFor(params, item, defaultAgent));
+		const lifecycleService = this.session.getExtensionService?.<TaskLifecycleService>(TASK_LIFECYCLE_SERVICE);
+		if (lifecycleService?.validate) {
+			for (let index = 0; index < normalizedSpawnParams.length; index++) {
+				const label = normalizedSpawnParams.length === 1 ? "The task" : `Task ${index + 1}`;
+				const lifecycleError = lifecycleService.validate(normalizedSpawnParams[index]!, label);
+				if (lifecycleError) return createTaskModeError(lifecycleError);
+			}
+		}
 		const resolvedAgents = normalizedSpawnParams.map(spawn => spawn.agent ?? defaultAgent);
 		// Resolve every item before choosing an execution path. No executor or
 		// job manager may observe a batch unless every effective policy is valid.
@@ -1107,6 +1118,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	}): string {
 		const { manager, toolCallId, spawnParams, agentId, progress, ircEnabled, buildDetails, onUpdate, onSettled } =
 			options;
+		const lifecycleService = this.session.getExtensionService?.<TaskLifecycleService>(TASK_LIFECYCLE_SERVICE);
 		const buildFollowUpHint = async (aborted: boolean): Promise<string> => {
 			if (aborted) {
 				const ref = AgentRegistry.global().get(agentId);
@@ -1243,7 +1255,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						? `Background task ${agentId} failed.`
 						: `Background task ${agentId} complete.`;
 					await reportProgress(statusText, buildDetails() as unknown as Record<string, unknown>);
-					const deliveryText = `${finalText}${await buildFollowUpHint(singleResult?.aborted === true)}`;
+					const telemetryBlock = singleResult ? lifecycleService?.formatTelemetry?.(singleResult) : undefined;
+					const deliveryText = `${finalText}${await buildFollowUpHint(singleResult?.aborted === true)}${telemetryBlock ? `\n\n${telemetryBlock}` : ""}`;
 					const structured = singleResult?.structuredOutput;
 					if (resultFailed) {
 						// Mark the job itself failed; the failed agent stays interrogable.

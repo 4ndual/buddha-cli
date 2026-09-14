@@ -101,9 +101,6 @@ export const launchHelp = {
 			aliases: ["yolo"],
 			description: "Auto-approve all tool calls (skip approval prompts)",
 		}),
-		buddha: Flags.boolean({
-			description: "Buddha mode: minimal root agent that delegates every request through siddhi()",
-		}),
 		"approval-mode": Flags.string({
 			options: ["always-ask", "write", "yolo"],
 			description: "Override tools.approvalMode for this session (always-ask|write|yolo)",

@@ -8,8 +8,6 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
-import { isBuddhaEnabled } from "../buddha/session-overrides";
-import { SIDDHI_RESULT_MESSAGE_TYPE } from "../buddha/types";
 import { type AgentSession, type AgentSessionEvent, SHUTDOWN_CONSOLIDATE_BUDGET_MS } from "../session/agent-session";
 import { type CustomMessage, isSilentAbort } from "../session/messages";
 import {
@@ -213,13 +211,12 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 	// answer and print it once at settle. Printing on arrival would emit the
 	// superseded attempts too, turning a single-shot `-p` answer into a
 	// transcript.
-	const forwardBuddhaAnswers = mode === "text" && isBuddhaEnabled(session.settings);
-	let promotedBuddhaAnswer: string | undefined;
-	let flushedBuddhaAnswer = false;
-	const flushBuddhaAnswer = (): void => {
-		if (flushedBuddhaAnswer || promotedBuddhaAnswer === undefined) return;
-		flushedBuddhaAnswer = true;
-		writeStdoutLine(`${sanitizeText(promotedBuddhaAnswer)}\n`);
+	let promotedPrimaryResult: string | undefined;
+	let flushedPrimaryResult = false;
+	const flushPrimaryResult = (): void => {
+		if (flushedPrimaryResult || promotedPrimaryResult === undefined) return;
+		flushedPrimaryResult = true;
+		writeStdoutLine(`${sanitizeText(promotedPrimaryResult)}\n`);
 	};
 
 	// Always subscribe to enable session persistence via _handleAgentEvent
@@ -229,11 +226,11 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 			writeStdoutLine(`${JSON.stringify(printableEvent(event))}\n`);
 		}
 		if (
-			forwardBuddhaAnswers &&
+			mode === "text" &&
 			event.type === "irc_message" &&
-			event.message.customType === SIDDHI_RESULT_MESSAGE_TYPE
+			(event.message.details as { primaryResult?: unknown } | undefined)?.primaryResult === true
 		) {
-			promotedBuddhaAnswer = promotedAnswerText(event.message.content) ?? promotedBuddhaAnswer;
+			promotedPrimaryResult = promotedAnswerText(event.message.content) ?? promotedPrimaryResult;
 		}
 	});
 
@@ -267,7 +264,7 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 		// Emit the promoted worker answer before Buddha's own reply — and before
 		// the error branch below, which hard-exits — so the user receives the
 		// work product even when Buddha's own final turn failed.
-		flushBuddhaAnswer();
+		flushPrimaryResult();
 
 		// Read via the session accessor, not the raw state tail: a classifier
 		// refusal is pruned from active context at settle, and an aborted turn

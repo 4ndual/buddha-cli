@@ -127,6 +127,8 @@ export interface TaskItem {
 	agent?: string;
 	/** The work; required by the schema. */
 	task?: string;
+	/** Optional profile-defined runtime/decomposition tier. */
+	rt?: "R1" | "R2" | "R3" | "R4" | "R5";
 	/** Per-spawn thinking effort: lowest/middle/highest level the resolved model supports. Overrides the agent's default selector (e.g. `auto`). */
 	effort?: TaskEffort;
 	/** Caller-provided output schema; its presence overrides the selected agent's schema. */
@@ -155,17 +157,20 @@ function createTaskSchema(options: {
 	defaultAgent: string;
 	effortEnabled: boolean;
 	evalToolsEnabled: boolean;
+	runtimeTierEnabled: boolean;
 }): z.ZodType<TaskParams> {
 	const fullItem = z.object({
 		...taskItemFields,
 		agent: z.string().default(options.defaultAgent.trim() || "task"),
 		effort: z.enum(["lo", "med", "hi"]).optional(),
 		isolated: z.boolean().optional(),
+		rt: z.enum(["R1", "R2", "R3", "R4", "R5"]).optional(),
 	});
-	const mask: { effort?: true; isolated?: true; tools?: true } = {};
+	const mask: { effort?: true; isolated?: true; tools?: true; rt?: true } = {};
 	if (!options.effortEnabled) mask.effort = true;
 	if (!options.isolationEnabled) mask.isolated = true;
 	if (!options.evalToolsEnabled) mask.tools = true;
+	if (!options.runtimeTierEnabled) mask.rt = true;
 	const item = fullItem.omit(mask);
 	if (options.batchEnabled) return z.object({ context: z.string(), tasks: z.array(item) });
 	return item;
@@ -179,18 +184,20 @@ export function getTaskSchema(options: {
 	/** Advertise the `tools` field for eval-defined tools (`eval.tools.enabled`, default on). */
 	evalToolsEnabled?: boolean;
 	defaultAgent?: string;
+	runtimeTierEnabled?: boolean;
 }): z.ZodType<TaskParams> {
 	const defaultAgent = options.defaultAgent ?? "task";
 	const effortEnabled = options.effortEnabled ?? false;
 	const evalToolsEnabled = options.evalToolsEnabled ?? true;
-	if (defaultAgent === "task" && !effortEnabled && evalToolsEnabled) {
+	const runtimeTierEnabled = options.runtimeTierEnabled ?? false;
+	if (defaultAgent === "task" && !effortEnabled && evalToolsEnabled && !runtimeTierEnabled) {
 		if (options.batchEnabled) return options.isolationEnabled ? taskSchemaBatch : taskSchemaBatchNoIsolation;
 		return options.isolationEnabled ? taskSchema : taskSchemaNoIsolation;
 	}
-	const key = `${options.isolationEnabled ? "iso" : "flat"}:${options.batchEnabled ? "batch" : "single"}:${effortEnabled ? "effort" : "default"}:${evalToolsEnabled ? "tools" : "notools"}:${defaultAgent}`;
+	const key = `${options.isolationEnabled ? "iso" : "flat"}:${options.batchEnabled ? "batch" : "single"}:${effortEnabled ? "effort" : "default"}:${evalToolsEnabled ? "tools" : "notools"}:${runtimeTierEnabled ? "rt" : "nort"}:${defaultAgent}`;
 	const cached = taskSchemaCache.get(key);
 	if (cached) return cached;
-	const schema = createTaskSchema({ ...options, effortEnabled, evalToolsEnabled, defaultAgent });
+	const schema = createTaskSchema({ ...options, effortEnabled, evalToolsEnabled, runtimeTierEnabled, defaultAgent });
 	taskSchemaCache.set(key, schema);
 	return schema;
 }
@@ -208,6 +215,7 @@ export interface TaskParams {
 	agent?: string;
 	/** The work (flat form). */
 	task?: string;
+	rt?: "R1" | "R2" | "R3" | "R4" | "R5";
 	/** Per-spawn thinking effort (flat form): lowest/middle/highest level the resolved model supports. */
 	effort?: TaskEffort;
 	/** Caller-provided output schema; its presence overrides the selected agent's schema. */

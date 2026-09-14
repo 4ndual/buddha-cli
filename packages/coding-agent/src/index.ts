@@ -4,6 +4,7 @@ import { HookEditorComponent, HookInputComponent, HookSelectorComponent } from "
 
 export * as zod from "@oh-my-pi/omptype/zod";
 export { z } from "@oh-my-pi/omptype/zod";
+export { type as schemaType } from "@oh-my-pi/omptype";
 // Re-export TUI components for custom tool rendering
 export { Container, Markdown, Spacer, Text } from "@oh-my-pi/pi-tui";
 // Logging

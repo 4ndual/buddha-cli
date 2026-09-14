@@ -77,6 +77,7 @@ import type { WorkPoolYieldItem } from "./workpool-yield";
 import {
 	type AgentDefinition,
 	type AgentProgress,
+	type DelegatedAgentTelemetry,
 	MAX_OUTPUT_BYTES,
 	MAX_OUTPUT_LINES,
 	type SingleResult,
@@ -1025,6 +1026,8 @@ interface RunMonitorArgs {
  * for one assignment run.
  */
 interface SubagentRunMonitor {
+	readonly monotonicStartTime: number;
+	readonly firstRequestAtMs?: number;
 	readonly progress: AgentProgress;
 	/** Fires when the run was asked to stop (caller signal, timeout, budget, terminate). */
 	readonly abortSignal: AbortSignal;
@@ -1101,6 +1104,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		maxRuntimeMs,
 	} = args;
 	const startTime = Date.now();
+	const monotonicStartTime = performance.now();
 
 	const progress: AgentProgress = {
 		index,
@@ -1142,6 +1146,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	let yieldInvalidatedByAsync = false;
 	let yieldTurnStopRequested = false;
 	let yieldTurnStopPromise: Promise<void> | null = null;
+	let firstRequestAtMs: number | undefined;
 
 	// Accumulate usage incrementally from message_end events (no memory for streaming events)
 	const accumulatedUsage: Usage = {
@@ -1663,6 +1668,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				const role = event.message?.role;
 				if (role === "assistant") {
 					progress.requests += 1;
+					firstRequestAtMs ??= performance.now();
 					const eventContent = isRecord(event) && "content" in event ? event.content : undefined;
 					const messageContent = getMessageContent(event.message) || eventContent;
 					if (messageContent && Array.isArray(messageContent)) {
@@ -1855,6 +1861,10 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	};
 
 	return {
+		monotonicStartTime,
+		get firstRequestAtMs() {
+			return firstRequestAtMs;
+		},
 		progress,
 		abortSignal,
 		accumulatedUsage,
@@ -2377,6 +2387,18 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		: undefined;
 	progress.status = wasAborted ? "aborted" : exitCode === 0 ? "completed" : "failed";
 	monitor.scheduleProgress(true);
+	const settledAtMs = performance.now();
+	const explanation = `${progress.requests} request${progress.requests === 1 ? "" : "s"}; ${progress.toolCount} tool call${progress.toolCount === 1 ? "" : "s"}.`;
+	const telemetry: DelegatedAgentTelemetry = {
+		startedAtMs: monitor.monotonicStartTime,
+		...(monitor.firstRequestAtMs !== undefined ? { firstRequestAtMs: monitor.firstRequestAtMs } : {}),
+		settledAtMs,
+		durationMs: Math.max(0, Math.round(settledAtMs - monitor.monotonicStartTime)),
+		...(progress.requests > 0 ? { requests: progress.requests } : {}),
+		...(monitor.hasUsage() ? { usage: monitor.accumulatedUsage } : {}),
+		tools: progress.recentTools.map(tool => ({ name: tool.tool })),
+		explanation: explanation.slice(0, 140),
+	};
 
 	// Emit lifecycle end event after finalization so yield status is reflected
 	const settledPayload = {
@@ -2406,6 +2428,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		stderr,
 		truncated: Boolean(truncated),
 		...(finalized.structuredOutput ? { structuredOutput: finalized.structuredOutput } : {}),
+		telemetry,
 		durationMs: Date.now() - args.startTime,
 		tokens: progress.tokens,
 		requests: progress.requests,

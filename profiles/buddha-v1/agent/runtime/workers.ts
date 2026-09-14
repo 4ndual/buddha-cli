@@ -19,13 +19,13 @@
  * responsible for keeping it out of Buddha's model context from there.
  */
 import { logger } from "@oh-my-pi/pi-utils";
-import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
-import { getBundledAgent } from "../task/agents";
-import { runSubagentFollowUpTurn } from "../task/executor";
-import { reserveStructuredSubagentId, runStructuredSubagent } from "../task/structured-subagent";
-import type { AgentDefinition, AgentProgress, SingleResult } from "../task/types";
-import type { ToolSession } from "../tools";
-import { isIrcEnabled } from "../tools/hub";
+import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { getBundledAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
+import { runSubagentFollowUpTurn } from "@oh-my-pi/pi-coding-agent/task/executor";
+import { reserveStructuredSubagentId, runStructuredSubagent } from "@oh-my-pi/pi-coding-agent/task/structured-subagent";
+import type { AgentDefinition, AgentProgress, SingleResult } from "@oh-my-pi/pi-coding-agent/task/types";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { isIrcEnabled } from "@oh-my-pi/pi-coding-agent/tools/hub";
 import { clampSummary, type RouterAction, type SiddhiJob, type WorkerMode, type WorkerOutcome } from "./types";
 
 /** Context shared by every `runWorkerAction` call. */
@@ -91,8 +91,7 @@ function resolveAgentDefForMode(mode: WorkerMode): AgentDefinition {
 		const evidenceCapable =
 			reviewer !== undefined &&
 			(reviewer.tools === undefined ||
-				(reviewer.tools.includes("read") &&
-					(reviewer.tools.includes("bash") || reviewer.tools.includes("exec"))));
+				(reviewer.tools.includes("read") && (reviewer.tools.includes("bash") || reviewer.tools.includes("exec"))));
 		if (reviewer && evidenceCapable) return reviewer;
 		logger.debug("buddha/workers: reviewer agent lacks evidence capability; verifying with task agent instead");
 	}

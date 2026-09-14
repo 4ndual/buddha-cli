@@ -59,7 +59,10 @@ export class BuddhaHubStore {
 	#state?: PersistedInbox;
 	#writeTail = Promise.resolve();
 
-	constructor(readonly dataDirectory: string, readonly scope: HubScope) {
+	constructor(
+		readonly dataDirectory: string,
+		readonly scope: HubScope,
+	) {
 		this.file = path.join(dataDirectory, "hub-inbox", `${scopeKey(scope)}.json`);
 	}
 
@@ -127,7 +130,8 @@ export class BuddhaHubStore {
 		for (const peer of agents.values()) if (peer.id !== agentId) ids.add(directId(agentId, peer.id));
 		for (const channel of state.channels) if (channel.members.includes(agentId)) ids.add(channel.id);
 		for (const entry of state.entries) {
-			if (entry.senderId === agentId || entry.conversationId.includes(encodeURIComponent(agentId))) ids.add(entry.conversationId);
+			if (entry.senderId === agentId || entry.conversationId.includes(encodeURIComponent(agentId)))
+				ids.add(entry.conversationId);
 		}
 		return [...ids]
 			.map(id => {
@@ -144,7 +148,7 @@ export class BuddhaHubStore {
 				return {
 					id,
 					kind: isBroadcast ? "broadcast" : channel ? "group" : "direct",
-					title: isBroadcast ? "Broadcasts" : channel?.name ?? agents.get(peer ?? "")?.displayName ?? peer ?? id,
+					title: isBroadcast ? "Broadcasts" : (channel?.name ?? agents.get(peer ?? "")?.displayName ?? peer ?? id),
 					members: selectedMembers,
 					preview: last?.body,
 					updatedAt: last?.ts ?? channel?.updatedAt ?? 0,
@@ -160,7 +164,14 @@ export class BuddhaHubStore {
 			const normalized = members([...channelMembers, createdBy]);
 			if (normalized.length < 2) throw new Error("A channel requires at least two members");
 			const now = Date.now();
-			const channel = { id: `group:${randomUUID()}`, name: name.trim(), members: normalized, createdBy, createdAt: now, updatedAt: now };
+			const channel = {
+				id: `group:${randomUUID()}`,
+				name: name.trim(),
+				members: normalized,
+				createdBy,
+				createdAt: now,
+				updatedAt: now,
+			};
 			state.channels.push(channel);
 			return structuredClone(channel);
 		});
@@ -222,7 +233,8 @@ export class BuddhaHubInbox {
 
 	#agent(id: string): AgentRef {
 		const agent = this.registry.get(id);
-		if (!agent || agent.kind === "advisor" || agent.status === "aborted") throw new Error(`Agent "${id}" is not sendable`);
+		if (!agent || agent.kind === "advisor" || agent.status === "aborted")
+			throw new Error(`Agent "${id}" is not sendable`);
 		return agent;
 	}
 
@@ -255,7 +267,13 @@ export class BuddhaHubInbox {
 		this.#agent(from);
 		this.#agent(to);
 		if (!body.trim()) throw new Error("Message body is required");
-		const tracked = await this.bus.sendTracked({ from, to, body: body.trim(), replyTo, extensionScope: this.store.scope });
+		const tracked = await this.bus.sendTracked({
+			from,
+			to,
+			body: body.trim(),
+			replyTo,
+			extensionScope: this.store.scope,
+		});
 		const entry = (await this.store.history(directId(from, to))).find(item => item.id === tracked.message.id);
 		if (!entry) throw new Error(`Hub message delivery to "${to}" was not recorded`);
 		return entry;
@@ -266,18 +284,49 @@ export class BuddhaHubInbox {
 		if (!body.trim()) throw new Error("Message body is required");
 		const channel = await this.store.channel(channelId);
 		if (!channel?.members.includes(from)) throw new Error(`Agent "${from}" is not a member of "${channelId}"`);
-		const delivery = await Promise.all(channel.members.filter(id => id !== from).map(to =>
-			this.bus.send({ from, to, body: body.trim(), replyTo, extensionScope: this.store.scope }, { suppressObservers: true }),
-		));
-		return this.store.append({ id: randomUUID(), conversationId: channelId, kind: "message", senderId: from, body: body.trim(), ts: Date.now(), replyTo, delivery });
+		const delivery = await Promise.all(
+			channel.members
+				.filter(id => id !== from)
+				.map(to =>
+					this.bus.send(
+						{ from, to, body: body.trim(), replyTo, extensionScope: this.store.scope },
+						{ suppressObservers: true },
+					),
+				),
+		);
+		return this.store.append({
+			id: randomUUID(),
+			conversationId: channelId,
+			kind: "message",
+			senderId: from,
+			body: body.trim(),
+			ts: Date.now(),
+			replyTo,
+			delivery,
+		});
 	}
 
 	async broadcast(from: string, body: string) {
 		this.#agent(from);
 		if (!body.trim()) throw new Error("Message body is required");
-		const delivery = await Promise.all(this.registry.listVisibleTo(from).map(agent =>
-			this.bus.send({ from, to: agent.id, body: body.trim(), extensionScope: this.store.scope }, { suppressObservers: true }),
-		));
-		return this.store.append({ id: randomUUID(), conversationId: "broadcast:all", kind: "message", senderId: from, body: body.trim(), ts: Date.now(), delivery });
+		const delivery = await Promise.all(
+			this.registry
+				.listVisibleTo(from)
+				.map(agent =>
+					this.bus.send(
+						{ from, to: agent.id, body: body.trim(), extensionScope: this.store.scope },
+						{ suppressObservers: true },
+					),
+				),
+		);
+		return this.store.append({
+			id: randomUUID(),
+			conversationId: "broadcast:all",
+			kind: "message",
+			senderId: from,
+			body: body.trim(),
+			ts: Date.now(),
+			delivery,
+		});
 	}
 }
