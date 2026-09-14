@@ -574,13 +574,20 @@ export interface CreateAgentSessionOptions {
 	 */
 	allowRestrictedCustomTools?: boolean;
 	/**
-	 * Buddha mode: this session is the root Buddha agent. Set only by
-	 * `applyBuddhaSessionOptions`, never by hand — it marks the session whose
-	 * provider context is asserted clean (5-line prompt + one `siddhi` tool)
-	 * before every request. Subagent options are built fresh, so hidden workers
-	 * never inherit it.
+	 * Keep explicitly preloaded/profile extensions active in a restricted
+	 * session while still excluding all of their registered tools. Useful for
+	 * transport and observation services that must not widen the model surface.
 	 */
-	buddhaMode?: boolean;
+	allowRestrictedExtensions?: boolean;
+	/** Profile/runtime-owned provider-context policy. Child sessions do not inherit it. */
+	providerContextPolicy?: {
+		/** Send the rebuilt conversation without extension context or steering envelopes. */
+		rawMessages?: boolean;
+		/** Do not prepend the volatile date/cwd reminder to the first user message. */
+		skipRequestReminder?: boolean;
+		/** Fail closed unless the outgoing prompt/tool shape matches exactly. */
+		invariant?: { toolNames?: string[]; systemPromptBlocks?: number };
+	};
 
 	/** Output schema for structured completion (subagents). */
 	outputSchema?: unknown;
@@ -782,19 +789,22 @@ export async function discoverExtensions(cwd?: string): Promise<LoadExtensionsRe
 }
 
 /**
- * Fail-closed guard for a Buddha-mode provider request. Buddha's context is a
- * structural invariant, not a prompting convention: exactly one tool (`siddhi`)
- * and one system-prompt block. Anything else means an option, extension, or
- * transform leaked into the root agent, so the request is refused instead of
- * silently shipping a polluted context.
+ * Fail-closed guard for a profile-owned provider-context shape. Anything else
+ * means an option, extension, or transform leaked into the restricted runtime,
+ * so the request is refused instead of shipping a polluted context.
  */
-function assertBuddhaProviderContext(context: Context): void {
+function assertProviderContextInvariant(
+	context: Context,
+	invariant: NonNullable<NonNullable<CreateAgentSessionOptions["providerContextPolicy"]>["invariant"]>,
+): void {
 	const toolNames = context.tools?.map(tool => tool.name) ?? [];
 	const promptBlocks = context.systemPrompt?.length ?? 0;
-	if (toolNames.length === 1 && toolNames[0] === "siddhi" && promptBlocks === 1) return;
-	logger.error("Buddha context violation", { toolNames, promptBlocks });
+	const toolsMatch = invariant.toolNames === undefined || Bun.deepEquals(toolNames, invariant.toolNames);
+	const promptsMatch = invariant.systemPromptBlocks === undefined || promptBlocks === invariant.systemPromptBlocks;
+	if (toolsMatch && promptsMatch) return;
+	logger.error("Provider context invariant violation", { toolNames, promptBlocks, invariant });
 	throw new Error(
-		`Buddha context violation: expected exactly one tool "siddhi" and a single system prompt block, got tools [${toolNames.join(", ")}] and ${promptBlocks} prompt block(s).`,
+		`Provider context invariant violation: got tools [${toolNames.join(", ")}] and ${promptBlocks} prompt block(s)`,
 	);
 }
 
@@ -1884,6 +1894,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// dispose + unregister on the session's own registry.
 			agentLifecycle: options.agentRegistry ? undefined : () => AgentLifecycleManager.global(),
 			getSessionSpawns: () => options.spawns ?? "*",
+			getExtensionService: name => session?.extensionRunner?.getExtensionService(name),
 			getModelString: () => (hasExplicitModel && model ? formatModelString(model) : undefined),
 			getActiveModelString,
 			getActiveModel: () => agent?.state.model ?? model,
@@ -2191,7 +2202,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// the flag and pre-resolved the result already reflects that choice.
 		let extensionPaths: string[];
 		let extensionsResult: LoadExtensionsResult;
-		if (restrictToolNames) {
+		if (restrictToolNames && options.allowRestrictedExtensions !== true) {
 			// Allocate a session runtime without evaluating caller-provided extension
 			// instances, paths, or factories.
 			extensionPaths = [];
@@ -3480,14 +3491,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			return obfuscateMessages(obfuscator, converted);
 		};
 
-		// Computed once per session: never a per-request settings read, and never
-		// inherited by hidden workers (their options are built from scratch).
-		const buddhaMode = options.buddhaMode === true;
+		// Computed once per session and never inherited by child session options.
+		const providerContextPolicy = options.providerContextPolicy;
 		const transformContext = async (messages: AgentMessage[], _signal?: AbortSignal) => {
-			// Buddha's context is the raw user conversation. No extension context
-			// blocks, and no steering envelope: both would inject harness text into
-			// the one window that must stay clean.
-			if (buddhaMode) return messages;
+			if (providerContextPolicy?.rawMessages) return messages;
 			const withContext = await extensionRunner.emitContext(messages);
 			return wrapSteeringForModel(withContext);
 		};
@@ -3530,12 +3537,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// else, and it runs before the blob broker uploads any of these bytes.
 			transformed = await dropUnreadableContextImages(transformed, transformModel);
 			if (blobBroker) transformed = await blobBroker.decorateContext(transformed, transformModel);
-			if (buddhaMode) {
-				// Skip the date/cwd reminder: it injects per-request ambient context
-				// into the first user turn, which Buddha must not carry. Then refuse
-				// the request outright unless the outgoing context is still exactly
-				// the 5-line prompt plus `siddhi`.
-				assertBuddhaProviderContext(transformed);
+			if (providerContextPolicy?.skipRequestReminder) {
+				if (providerContextPolicy.invariant)
+					assertProviderContextInvariant(transformed, providerContextPolicy.invariant);
 				return transformed;
 			}
 			// Keep per-request volatility out of the system prompt: the date/cwd

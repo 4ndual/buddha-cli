@@ -8,8 +8,6 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
-import { isBuddhaEnabled } from "../buddha/session-overrides";
-import { SIDDHI_RESULT_MESSAGE_TYPE } from "../buddha/types";
 import { type AgentSession, type AgentSessionEvent, SHUTDOWN_CONSOLIDATE_BUDGET_MS } from "../session/agent-session";
 import { type CustomMessage, isSilentAbort } from "../session/messages";
 import {
@@ -51,9 +49,8 @@ function stripProviderPayload<T extends AgentMessage>(message: T): T {
 }
 
 /**
- * Plain text of a `CustomMessage` payload. Buddha's promoted worker answer
- * (`promote.ts`) always sets `content` to a raw string, but the type also
- * allows a content-block array (extension-injected messages), so handle both.
+ * Plain text of a promoted `CustomMessage` payload. Profile runtimes normally
+ * use a raw string, but extension-injected messages may use content blocks.
  */
 function customMessageText(content: CustomMessage["content"]): string {
 	if (typeof content === "string") return content;
@@ -76,9 +73,8 @@ const WARNING_ONLY_PROMOTION: Record<string, true> = {
 };
 
 /**
- * The worker answer carried by a promoted `siddhi-result` payload, or
- * `undefined` when it carries none — an empty payload, or a bare harness
- * banner from a round whose worker yielded nothing.
+ * The answer carried by a promoted primary-result payload, or `undefined`
+ * when it carries none.
  */
 export function promotedAnswerText(content: CustomMessage["content"]): string | undefined {
 	const answer = customMessageText(content);
@@ -197,31 +193,25 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 		);
 	}
 
-	// Buddha mode delivers the user-visible answer out-of-band from the model's
-	// own reply: a promoted `siddhi-result` custom message is persisted and
-	// relayed for display but deliberately excluded from Buddha's rebuilt
-	// context (`session-context.ts`), so the final-assistant-text loop below
-	// only ever sees Buddha's own short acknowledgement and the worker's answer
-	// would never reach stdout. Capture it from the same live `irc_message`
-	// event the interactive TUI renders (`event-controller.ts`
-	// `#handleIrcMessage`). Text mode only: `--mode json` already serializes
-	// every event, this one included, so nothing is hidden from that consumer.
+	// A profile runtime may promote its primary result out-of-band from the
+	// model's own reply. Capture messages carrying the generic `primaryResult`
+	// marker from the same live relay the interactive TUI renders. JSON mode
+	// already serializes the event, so forwarding is needed only for text mode.
 	//
 	// One prompt can produce several promotions: `siddhi-tool.ts` promotes once
 	// per routing round that carried `answerText` (execute, then verify/repair),
-	// and Buddha — which cannot see any of them — re-delegates until its own
-	// context tells it the job is done. Every one of those is another attempt at
+	// and a restricted orchestrator may re-delegate until its own context tells
+	// it the job is done. Every one of those is another attempt at
 	// the same request, each superseding the last, so keep only the newest real
 	// answer and print it once at settle. Printing on arrival would emit the
 	// superseded attempts too, turning a single-shot `-p` answer into a
 	// transcript.
-	const forwardBuddhaAnswers = mode === "text" && isBuddhaEnabled(session.settings);
-	let promotedBuddhaAnswer: string | undefined;
-	let flushedBuddhaAnswer = false;
-	const flushBuddhaAnswer = (): void => {
-		if (flushedBuddhaAnswer || promotedBuddhaAnswer === undefined) return;
-		flushedBuddhaAnswer = true;
-		writeStdoutLine(`${sanitizeText(promotedBuddhaAnswer)}\n`);
+	let promotedPrimaryResult: string | undefined;
+	let flushedPrimaryResult = false;
+	const flushPrimaryResult = (): void => {
+		if (flushedPrimaryResult || promotedPrimaryResult === undefined) return;
+		flushedPrimaryResult = true;
+		writeStdoutLine(`${sanitizeText(promotedPrimaryResult)}\n`);
 	};
 
 	// Always subscribe to enable session persistence via _handleAgentEvent
@@ -231,11 +221,11 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 			writeStdoutLine(`${JSON.stringify(printableEvent(event))}\n`);
 		}
 		if (
-			forwardBuddhaAnswers &&
+			mode === "text" &&
 			event.type === "irc_message" &&
-			event.message.customType === SIDDHI_RESULT_MESSAGE_TYPE
+			(event.message.details as { primaryResult?: unknown } | undefined)?.primaryResult === true
 		) {
-			promotedBuddhaAnswer = promotedAnswerText(event.message.content) ?? promotedBuddhaAnswer;
+			promotedPrimaryResult = promotedAnswerText(event.message.content) ?? promotedPrimaryResult;
 		}
 	});
 
@@ -264,10 +254,10 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 	// primary turn whose response print mode would never emit.
 	session.prepareForHeadlessAdvisorDrain();
 
-	// Emit the promoted worker answer before Buddha's own reply — and before
+	// Emit the promoted worker answer before the model's own reply — and before
 	// the error branch below — so the user receives the work product even when
-	// Buddha's own final turn failed.
-	if (mode === "text") flushBuddhaAnswer();
+	// the final orchestration turn failed.
+	if (mode === "text") flushPrimaryResult();
 
 	// Read via the session accessor, not the raw state tail: a classifier
 	// refusal is pruned from active context at settle, and an aborted turn

@@ -8,16 +8,20 @@
  * receives `{status, summary, jobId}`.
  */
 
-import { type } from "@oh-my-pi/omptype";
+import { schemaType } from "@oh-my-pi/pi-coding-agent";
 import { logger } from "@oh-my-pi/pi-utils";
-import type { CustomTool, CustomToolContext, CustomToolResult } from "../extensibility/custom-tools/types";
-import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
+import type {
+	CustomTool,
+	CustomToolContext,
+	CustomToolResult,
+} from "@oh-my-pi/pi-coding-agent/extensibility/custom-tools/types";
+import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import {
 	SUBAGENT_WARNING_MISSING_YIELD,
 	SUBAGENT_WARNING_NULL_YIELD,
 	SUBAGENT_WARNING_SCHEMA_OVERRIDDEN,
-} from "../task/executor";
-import type { ToolSession } from "../tools";
+} from "@oh-my-pi/pi-coding-agent/task/executor";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { collectReusableWorkers, openOrResumeJob, saveJob } from "./jobs";
 import { peakBuddhaTokens, peakLunaTokens, recordJobMetrics } from "./metrics";
 import { promoteWorkerAnswer } from "./promote";
@@ -36,8 +40,10 @@ const MAX_ROUTING_ITERATIONS = 12;
 /** Wall-clock budget per `siddhi` call; exhaustion returns a resumable `working` result. */
 const ROUTING_BUDGET_MS = 8 * 60 * 1000;
 
-const siddhiSchema = type({
-	instruction: type("string").describe("natural language: outcome, constraints, done when; name a jobId to resume it"),
+const siddhiSchema = schemaType({
+	instruction: schemaType("string").describe(
+		"natural language: outcome, constraints, done when; name a jobId to resume it",
+	),
 });
 
 const SIDDHI_DESCRIPTION =
@@ -60,9 +66,10 @@ interface SiddhiToolDetails {
  * registry — the pattern `commit/agentic/tools/analyze-file.ts` uses to build
  * a `ToolSession` inside a custom tool.
  */
-function buildToolSession(ctx: CustomToolContext): ToolSession | undefined {
+export function buildToolSession(ctx: CustomToolContext): ToolSession | undefined {
 	const registry = AgentRegistry.global();
-	const live = registry.get(MAIN_AGENT_ID)?.session;
+	const current = registry.list().find(ref => ref.session?.sessionManager === ctx.sessionManager);
+	const live = current?.session ?? registry.get(MAIN_AGENT_ID)?.session;
 	if (!live) return undefined;
 	return {
 		cwd: ctx.sessionManager.getCwd(),
@@ -78,7 +85,7 @@ function buildToolSession(ctx: CustomToolContext): ToolSession | undefined {
 		localProtocolOptions: ctx.localProtocolOptions,
 		sessionManager: live.sessionManager,
 		agentRegistry: registry,
-		getAgentId: () => MAIN_AGENT_ID,
+		getAgentId: () => current?.id ?? MAIN_AGENT_ID,
 		getActiveModel: () => ctx.model,
 	};
 }

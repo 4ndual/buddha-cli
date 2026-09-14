@@ -4,7 +4,6 @@ import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { type Component, Loader, TERMINAL } from "@oh-my-pi/pi-tui";
 import { formatDuration, logger, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
-import { SIDDHI_RESULT_MESSAGE_TYPE } from "../../buddha/types";
 import { extractTextContent } from "../../commit/utils";
 import { settings } from "../../config/settings";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
@@ -1054,9 +1053,9 @@ export class EventController {
 		this.#renderedCustomMessages.add(signature);
 		this.#resetReadGroup();
 		const components = this.ctx.addMessageToChat(event.message);
-		// A promoted Buddha worker answer is permanent transcript history, not a
-		// transient relay card: exempt it from TTL expiry and live-card eviction.
-		if (event.message.customType !== SIDDHI_RESULT_MESSAGE_TYPE) {
+		// Profile-owned durable relays are permanent transcript history, not
+		// transient cards: exempt them from TTL expiry and live-card eviction.
+		if ((event.message.details as { persistent?: unknown } | undefined)?.persistent !== true) {
 			this.#scheduleIrcExpiry(signature, components);
 			this.#enforceIrcCardCap(signature);
 		}

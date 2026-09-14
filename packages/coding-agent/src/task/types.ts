@@ -139,6 +139,8 @@ export interface TaskItem {
 	agent?: string;
 	/** The work; required by the schema. */
 	task?: string;
+	/** Optional profile-defined runtime/decomposition tier. */
+	rt?: "R1" | "R2" | "R3" | "R4" | "R5";
 	/** Per-spawn thinking effort: lowest/middle/highest level the resolved model supports. Overrides the agent's default selector (e.g. `auto`). */
 	effort?: TaskEffort;
 	/** Caller-provided output schema; its presence overrides the selected agent's schema. */
@@ -204,16 +206,19 @@ function createTaskSchema(options: {
 	defaultAgent: string;
 	effortEnabled: boolean;
 	evalToolsEnabled: boolean;
+	runtimeTierEnabled: boolean;
 }): BaseType {
 	const agent = taskAgentSchemaRule(options.defaultAgent);
 	const effortField = options.effortEnabled ? { "effort?": effortRule } : {};
 	const toolsField = options.evalToolsEnabled ? { "tools?": "string[]" } : {};
+	const runtimeTierField = options.runtimeTierEnabled ? { rt: '"R1" | "R2" | "R3" | "R4" | "R5"' } : {};
 	if (options.batchEnabled) {
 		if (options.isolationEnabled) {
 			const item = type.raw({
 				"name?": "string",
 				agent,
 				task: "string",
+				...runtimeTierField,
 				...effortField,
 				"outputSchema?": outputSchemaInputSchema,
 				"schemaMode?": '"permissive" | "strict"',
@@ -231,6 +236,7 @@ function createTaskSchema(options: {
 			"name?": "string",
 			agent,
 			task: "string",
+			...runtimeTierField,
 			...effortField,
 			"outputSchema?": outputSchemaInputSchema,
 			"schemaMode?": '"permissive" | "strict"',
@@ -248,6 +254,7 @@ function createTaskSchema(options: {
 			"name?": "string",
 			agent,
 			task: "string",
+			...runtimeTierField,
 			...effortField,
 			"outputSchema?": outputSchemaInputSchema,
 			"schemaMode?": '"permissive" | "strict"',
@@ -260,6 +267,7 @@ function createTaskSchema(options: {
 		"name?": "string",
 		agent,
 		task: "string",
+		...runtimeTierField,
 		...effortField,
 		"outputSchema?": outputSchemaInputSchema,
 		"schemaMode?": '"permissive" | "strict"',
@@ -276,18 +284,21 @@ export function getTaskSchema(options: {
 	/** Advertise the `tools` field for eval-defined tools (`eval.tools.enabled`, default on). */
 	evalToolsEnabled?: boolean;
 	defaultAgent?: string;
+	/** Require and advertise the profile-owned runtime tier field. */
+	runtimeTierEnabled?: boolean;
 }): TaskToolSchemaInstance {
 	const defaultAgent = options.defaultAgent ?? "task";
 	const effortEnabled = options.effortEnabled ?? false;
 	const evalToolsEnabled = options.evalToolsEnabled ?? true;
-	if (defaultAgent === "task" && !effortEnabled && evalToolsEnabled) {
+	const runtimeTierEnabled = options.runtimeTierEnabled ?? false;
+	if (defaultAgent === "task" && !effortEnabled && evalToolsEnabled && !runtimeTierEnabled) {
 		if (options.batchEnabled) return options.isolationEnabled ? taskSchemaBatch : taskSchemaBatchNoIsolation;
 		return options.isolationEnabled ? taskSchema : taskSchemaNoIsolation;
 	}
-	const key = `${options.isolationEnabled ? "iso" : "flat"}:${options.batchEnabled ? "batch" : "single"}:${effortEnabled ? "effort" : "default"}:${evalToolsEnabled ? "tools" : "notools"}:${defaultAgent}`;
+	const key = `${options.isolationEnabled ? "iso" : "flat"}:${options.batchEnabled ? "batch" : "single"}:${effortEnabled ? "effort" : "default"}:${evalToolsEnabled ? "tools" : "notools"}:${runtimeTierEnabled ? "rt" : "nort"}:${defaultAgent}`;
 	const cached = taskSchemaCache.get(key);
 	if (cached) return cached;
-	const schema = createTaskSchema({ ...options, effortEnabled, evalToolsEnabled, defaultAgent });
+	const schema = createTaskSchema({ ...options, effortEnabled, evalToolsEnabled, runtimeTierEnabled, defaultAgent });
 	taskSchemaCache.set(key, schema);
 	return schema;
 }
@@ -305,6 +316,8 @@ export interface TaskParams {
 	agent?: string;
 	/** The work (flat form). */
 	task?: string;
+	/** Optional profile-defined runtime/decomposition tier. */
+	rt?: "R1" | "R2" | "R3" | "R4" | "R5";
 	/** Per-spawn thinking effort (flat form): lowest/middle/highest level the resolved model supports. */
 	effort?: TaskEffort;
 	/** Caller-provided output schema; its presence overrides the selected agent's schema. */
@@ -495,6 +508,18 @@ export interface AgentProgress {
 	inflightTaskDetails?: TaskToolDetails;
 }
 
+/** Bounded, generic execution telemetry; profiles decide whether to present it. */
+export interface DelegatedAgentTelemetry {
+	startedAtMs: number;
+	firstRequestAtMs?: number;
+	settledAtMs: number;
+	durationMs: number;
+	requests?: number;
+	usage?: Usage;
+	tools: Array<{ name: string }>;
+	explanation: string;
+}
+
 /** Result from a single agent execution */
 export interface SingleResult {
 	index: number;
@@ -514,6 +539,7 @@ export interface SingleResult {
 	 * selected an output schema or strict schema mode.
 	 */
 	structuredOutput?: StructuredSubagentOutput;
+	telemetry?: DelegatedAgentTelemetry;
 	durationMs: number;
 	/** Cumulative input + output + cacheWrite tokens across all turns. Excludes cacheRead (re-reads cached context every turn, making cumulative sum misleading). */
 	tokens: number;

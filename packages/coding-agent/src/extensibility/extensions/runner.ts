@@ -435,6 +435,10 @@ interface ToolRegistrationScope {
 }
 
 export class ExtensionRunner {
+	/** Read a service published by one of this session's loaded extensions. */
+	getExtensionService<T = unknown>(name: string): T | undefined {
+		return this.runtime.extensionServices.get(name)?.value as T | undefined;
+	}
 	#uiContext: ExtensionUIContext;
 	#mode: ExtensionMode = "print";
 	#toolApprovalPreviewWaiter?: (toolCallId: string) => Promise<void>;

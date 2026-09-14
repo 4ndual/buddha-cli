@@ -11,9 +11,9 @@ import { type AssistantMessage, completeSimple, type Model, retryTransientComple
 import { Tokenizer } from "@oh-my-pi/pi-agent-core";
 import { logger } from "@oh-my-pi/pi-utils";
 
-import type { ModelRegistry } from "../config/model-registry";
-import { resolveRoleSelection } from "../config/model-resolver";
-import type { ToolSession } from "../tools";
+import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { resolveRoleSelection } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 
 import { recordLunaCall } from "./metrics";
 import { LUNA_ROUTER_PROMPT } from "./prompts";

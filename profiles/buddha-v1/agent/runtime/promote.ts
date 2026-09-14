@@ -13,10 +13,10 @@
  */
 
 import { logger } from "@oh-my-pi/pi-utils";
-import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
-import type { AgentSession } from "../session/agent-session";
-import type { CustomMessage } from "../session/messages";
-import type { ToolSession } from "../tools";
+import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { SIDDHI_RESULT_MESSAGE_TYPE, type SiddhiJob } from "./types";
 
 /**
@@ -49,7 +49,7 @@ export async function promoteWorkerAnswer(
 		return {};
 	}
 
-	const details = { jobId: job.id };
+	const details = { jobId: job.id, excludeFromContext: true, persistent: true, primaryResult: true };
 	let artifactId: string | undefined;
 	try {
 		artifactId = await live.sessionManager.saveArtifact(answer, "siddhi");

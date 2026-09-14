@@ -24,11 +24,12 @@ copied by the installer.
 | Cross-extension runtime API | Generic namespaced service registry | Implemented; duplicate ownership fails closed |
 | Todo read/write, branch/tree navigation, persistent tool approval | Generic extension context actions | Implemented; used by OMP Live |
 | `.buddha` and default-profile history discovery | OMP Live compatibility scanner | Preserved alongside active named profile |
-| Buddha router, Siddhi-only root, clean five-line prompt | `buddha-v1` mode extension | Pending extraction from fork core |
-| `complete` and `parent` tools | `buddha-v1` extension tools | Pending extraction from dirty fork state |
-| Delegated-task lifecycle supervision and telemetry | Profile extension plus any minimal lifecycle event seam | Pending extraction |
-| Prompt Analyzer application | Buddha sidecar launched/configured by profile extension | Pending extraction |
-| Modified cross-root session discovery in CLI | Bridge/profile index; generic discovery seam only if required | Pending extraction |
+| Buddha router, Siddhi-only root, clean five-line prompt | `buddha-v1` profile runtime | Implemented; provider request is fail-closed to one prompt and `siddhi` |
+| `complete` and `parent` tools | `buddha-tools` profile extension | Implemented for delegated agents |
+| Delegated-task lifecycle supervision | Generic timer/cancellation seam plus `omp.task-lifecycle` profile service | Implemented; stock registers no policy |
+| Delegated-task telemetry | Generic bounded run snapshot plus profile formatter | Implemented; collected generically and rendered only by `buddha-v1` |
+| Prompt Analyzer application | Existing `@oh-my-pi/prompt-analyzer` workspace package | Separate optional companion, as in the current installation; it is not coupled to CLI/profile startup |
+| Modified cross-root session discovery in CLI | Bridge profile index and compatibility scanner | Implemented without changing stock CLI discovery |
 
 ## Installation contract
 
@@ -48,9 +49,18 @@ The installer refuses an existing destination and writes through a temporary
 directory followed by one rename. It never changes `~/.buddha`, the default
 `~/.omp/agent`, the global `omp` link, or a running CodeNomad/OMP process.
 
-The bridge may run with `OMP_PROFILE=buddha-v1` as its default. Its profile-aware
-backend also exposes `GET /profile` and accepts `profile` on `POST /session`, so a
-client can select `stock`, `buddha-v1`, or future workflow profiles per new
-terminal without mutating the bridge process or global OMP state. Historical
-scanning includes the active profile and retains the legacy `.omp` and `.buddha`
-roots during migration.
+The bridge is the CodeNomad backend compatibility boundary. It may run with
+`OMP_PROFILE=buddha-v1` as its default, exposes `GET /profile`, and accepts
+`profile` on `POST /session`. CodeNomad can therefore select `stock`,
+`buddha-v1`, or future workflow profiles per new terminal without mutating the
+bridge process or global OMP state. The selected profile is returned in live
+session metadata, passed to the spawned CLI, and used for service discovery.
+History scanning includes the active profile and retains the legacy `.omp` and
+`.buddha` roots during migration.
+
+Prompt Analyzer stays deliberately independent: the current application is a
+manually started two-window HTTP/WebSocket companion, not a hook in the Buddha
+CLI launch path. A future profile-owned sidecar supervisor can be added without
+changing this profile runtime contract, but auto-starting it now would alter
+current behavior and introduce a shared port/process lifecycle into every
+session.

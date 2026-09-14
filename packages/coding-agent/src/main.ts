@@ -23,8 +23,8 @@ import {
 	VERSION,
 } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
-import { applyBuddhaSessionOptions, isBuddhaEnabled } from "./buddha/session-overrides";
 import { reset as resetCapabilities } from "./capability";
+import { applyProfileRuntime } from "./profile-runtime";
 import { type Args, reportUnrecognizedFlags, validateToolNames } from "./cli/args";
 import { applyExtensionFlags, type ExtensionFlagSink } from "./cli/extension-flags";
 import { processFileArguments } from "./cli/file-processor";
@@ -485,9 +485,9 @@ export function createAcpSessionFactory(args: AcpSessionFactoryOptions): AcpSess
 			args.rawArgs,
 		);
 		const requestedTools = reparsedArgs?.tools ?? args.parsedArgs.tools;
-		// Buddha's restricted single-tool registry never reflects `--tools` (see the
-		// bootstrap path), so the list is ignored rather than validated.
-		if (requestedTools && args.baseOptions.buddhaMode !== true) {
+		// A profile runtime may own a restricted registry, in which case ambient
+		// CLI tool selection is deliberately ignored.
+		if (requestedTools && args.baseOptions.restrictToolNames !== true) {
 			try {
 				validateToolNames(requestedTools, nextSession.getAllToolNames());
 			} catch (error) {
@@ -1421,12 +1421,9 @@ export async function buildSessionOptions(
 		}
 	}
 
-	// Buddha mode LAST: it overwrites the prompt and the tool selection every
-	// branch above populated, so nothing configured, discovered, or CLI-supplied
-	// can widen the root agent's context.
-	if (isBuddhaEnabled(activeSettings, parsed.buddha)) {
-		applyBuddhaSessionOptions(options, { settings: activeSettings, explicitModel: parsed.model !== undefined });
-	}
+	// Profile runtime LAST: it may deliberately replace prompt, discovery, and
+	// tool policy after every ordinary CLI/config input has been resolved.
+	await applyProfileRuntime(options, activeSettings, parsed.model !== undefined);
 
 	return options;
 }
@@ -1563,11 +1560,6 @@ export async function runRootCommand(
 			// --auto-approve / --yolo without an explicit --approval-mode: reflect in settings so
 			// setup-time checks (e.g. #wrapToolForAcpPermission) also see the yolo intent.
 			settingsInstance.override("tools.approvalMode", "yolo");
-		}
-		if (parsedArgs.buddha) {
-			// --buddha without the setting: reflect it so every downstream
-			// `buddha.enabled` read (including buildSessionOptions) sees the intent.
-			settingsInstance.override("buddha.enabled", true);
 		}
 		if (parsedArgs.mode === "rpc" || parsedArgs.mode === "rpc-ui") {
 			applyRpcDefaultSettingOverrides(settingsInstance);
@@ -2027,10 +2019,9 @@ export async function runRootCommand(
 				preloadedExtensions: extensionsResult,
 			});
 
-			// Buddha mode owns the tool selection (`siddhi` only) and deliberately
-			// ignores `--tools`, so validating that list against Buddha's restricted
-			// registry would abort the session over a flag it never applied.
-			if (sessionOptions.buddhaMode !== true) {
+			// A restricted profile runtime owns tool selection and ignores ambient
+			// `--tools`, so validate only ordinary sessions.
+			if (sessionOptions.restrictToolNames !== true) {
 				try {
 					validateToolNames(initialArgs.tools, session.getAllToolNames());
 				} catch (error) {

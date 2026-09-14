@@ -1,4 +1,4 @@
 {
 	"extends": "../../../../../packages/tsconfig.workspace.json",
-	"include": ["index.ts", "inbox.ts"]
+	"include": ["index.ts", "inbox.ts", "../buddha-tools/index.ts", "../../runtime.ts", "../../runtime/**/*.ts"]
 }

@@ -1,6 +1,7 @@
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { StructuredSubagentOutput } from "../task/types";
+import { superviseTaskLifecycle, type TaskLifecycle, type TaskRuntimeMetadata } from "./task-lifecycle";
 
 const DELIVERY_RETRY_BASE_MS = 500;
 const DELIVERY_RETRY_MAX_MS = 30_000;
@@ -201,6 +202,13 @@ export interface AsyncJobRegisterOptions {
 	onProgress?: (text: string, details?: AsyncJobDetails) => void | Promise<void>;
 	/** Register the job in queued state; see {@link AsyncJob.queued}. */
 	queued?: boolean;
+	/** Optional profile-supplied supervision; absent means stock OMP behavior. */
+	lifecycle?: {
+		metadata: TaskRuntimeMetadata;
+		checkpointsMs?: { check1: number; check2: number; hardCancel: number };
+		onCheckpoint: (checkpoint: "CHECK_1" | "CHECK_2", metadata: TaskRuntimeMetadata) => void | Promise<void>;
+		onOwnedHardCancel: (metadata: TaskRuntimeMetadata) => void | Promise<void>;
+	};
 }
 
 /**
@@ -328,6 +336,18 @@ export class AsyncJobManager {
 			agentId: options?.agentId,
 			queued: options?.queued === true,
 		};
+		let lifecycle: TaskLifecycle | undefined;
+		if (type === "task" && options?.lifecycle) {
+			lifecycle = superviseTaskLifecycle({
+				metadata: options.lifecycle.metadata,
+				checkpointsMs: options.lifecycle.checkpointsMs,
+				onCheckpoint: options.lifecycle.onCheckpoint,
+				onOwnedHardCancel: async metadata => {
+					this.cancel(id, options.ownerId ? { ownerId: options.ownerId } : undefined);
+					await options.lifecycle?.onOwnedHardCancel(metadata);
+				},
+			});
+		}
 
 		const reportProgress = async (text: string, details?: AsyncJobDetails): Promise<void> => {
 			if (details) job.latestDetails = details;
@@ -353,6 +373,7 @@ export class AsyncJobManager {
 				});
 				const text = typeof outcome === "string" ? outcome : outcome.text;
 				const structured = typeof outcome === "string" ? undefined : outcome.structured;
+				lifecycle?.stop();
 				if (structured) job.structured = structured;
 				if (job.status === "cancelled") {
 					job.resultText = text;
@@ -364,6 +385,7 @@ export class AsyncJobManager {
 				this.#enqueueDelivery(id, text);
 				this.#scheduleEviction(id);
 			} catch (error) {
+				lifecycle?.stop();
 				if (error instanceof AsyncJobError && error.structured) job.structured = error.structured;
 				if (job.status === "cancelled") {
 					job.errorText = error instanceof Error ? error.message : String(error);

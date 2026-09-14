@@ -1,13 +1,10 @@
 /**
- * Contract: in Buddha mode, print mode delivers the promoted worker answer to
- * stdout. The answer is deliberately absent from Buddha's own context, so the
- * final-assistant-text loop alone would leave the user with nothing but
- * Buddha's short acknowledgement. It must be printed once, ahead of that
- * acknowledgement, and only for Buddha sessions.
+ * Contract: print mode delivers a profile-promoted primary result to stdout.
+ * The answer can be absent from the model's own context, so it must be printed
+ * once ahead of the model acknowledgement when the owner marks it primary.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
-import { SIDDHI_RESULT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/buddha/types";
 import { runPrintMode } from "@oh-my-pi/pi-coding-agent/modes/print-mode";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SUBAGENT_WARNING_NULL_YIELD } from "@oh-my-pi/pi-coding-agent/task/executor";
@@ -25,15 +22,15 @@ function assistantMessage(text: string): AssistantMessage {
 	};
 }
 
-function promotion(content: string): AgentSessionEvent {
+function promotion(content: string, primaryResult: boolean): AgentSessionEvent {
 	return {
 		type: "irc_message",
 		message: {
 			role: "custom",
-			customType: SIDDHI_RESULT_MESSAGE_TYPE,
+			customType: "test-primary-result",
 			content,
 			display: true,
-			details: { jobId: "job_1" },
+			details: { jobId: "job_1", primaryResult },
 			attribution: "agent",
 			timestamp: Date.now(),
 		},
@@ -41,7 +38,7 @@ function promotion(content: string): AgentSessionEvent {
 }
 
 /** Mock root session whose turn emits `promotions` before settling on `finalText`. */
-function createSession(options: { buddha: boolean; promotions: string[]; finalText: string }): AgentSession {
+function createSession(options: { primaryResult: boolean; promotions: string[]; finalText: string }): AgentSession {
 	const messages: AssistantMessage[] = [];
 	let subscriber: ((event: AgentSessionEvent) => void) | undefined;
 	let advisorDrainPrepared = false;
@@ -53,7 +50,7 @@ function createSession(options: { buddha: boolean; promotions: string[]; finalTe
 			buildSessionContext: () => ({ messages: [] }),
 			getEntries: () => [],
 		},
-		settings: { get: (key: string) => (key === "buddha.enabled" ? options.buddha : false) },
+		settings: { get: () => false },
 		extensionRunner: undefined,
 		setTextOutputCommitted: () => {},
 		subscribe: (listener: (event: AgentSessionEvent) => void) => {
@@ -63,7 +60,7 @@ function createSession(options: { buddha: boolean; promotions: string[]; finalTe
 		prompt: async () => {
 			// Promotions reach the session inside the turn, before the model's own
 			// closing message — exactly where `siddhi` runs.
-			for (const content of options.promotions) subscriber?.(promotion(content));
+			for (const content of options.promotions) subscriber?.(promotion(content, options.primaryResult));
 			messages.push(assistantMessage(options.finalText));
 			return true;
 		},
@@ -77,7 +74,7 @@ function createSession(options: { buddha: boolean; promotions: string[]; finalTe
 	} as unknown as AgentSession;
 }
 
-describe("print mode Buddha answer delivery", () => {
+describe("print mode profile primary-result delivery", () => {
 	let stdout: string[];
 
 	beforeEach(() => {
@@ -95,10 +92,10 @@ describe("print mode Buddha answer delivery", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("prints the newest promoted answer once, ahead of Buddha's own reply", async () => {
+	it("prints the newest promoted answer once, ahead of the model reply", async () => {
 		const session = createSession({
-			buddha: true,
-			// The routing loop promotes per round, and Buddha re-delegates because
+			primaryResult: true,
+			// A routing loop can promote per round and re-delegate because
 			// it cannot see any answer: several promotions, one user-visible answer.
 			promotions: ["first attempt", "SECRET_MARKER_7741"],
 			finalText: "I could not retrieve the marker line.",
@@ -111,7 +108,7 @@ describe("print mode Buddha answer delivery", () => {
 
 	it("keeps the real answer when the last promotion is only a harness banner", async () => {
 		const session = createSession({
-			buddha: true,
+			primaryResult: true,
 			promotions: ["SECRET_MARKER_7741", SUBAGENT_WARNING_NULL_YIELD],
 			finalText: "done",
 		});
@@ -123,7 +120,7 @@ describe("print mode Buddha answer delivery", () => {
 
 	it("keeps a banner-prefixed answer, banner and all", async () => {
 		const session = createSession({
-			buddha: true,
+			primaryResult: true,
 			promotions: [`${SUBAGENT_WARNING_NULL_YIELD}\n\nSECRET_MARKER_7741`],
 			finalText: "done",
 		});
@@ -133,9 +130,9 @@ describe("print mode Buddha answer delivery", () => {
 		expect(stdout.join("")).toBe(`${SUBAGENT_WARNING_NULL_YIELD}\n\nSECRET_MARKER_7741\ndone\n`);
 	});
 
-	it("ignores promoted answers outside Buddha mode", async () => {
+	it("ignores unmarked promoted answers", async () => {
 		const session = createSession({
-			buddha: false,
+			primaryResult: false,
 			promotions: ["SECRET_MARKER_7741"],
 			finalText: "ordinary reply",
 		});

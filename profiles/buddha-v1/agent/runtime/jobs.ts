@@ -9,7 +9,7 @@
  * every hot read; it is populated lazily on first access per session.
  */
 
-import type { ToolSession } from "../tools";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { resetPeakTokens } from "./metrics";
 import { clampSummary, SIDDHI_JOB_CUSTOM_TYPE, type SiddhiJob, type WorkerMode } from "./types";
 
