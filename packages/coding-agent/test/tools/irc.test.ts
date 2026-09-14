@@ -811,6 +811,25 @@ describe("IRC", () => {
 			expect(text).toContain("pong");
 		});
 
+		it("inherits extension projection scope across replyTo", async () => {
+			const main = makeFakeSession();
+			const sub = makeFakeSession();
+			registry.register({ id: "0-Main", displayName: "main", kind: "main", session: main.session });
+			registry.register({ id: "0-Sub", displayName: "task", kind: "sub", session: sub.session });
+			const observed: IrcMessage[] = [];
+			bus.onDelivery(message => observed.push(message));
+
+			const outbound = await bus.sendTracked({
+				from: "0-Main",
+				to: "0-Sub",
+				body: "ping",
+				extensionScope: { kind: "root", id: "session-1" },
+			});
+			await bus.send({ from: "0-Sub", to: "0-Main", body: "pong", replyTo: outbound.message.id });
+
+			expect(observed.at(-1)?.extensionScope).toEqual({ kind: "root", id: "session-1" });
+		});
+
 		it("op=send await=true ignores buffered stale mail and waits for a future reply", async () => {
 			const main = makeFakeSession();
 			registry.register({ id: "0-Main", displayName: "main", kind: "main", session: main.session });
