@@ -41,6 +41,7 @@ export interface IrcMessage {
 	wakeRelay?: boolean;
 	/** Durable Hub partition provenance. Omitted for legacy/tool-only IRC traffic. */
 	hubScope?: { kind: "root" | "workspace" | "tree" | "global"; id: string };
+	extensionScope?: { kind: string; id: string };
 }
 
 export interface IrcDeliveryReceipt {

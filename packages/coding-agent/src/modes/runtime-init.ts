@@ -11,6 +11,7 @@ import { getSessionSlashCommands } from "../extensibility/extensions/get-command
 import type { ExtensionError, ExtensionMode, ExtensionUIContext } from "../extensibility/extensions/types";
 import type { AgentSession } from "../session/agent-session";
 import { USER_INTERRUPT_LABEL } from "../session/messages";
+import type { TodoPhase } from "../tools/todo";
 
 /** Action name for an extension-originated send failure. */
 export type ExtensionSendAction = "extension_send" | "extension_send_user";
@@ -118,6 +119,8 @@ export async function initializeExtensions(session: AgentSession, options: Initi
 			hasPendingMessages: () => session.queuedMessageCount > 0,
 			shutdown,
 			getContextUsage: () => session.getContextUsage(),
+			getTodoPhases: () => session.getTodoPhases(),
+			setTodoPhases: phases => session.setTodoPhases(phases as TodoPhase[]),
 			getSystemPrompt: () => session.systemPrompt,
 			compact: instructionsOrOptions => runExtensionCompact(session, instructionsOrOptions),
 		},

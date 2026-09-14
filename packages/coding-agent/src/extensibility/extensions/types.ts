@@ -79,6 +79,7 @@ import type {
 	WriteToolInput,
 } from "../../tools";
 import type { ApprovalMode } from "../../tools/approval";
+import type { TodoPhase } from "../../tools/todo";
 import type { FileDeleteFallbackHandler, FileWriteFallbackHandler } from "../../tools/file-write-fallback";
 import type { EventBus } from "../../utils/event-bus";
 import type {
@@ -463,9 +464,9 @@ export interface ExtensionContext {
 	/** Get a read-only snapshot of async jobs owned by this session. */
 	getAsyncJobSnapshot(): AsyncJobSnapshot | null;
 	/** Read the owning session's structured Todo-tool phases. */
-	getTodoPhases(): unknown[];
+	getTodoPhases(): TodoPhase[];
 	/** Replace the owning session's structured Todo-tool phases. */
-	setTodoPhases(phases: unknown[]): void;
+	setTodoPhases(phases: TodoPhase[]): void;
 	/** Compact the session context (interactive mode shows UI). */
 	compact(instructionsOrOptions?: string | CompactOptions): Promise<void>;
 	/** Start a new session, optionally with initialization. */
@@ -503,6 +504,8 @@ export interface ExtensionContext {
 	shutdown(): void;
 	/** Persist a per-tool approval policy for subsequent calls. */
 	setToolApproval?(toolName: string, policy: "allow" | "deny" | "prompt"): void;
+	/** Resolve a runtime service published by another loaded extension. */
+	getExtensionService<T = unknown>(name: string): T | undefined;
 	/** Get the current effective system prompt. */
 	getSystemPrompt(): string[];
 	/** Structured memory runtime for status/search/save across the configured backend. */
@@ -1228,6 +1231,8 @@ export type ExtensionServiceTier<Family extends ServiceTierFamily> = Family exte
  * ExtensionAPI passed to extension factory functions.
  */
 export interface ExtensionAPI {
+	/** Publish a namespaced runtime service for other loaded extensions. */
+	registerExtensionService<T>(name: string, service: T): void;
 	// =========================================================================
 	// Module Access
 	// =========================================================================
@@ -1702,6 +1707,7 @@ export type SetServiceTierHandler = (family: ServiceTierFamily, tier: ServiceTie
 
 /** Shared state created by loader, used during registration and runtime. */
 export interface ExtensionRuntimeState {
+	extensionServices: Map<string, { value: unknown; sourceId: string }>;
 	flagValues: Map<string, boolean | string>;
 	/** Provider registrations queued during extension loading, processed during session initialization */
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; sourceId: string }>;
@@ -1739,8 +1745,8 @@ export interface ExtensionContextActions {
 	shutdown: () => void;
 	setToolApproval?: (toolName: string, policy: "allow" | "deny" | "prompt") => void;
 	getContextUsage: () => ContextUsage | undefined;
-	getTodoPhases?: () => unknown[];
-	setTodoPhases?: (phases: unknown[]) => void;
+	getTodoPhases?: () => TodoPhase[];
+	setTodoPhases?: (phases: TodoPhase[]) => void;
 	compact: (instructionsOrOptions?: string | CompactOptions) => Promise<void>;
 	newSession?: (options?: {
 		parentSession?: string;

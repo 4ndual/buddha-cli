@@ -21,6 +21,7 @@ import type { MemoryRuntimeContext } from "../../memory-backend";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { AsyncJobSnapshot } from "../../session/agent-session";
 import type { SessionManager } from "../../session/session-manager";
+import type { TodoPhase } from "../../tools/todo";
 import { AgentRegistry } from "../../registry/agent-registry";
 import { HubInboxService, HubInboxStore } from "../../tools/hub/inbox";
 import { addFileDeleteFallback, addFileWriteFallback } from "../../tools/file-write-fallback";
@@ -450,8 +451,8 @@ export class ExtensionRunner {
 	#abortFn: () => void = () => {};
 	#hasPendingMessagesFn: () => boolean = () => false;
 	#getContextUsageFn: () => ContextUsage | undefined = () => undefined;
-	#getTodoPhasesFn: () => unknown[] = () => [];
-	#setTodoPhasesFn: (phases: unknown[]) => void = () => {};
+	#getTodoPhasesFn: () => TodoPhase[] = () => [];
+	#setTodoPhasesFn: (phases: TodoPhase[]) => void = () => {};
 	#compactFn: (instructionsOrOptions?: string | CompactOptions) => Promise<void> = async () => {};
 	#getSystemPromptFn: () => string[] = () => [];
 	#getAsyncJobSnapshotFn: () => AsyncJobSnapshot | null = () => null;
@@ -1220,6 +1221,8 @@ export class ExtensionRunner {
 				? (toolName, policy) => this.#setToolApprovalHandler?.(toolName, policy)
 				: undefined,
 			getSystemPrompt: () => this.#getSystemPromptFn(),
+			getExtensionService: <T = unknown>(name: string): T | undefined =>
+				this.runtime.extensionServices.get(name)?.value as T | undefined,
 			localProtocolOptions: this.localProtocolOptions,
 			hubInbox: this.#hubInbox,
 			memory: this.#getMemoryFn?.(),
