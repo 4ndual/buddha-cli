@@ -44,7 +44,11 @@ import { isRpcHostUriResult, RpcHostUriBridge } from "./host-uris";
 import { MAX_RPC_FRAME_BYTES, MAX_RPC_REASSEMBLED_BYTES, RpcFrameEncoder } from "./rpc-frame";
 import { claimRpcInput, readRpcInputFrames } from "./rpc-input";
 import { pageRpcMessages, RPC_MESSAGES_PAGE_BUSY_ERROR, RpcMessagesPageError } from "./rpc-messages";
-import { RpcSubagentRegistry, readRpcSubagentTranscript } from "./rpc-subagents";
+import {
+	RpcSubagentRegistry,
+	readRpcSubagentRepositoryTranscript,
+	readRpcSubagentTranscript,
+} from "./rpc-subagents";
 import type {
 	RpcCommand,
 	RpcExtensionUIRequest,
@@ -1296,8 +1300,11 @@ export async function runRpcMode(
 					if (command.fromByte !== undefined && !Number.isFinite(command.fromByte)) {
 						return error(id, "get_subagent_messages", "fromByte must be a finite number");
 					}
-					const sessionFile = subagentRegistry.resolveSessionFile(command);
-					const transcript = await readRpcSubagentTranscript(sessionFile, command.fromByte);
+					const source = subagentRegistry.resolveTranscriptSource(command);
+					const transcript =
+						typeof source === "string"
+							? await readRpcSubagentTranscript(source, command.fromByte)
+							: await readRpcSubagentRepositoryTranscript(source, command.cursor);
 					return success(id, "get_subagent_messages", transcript);
 				} catch (err) {
 					return error(id, "get_subagent_messages", err instanceof Error ? err.message : String(err));

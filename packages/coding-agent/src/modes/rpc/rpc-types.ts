@@ -6,6 +6,7 @@
  */
 import type { AgentMessage, AgentToolResult, ThinkingLevel, ToolLoadMode } from "@oh-my-pi/pi-agent-core";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
+import type { KeysetCursor, SessionLocator } from "../../session/repository/types";
 import type { Effort, ImageContent, Model, ToolExample } from "@oh-my-pi/pi-ai";
 import type { BashResult } from "../../exec/bash-executor";
 import type { ContextUsage } from "../../extensibility/extensions/types";
@@ -49,7 +50,14 @@ export type RpcCommand =
 	| { id?: string; type: "set_host_uri_schemes"; schemes: RpcHostUriSchemeDefinition[] }
 	| { id?: string; type: "set_subagent_subscription"; level: RpcSubagentSubscriptionLevel }
 	| { id?: string; type: "get_subagents" }
-	| { id?: string; type: "get_subagent_messages"; subagentId?: string; sessionFile?: string; fromByte?: number }
+	| {
+			id?: string;
+			type: "get_subagent_messages";
+			subagentId?: string;
+			sessionFile?: string;
+			fromByte?: number;
+			cursor?: KeysetCursor;
+	  }
 
 	// Model
 	| { id?: string; type: "set_model"; provider: string; modelId: string }
@@ -183,10 +191,16 @@ export interface RpcSubagentSnapshot {
 }
 
 export interface RpcSubagentMessagesResult {
-	sessionFile: string;
-	fromByte: number;
-	nextByte: number;
+	/** JSONL compatibility identity. Absent for repository-backed transcripts. */
+	sessionFile?: string;
+	/** Logical identity. Present for repository-backed transcripts. */
+	sessionLocator?: SessionLocator;
+	/** JSONL byte cursor fields. */
+	fromByte?: number;
+	nextByte?: number;
 	reset: boolean;
+	/** Repository keyset cursor. */
+	cursor?: KeysetCursor;
 	entries: FileEntry[];
 	messages: AgentMessage[];
 }

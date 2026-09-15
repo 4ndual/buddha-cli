@@ -12,6 +12,8 @@
  */
 import * as fs from "node:fs/promises";
 import { ADVISOR_TRANSCRIPT_STEM } from "../advisor/transcript-recorder";
+import type { RepositorySessionSource } from "../session/repository-consumers";
+import type { KeysetCursor } from "../session/repository/types";
 
 /**
  * Manages agent output ID allocation to ensure uniqueness.
@@ -27,10 +29,15 @@ export class AgentOutputManager {
 	readonly #taken = new Set<string>();
 	readonly #getArtifactsDir: () => string | null;
 	readonly #parentPrefix: string | undefined;
+	readonly #getRepositorySource: (() => RepositorySessionSource | null) | undefined;
 
-	constructor(getArtifactsDir: () => string | null, options?: { parentPrefix?: string }) {
+	constructor(
+		getArtifactsDir: () => string | null,
+		options?: { parentPrefix?: string; getRepositorySource?: () => RepositorySessionSource | null },
+	) {
 		this.#getArtifactsDir = getArtifactsDir;
 		this.#parentPrefix = options?.parentPrefix;
+		this.#getRepositorySource = options?.getRepositorySource;
 		// Reserve the advisor transcript stem: a subagent allocated this id would
 		// write `<id>.jsonl`, clobbering the advisor's `__advisor.jsonl` in the same
 		// artifacts dir. Reserving bumps such a request to `__advisor-2`.
@@ -43,11 +50,43 @@ export class AgentOutputManager {
 	 */
 	async #ensureInitialized(): Promise<void> {
 		if (this.#initialized) return;
-		this.#initializing ??= this.#seedFromDisk();
+		this.#initializing ??= this.#seedPersistedIds();
 		await this.#initializing;
 		this.#initialized = true;
 	}
 
+	async #seedPersistedIds(): Promise<void> {
+		const source = this.#getRepositorySource?.();
+		if (!source) {
+			await this.#seedFromDisk();
+			return;
+		}
+		for (const kind of ["child-session", "advisor-session", "artifact"] as const) {
+			let cursor: KeysetCursor | undefined;
+			do {
+				const page = await source.repository.listRelatedResources({
+					owner: source.locator,
+					kind,
+					cursor,
+					limit: 200,
+				});
+				for (const binding of page.items) this.#reservePersistedId(binding.locator.key);
+				cursor = page.nextCursor;
+			} while (cursor !== undefined);
+		}
+	}
+
+	#reservePersistedId(id: string): void {
+		const prefix = this.#parentPrefix ? `${this.#parentPrefix}.` : "";
+		let rest = id;
+		if (prefix) {
+			if (!rest.startsWith(prefix)) return;
+			rest = rest.slice(prefix.length);
+		}
+		const dot = rest.indexOf(".");
+		const segment = dot === -1 ? rest : rest.slice(0, dot);
+		if (segment) this.#taken.add(segment);
+	}
 	async #seedFromDisk(): Promise<void> {
 		const dir = this.#getArtifactsDir();
 		if (!dir) return;
@@ -59,20 +98,10 @@ export class AgentOutputManager {
 			return; // Directory doesn't exist yet
 		}
 
-		const prefix = this.#parentPrefix ? `${this.#parentPrefix}.` : "";
 		for (const file of files) {
 			const extension = file.endsWith(".jsonl") ? ".jsonl" : file.endsWith(".md") ? ".md" : undefined;
 			if (!extension) continue;
-			let rest = file.slice(0, -extension.length);
-			if (prefix) {
-				if (!rest.startsWith(prefix)) continue;
-				rest = rest.slice(prefix.length);
-			}
-			// Requested ids never contain "."; a dot marks a nested child, so this
-			// manager only owns the first segment of whatever remains.
-			const dot = rest.indexOf(".");
-			const segment = dot === -1 ? rest : rest.slice(0, dot);
-			if (segment) this.#taken.add(segment);
+			this.#reservePersistedId(file.slice(0, -extension.length));
 		}
 	}
 
@@ -89,17 +118,7 @@ export class AgentOutputManager {
 	/** Reserve final IDs discovered outside the output directory scan. */
 	async reserve(ids: Iterable<string>): Promise<void> {
 		await this.#ensureInitialized();
-		const prefix = this.#parentPrefix ? `${this.#parentPrefix}.` : "";
-		for (const id of ids) {
-			let rest = id;
-			if (prefix) {
-				if (!rest.startsWith(prefix)) continue;
-				rest = rest.slice(prefix.length);
-			}
-			const dot = rest.indexOf(".");
-			const segment = dot === -1 ? rest : rest.slice(0, dot);
-			if (segment) this.#taken.add(segment);
-		}
+		for (const id of ids) this.#reservePersistedId(id);
 	}
 
 	/**

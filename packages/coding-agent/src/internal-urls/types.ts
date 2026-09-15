@@ -9,6 +9,7 @@ import type { Rule } from "../capability/rule";
 import type { Skill } from "../extensibility/skills";
 import type { AgentRegistry } from "../registry/agent-registry";
 import type { LocalProtocolOptions } from "./local-protocol";
+import type { SessionLocator, SessionRepository, SessionTransferService } from "../session/repository/types";
 
 /**
  * Raw resource payload returned by protocol handlers. The `immutable` flag is
@@ -107,6 +108,12 @@ export interface ResolveContext {
 	 * as a second exact identity alongside {@link sessionFile}.
 	 */
 	sessionId?: string;
+	/** Logical identity of the caller in repository mode; never derived from a path. */
+	sessionLocator?: SessionLocator;
+	/** Explicit repository injection for DB-backed internal URL consumers. */
+	sessionRepository?: SessionRepository;
+	/** Explicit transfer boundary, supplied only to export-oriented handlers. */
+	sessionTransferService?: SessionTransferService;
 	/** Registry that owns the calling session; defaults to the process-wide registry. */
 	agentRegistry?: AgentRegistry;
 	/** Settings of the calling session (used by `issue://`/`pr://` for cache TTLs). */

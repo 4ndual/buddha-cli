@@ -28,8 +28,12 @@ import { obfuscateToolArguments } from "../secrets/message-transform";
 import type { SecretObfuscator } from "../secrets/obfuscator";
 import { type SessionEntry, type SessionHeader, TITLE_CHANGE_ENTRY_TYPE } from "../session/session-entries";
 import type { SessionManager } from "../session/session-manager";
+import {
+	readRepositoryExportSnapshot,
+	type ExplicitRepositoryExportSource,
+} from "../session/repository-consumers";
 import type { OutputMeta } from "../tools/output-meta";
-import { buildSessionData, type SessionData, type SubSession } from "./html";
+import { buildSessionData, collectRepositorySubSessions, type SessionData, type SubSession } from "./html";
 
 export { DEFAULT_SHARE_URL };
 
@@ -92,6 +96,26 @@ export interface ShareSessionResult {
 /** Build the snapshot that gets sealed and uploaded, redacted when an obfuscator is provided. */
 export function buildShareSnapshot(sm: SessionManager, options?: ShareSessionOptions): SessionData {
 	const data = buildSessionData(sm, options?.state);
+	return options?.obfuscator?.hasSecrets() ? redactSessionDataForShare(options.obfuscator, data) : data;
+}
+
+/** Build a share snapshot through the explicit repository transfer boundary. */
+export async function buildRepositoryShareSnapshot(
+	source: ExplicitRepositoryExportSource,
+	options?: ShareSessionOptions,
+): Promise<SessionData> {
+	const snapshot = await readRepositoryExportSnapshot(source);
+	const header = { ...snapshot.header };
+	delete header.previousSessionFiles;
+	const data: SessionData = {
+		header,
+		entries: [...snapshot.entries],
+		leafId: snapshot.entries.at(-1)?.id ?? null,
+		systemPrompt: options?.state?.systemPrompt.join("\n\n"),
+		tools: options?.state?.tools?.map(tool => ({ name: tool.name, description: tool.description })),
+	};
+	const subSessions = await collectRepositorySubSessions(source);
+	if (Object.keys(subSessions).length > 0) data.subSessions = subSessions;
 	return options?.obfuscator?.hasSecrets() ? redactSessionDataForShare(options.obfuscator, data) : data;
 }
 
@@ -484,13 +508,23 @@ function redactShareMessage(
 
 /** Share the session; uploads to the share server unless `options.store` is `"gist"`. */
 export async function shareSession(sm: SessionManager, options?: ShareSessionOptions): Promise<ShareSessionResult> {
-	const data = buildShareSnapshot(sm, options);
+	return shareSnapshot(buildShareSnapshot(sm, options), options);
+}
+
+/** Share a repository-backed session through the explicit transfer boundary. */
+export async function shareRepositorySession(
+	source: ExplicitRepositoryExportSource,
+	options?: ShareSessionOptions,
+): Promise<ShareSessionResult> {
+	return shareSnapshot(await buildRepositoryShareSnapshot(source, options), options);
+}
+
+async function shareSnapshot(data: SessionData, options?: ShareSessionOptions): Promise<ShareSessionResult> {
 	const keyBytes = new Uint8Array(SHARE_KEY_BYTES);
 	crypto.getRandomValues(keyBytes);
 	const key = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["encrypt"]);
 	const keyText = Buffer.from(keyBytes).toString("base64url");
 	const base = normalizeShareServerUrl(options?.serverUrl);
-
 	if (options?.store === "gist") {
 		const forGist = await sealToFit(key, data, GIST_MAX_SEALED_BYTES);
 		const gist = await tryCreateGist(forGist.sealed);
@@ -503,10 +537,8 @@ export async function shareSession(sm: SessionManager, options?: ShareSessionOpt
 				sealedBytes: forGist.sealed.byteLength,
 			};
 		}
-		// gh unusable or gist creation failed — fall back to the share server.
 		return shareViaServer(key, data, base, keyText, forGist);
 	}
-
 	return shareViaServer(key, data, base, keyText);
 }
 

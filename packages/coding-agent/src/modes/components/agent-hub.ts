@@ -41,6 +41,7 @@ import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry, type AgentStatus, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import { registerPersistedSubagents } from "../../registry/persisted-agents";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
+import type { SessionLocator, SessionRepository, SessionTransferService } from "../../session/repository/types";
 import { shortenPath, truncateToWidth } from "../../tools/render-utils";
 import { formatLocalDateTimeWithOffset } from "../../utils/local-date";
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
@@ -178,6 +179,12 @@ export interface AgentHubDeps {
 	focusAgent?: (id: string) => Promise<void>;
 	/** Current main session file; used to seed parked historical subagents after restart. */
 	sessionFile?: string | null;
+	/** Logical root used to hydrate persisted children in repository mode. */
+	sessionLocator?: SessionLocator;
+	/** Explicit repository injected by the active session. */
+	sessionRepository?: SessionRepository;
+	/** Explicit transfer boundary retained for export actions only. */
+	sessionTransferService?: SessionTransferService;
 	/** Initial top-level projection; slash commands deep-link into this surface. */
 	initialSection?: AgentHubSection;
 	/** Injectable unified activity source; production creates one from local or remote transcripts. */
@@ -298,7 +305,11 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		this.#requestRender = deps.requestRender;
 		this.#hubKeys = deps.hubKeys;
 		this.#remote = deps.remote;
-		this.#loadingPersistedSubagents = !this.#remote && Boolean(deps.sessionFile?.endsWith(".jsonl"));
+		const persistedSource =
+			deps.sessionRepository && deps.sessionLocator
+				? { repository: deps.sessionRepository, locator: deps.sessionLocator }
+				: deps.sessionFile;
+		this.#loadingPersistedSubagents = !this.#remote && persistedSource !== undefined;
 		this.#ui =
 			deps.ui ??
 			({
@@ -326,7 +337,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 
 		this.persistedSubagentsReady = this.#remote
 			? Promise.resolve()
-			: registerPersistedSubagents(this.#registry, deps.sessionFile, {
+			: registerPersistedSubagents(this.#registry, persistedSource, {
 					shouldContinue: () => !this.#disposed,
 				})
 					.catch((error: unknown) => {

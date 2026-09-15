@@ -10,8 +10,13 @@ import {
 	type RpcSessionChangeResult,
 	type RpcSessionChangeSession,
 } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-mode";
-import { RpcSubagentRegistry, readRpcSubagentTranscript } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-subagents";
+import {
+	RpcSubagentRegistry,
+	readRpcSubagentRepositoryTranscript,
+	readRpcSubagentTranscript,
+} from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-subagents";
 import type { RpcSubagentFrame } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-types";
+import type { SessionRepository } from "@oh-my-pi/pi-coding-agent/session/repository/types";
 import {
 	type AgentProgress,
 	type SubagentEventPayload,
@@ -358,6 +363,42 @@ describe("readRpcSubagentTranscript", () => {
 			entries: [],
 			messages: [],
 		});
+	});
+
+	test("reads a bounded repository page without a JSONL path", async () => {
+		let observedLimit: number | undefined;
+		const repository = {
+			mode: "db",
+			replicaId: "replica:test",
+			readEvents: async (query: { limit?: number }) => {
+				observedLimit = query.limit;
+				return {
+					items: [
+						{
+							eventHash: "event:test",
+							originId: "origin:test",
+							parentEventHash: null,
+							nativeEntryId: "entry-1",
+							generation: 1,
+							entry: {
+								type: "message",
+								id: "entry-1",
+								parentId: null,
+								timestamp: "2026-09-15T12:00:00.000Z",
+								message: { role: "user", content: "repository transcript", timestamp: Date.now() },
+							},
+						},
+					],
+				};
+			},
+		} as unknown as SessionRepository;
+		const result = await readRpcSubagentRepositoryTranscript({
+			repository,
+			locator: { branchId: "branch:test" as never },
+		});
+		expect(observedLimit).toBe(200);
+		expect(result.sessionFile).toBeUndefined();
+		expect(result.messages[0]?.content).toBe("repository transcript");
 	});
 });
 

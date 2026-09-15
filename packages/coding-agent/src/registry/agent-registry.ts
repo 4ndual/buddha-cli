@@ -12,6 +12,7 @@
 import { logger } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
 import { oneLineLabel } from "../task/types";
+import type { SessionLocator, SessionRepository, SessionTransferService } from "../session/repository/types";
 
 export const MAIN_AGENT_ID = "Main";
 
@@ -78,6 +79,14 @@ export interface AgentRef {
 	/** Null exactly when parked/aborted. */
 	session: AgentSession | null;
 	sessionFile: string | null;
+	/** Logical repository identity. Present in DB mode; never synthesized from a JSONL path. */
+	sessionLocator: SessionLocator | null;
+	/** Explicit runtime repository injected by the session owner. */
+	sessionRepository: SessionRepository | null;
+	/** Explicit archive boundary; absent from ordinary runtime-only consumers. */
+	sessionTransferService: SessionTransferService | null;
+	/** Root whose explicit related-resource tree hydrated this parked ref. */
+	rosterRootLocator: SessionLocator | null;
 	createdAt: number;
 	lastActivity: number;
 	/** Short gist of what the agent is currently doing (latest intent or tool), for the work-aware roster. Display-only. */
@@ -103,6 +112,14 @@ export interface RegisterInput {
 	parentId?: string;
 	session: AgentSession | null;
 	sessionFile?: string | null;
+	/** Logical repository identity. Required for persisted DB-backed agents. */
+	sessionLocator?: SessionLocator | null;
+	/** Runtime repository that owns {@link sessionLocator}. */
+	sessionRepository?: SessionRepository | null;
+	/** Explicit archive boundary used only by export consumers. */
+	sessionTransferService?: SessionTransferService | null;
+	/** Root whose explicit related-resource tree owns this parked ref. */
+	rosterRootLocator?: SessionLocator | null;
 	status?: AgentStatus;
 	/** Last persisted task summary, when restoring a historical agent. */
 	activity?: string;
@@ -151,6 +168,10 @@ export class AgentRegistry {
 			status: input.status ?? "running",
 			session: input.session,
 			sessionFile: input.sessionFile ?? null,
+			sessionLocator: input.sessionLocator ?? null,
+			sessionRepository: input.sessionRepository ?? null,
+			sessionTransferService: input.sessionTransferService ?? null,
+			rosterRootLocator: input.rosterRootLocator ?? null,
 			createdAt: input.createdAt ?? now,
 			lastActivity: input.lastActivity ?? now,
 			activity: input.activity,
@@ -243,6 +264,23 @@ export class AgentRegistry {
 		if (!ref || ref.status === "aborted" || !this.#matchesExpected(ref, expected)) return false;
 		ref.session = session;
 		if (sessionFile !== undefined) ref.sessionFile = sessionFile;
+		ref.lastActivity = Date.now();
+		return true;
+	}
+
+	/** Attach logical storage without deriving a JSONL path. */
+	attachRepository(
+		id: string,
+		repository: SessionRepository,
+		locator: SessionLocator,
+		transferService?: SessionTransferService | null,
+		expected?: AgentRefExpectation,
+	): boolean {
+		const ref = this.#refs.get(id);
+		if (!ref || ref.status === "aborted" || !this.#matchesExpected(ref, expected)) return false;
+		ref.sessionRepository = repository;
+		ref.sessionLocator = locator;
+		if (transferService !== undefined) ref.sessionTransferService = transferService;
 		ref.lastActivity = Date.now();
 		return true;
 	}

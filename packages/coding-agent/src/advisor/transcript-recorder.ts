@@ -5,6 +5,14 @@ import type { Message, UserMessage } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import { visitEntriesFromFileStream } from "../session/session-loader";
 import { SessionManager } from "../session/session-manager";
+import { CURRENT_SESSION_VERSION, type SessionMessageEntry } from "../session/session-entries";
+import type {
+	KeysetCursor,
+	ModeGeneration,
+	RepositorySessionHeader,
+	SessionLocator,
+	SessionRepository,
+} from "../session/repository/types";
 import { fingerprintMessage } from "./message-fingerprint";
 
 /**
@@ -355,5 +363,122 @@ export class AdvisorTranscriptRecorder {
 		const next = this.#queue.then(work, work);
 		this.#queue = next.catch(() => {});
 		return next;
+	}
+}
+
+/** DB-mode advisor persister. It never resolves, opens, or creates a JSONL path. */
+export class RepositoryAdvisorTranscriptRecorder {
+	#queue = Promise.resolve();
+	#header: RepositorySessionHeader | undefined;
+	#parentEntryId: string | null = null;
+	#owner: SessionLocator;
+	readonly #key: string;
+
+	constructor(
+		readonly repository: SessionRepository,
+		owner: SessionLocator,
+		readonly modeGeneration: ModeGeneration,
+		readonly cwd: string,
+		advisorId: string,
+	) {
+		this.#owner = owner;
+		this.#key = advisorId;
+	}
+
+	record(message: AgentMessage): void {
+		let persisted: Message;
+		switch (message.role) {
+			case "assistant":
+			case "toolResult":
+				persisted = message;
+				break;
+			case "user":
+				persisted = { ...(message as UserMessage), synthetic: true, attribution: "agent" };
+				break;
+			default:
+				return;
+		}
+		this.#queue = this.#queue.then(() => this.#append(persisted)).catch(error => {
+			logger.debug("repository advisor transcript record failed", { error: String(error) });
+		});
+	}
+
+	async #ensureSession(): Promise<RepositorySessionHeader> {
+		if (this.#header) return this.#header;
+		const now = new Date().toISOString();
+		const nativeId = `advisor:${this.#owner.branchId}:${this.#key}`;
+		const header = await this.repository.createSession({
+			expectedModeGeneration: this.modeGeneration,
+			source: {
+				sourceNamespace: "omp-advisor",
+				installationNamespace: this.repository.replicaId,
+				nativeId,
+			},
+			header: {
+				type: "session",
+				version: CURRENT_SESSION_VERSION,
+				id: nativeId,
+				timestamp: now,
+				cwd: this.cwd,
+			},
+			metadata: { createdAt: now, cwd: this.cwd },
+			callerKey: `advisor:${this.#owner.branchId}:${this.#owner.versionId ?? ""}:${this.#key}`,
+		});
+		await this.repository.registerRelatedResource({
+			expectedModeGeneration: this.modeGeneration,
+			locator: { owner: this.#owner, kind: "advisor-session", key: this.#key },
+			target: { branchId: header.branchId },
+		});
+		if (header.headEventHash) {
+			let cursor: KeysetCursor | undefined;
+			do {
+				const page = await this.repository.readEvents({ branchId: header.branchId, cursor, limit: 200 });
+				const last = page.items.at(-1);
+				if (last) this.#parentEntryId = last.nativeEntryId;
+				cursor = page.nextCursor;
+			} while (cursor !== undefined);
+		}
+		this.#header = header;
+		return header;
+	}
+
+	async #append(message: Message): Promise<void> {
+		const header = await this.#ensureSession();
+		const timestamp =
+			typeof message.timestamp === "number" ? new Date(message.timestamp).toISOString() : new Date().toISOString();
+		const entry: SessionMessageEntry = {
+			type: "message",
+			id: crypto.randomUUID(),
+			parentId: this.#parentEntryId,
+			timestamp,
+			message,
+		};
+		const result = await this.repository.appendWithExpectedHead({
+			expectedModeGeneration: this.modeGeneration,
+			branchId: header.branchId,
+			expectedHeadHash: header.headEventHash,
+			entries: [entry],
+		});
+		this.#header = result.header;
+		this.#parentEntryId = entry.id;
+		if (result.status === "forked") {
+			await this.repository.registerRelatedResource({
+				expectedModeGeneration: this.modeGeneration,
+				locator: { owner: this.#owner, kind: "advisor-session", key: this.#key },
+				target: { branchId: result.header.branchId },
+			});
+		}
+	}
+
+	flush(): Promise<void> {
+		return this.#queue.then(() =>
+			this.repository.flush({
+				expectedModeGeneration: this.modeGeneration,
+			}),
+		);
+	}
+
+	close(): Promise<void> {
+		return this.flush();
 	}
 }
