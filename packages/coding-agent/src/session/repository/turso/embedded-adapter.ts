@@ -757,7 +757,20 @@ export class EmbeddedTursoRuntimeAdapter implements TursoRuntimeAdapter {
 
 	async writePayload(request: WritePayloadRequest): Promise<PayloadDescriptor> {
 		this.#assertOpen();
+		if (!Number.isSafeInteger(request.maxBytes) || request.maxBytes < 0) {
+			throw new RangeError("maxBytes must be a non-negative safe integer");
+		}
+		if (!Number.isSafeInteger(request.maxChunkBytes) || request.maxChunkBytes < 1) {
+			throw new RangeError("maxChunkBytes must be a positive safe integer");
+		}
 		return this.#database.transactionAsync(async transaction => {
+			const fence = await transaction.get<{ token: string }>(
+				"SELECT token FROM storage_fences WHERE replica_id = ?",
+				this.replicaId,
+			);
+			if (!fence || fence.token !== request.expectedModeGeneration) {
+				throw new Error("Stale Turso mode generation");
+			}
 			const stage = `payload_stage_${crypto.randomUUID().replaceAll("-", "")}`;
 			await transaction.exec(
 				`CREATE TEMP TABLE ${stage} (chunk_index INTEGER PRIMARY KEY, chunk_hash TEXT NOT NULL, data BLOB NOT NULL)`,
@@ -767,6 +780,13 @@ export class EmbeddedTursoRuntimeAdapter implements TursoRuntimeAdapter {
 			let chunkCount = 0;
 			try {
 				for await (const chunk of request.bytes) {
+					if (!(chunk instanceof Uint8Array)) throw new TypeError("Payload chunks must be Uint8Array values");
+					if (chunk.byteLength > request.maxChunkBytes) {
+						throw new RangeError(`Payload chunk exceeds ${request.maxChunkBytes} bytes`);
+					}
+					if (byteLength + chunk.byteLength > request.maxBytes) {
+						throw new RangeError(`Payload exceeds ${request.maxBytes} bytes`);
+					}
 					if (chunk.byteLength === 0) continue;
 					hasher.update(chunk);
 					byteLength += chunk.byteLength;
@@ -812,11 +832,10 @@ export class EmbeddedTursoRuntimeAdapter implements TursoRuntimeAdapter {
 			id,
 		);
 		if (!payload) throw new Error(`Unknown Turso payload ${query.payloadHash}`);
-		const rows = await this.#database.all<{ data: Uint8Array | ArrayBuffer }>(
+		for await (const row of this.#database.iterate<{ data: Uint8Array | ArrayBuffer }>(
 			"SELECT data FROM payload_chunks WHERE payload_id = ? ORDER BY chunk_index",
 			id,
-		);
-		for (const row of rows) {
+		)) {
 			const value = bytes(row.data);
 			for (let offset = 0; offset < value.byteLength; offset += query.chunkBytes) {
 				yield value.slice(offset, offset + query.chunkBytes);

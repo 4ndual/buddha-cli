@@ -129,6 +129,28 @@ describe("concrete embedded Turso runtime adapter", () => {
 		for await (const chunk of embeddedRepository.readPayload({ payloadHash: descriptor.payloadHash, chunkBytes: 2 })) {
 			observedPayload.push(...chunk);
 		}
+		let staleProducerConsumed = false;
+		const staleBytes = async function* (): AsyncGenerator<Uint8Array> {
+			staleProducerConsumed = true;
+			yield payloadBytes;
+		};
+		await expect(
+			embeddedRepository.writePayload({
+				expectedModeGeneration: "mode-generation:stale" as ModeGeneration,
+				bytes: staleBytes(),
+				maxBytes: payloadBytes.byteLength,
+				maxChunkBytes: payloadBytes.byteLength,
+			}),
+		).rejects.toThrow("Stale Turso mode generation");
+		expect(staleProducerConsumed).toBe(false);
+		await expect(
+			embeddedRepository.writePayload({
+				expectedModeGeneration: modeGeneration,
+				bytes: [payloadBytes],
+				maxBytes: payloadBytes.byteLength,
+				maxChunkBytes: payloadBytes.byteLength - 1,
+			}),
+		).rejects.toThrow("Payload chunk exceeds");
 		expect(descriptor).toMatchObject({ byteLength: payloadBytes.byteLength, mediaType: "application/octet-stream" });
 		expect(observedPayload).toEqual([...payloadBytes]);
 		await embeddedRepository.flush({ expectedModeGeneration: modeGeneration });
