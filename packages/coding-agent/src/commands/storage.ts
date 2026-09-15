@@ -1,12 +1,14 @@
 import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import { storageHelp as commandHelp } from "../cli/command-help";
-import { parseStorageAction, parseStorageMode, runStorageCommand } from "../cli/storage";
+import { parseStorageAction, parseStorageMode, runStorageCommand, shouldLaunchStoragePanel } from "../cli/storage";
+import { runStoragePanel } from "../cli/storage/panel";
 
 export default class Storage extends Command {
 	static description = commandHelp.description;
 	static args = {
 		action: Args.string({
-			description: "inventory | normalize | import | export | sync | verify | backup | recover | mode | status",
+			description:
+				"create | open | copy-as-is | normalize-copy | import | export | sync | migrate | adopt | verify | repair | backup | rollback | recover | mode | status",
 			required: false,
 		}),
 		value: Args.string({
@@ -20,7 +22,13 @@ export default class Storage extends Command {
 		destination: Flags.string({ description: "Explicit destination path or repository selector" }),
 		"allowed-root": Flags.string({ description: "Containment root for explicit recovery paths" }),
 		fence: Flags.string({ description: "Persisted storage generation fence path" }),
+		journal: Flags.string({ description: "Explicit durable migration job journal path" }),
+		"generation-id": Flags.string({ description: "Immutable export/backup generation identifier" }),
 		"dry-run": Flags.boolean({ description: "Preview without writes" }),
+		panel: Flags.boolean({ description: "Open the interactive Storage panel (TTY only)" }),
+		"confirm-paths": Flags.boolean({ description: "Confirm the exact selected source and destination paths" }),
+		confirm: Flags.boolean({ description: "Second confirmation after the dry-run summary" }),
+		"backup-receipt": Flags.string({ description: "Fresh verified backup receipt for guarded operations" }),
 		"all-branches": Flags.boolean({ description: "Include every branch/fork" }),
 		"job-id": Flags.string({ description: "Stable transfer job identifier" }),
 		"expected-generation": Flags.integer({
@@ -37,6 +45,33 @@ export default class Storage extends Command {
 
 	async run(): Promise<void> {
 		const { args, flags } = await this.parse(Storage);
+		const machine = flags.json || flags.machine;
+		if (
+			shouldLaunchStoragePanel(
+				args.action,
+				flags.panel,
+				machine,
+				process.stdin.isTTY === true,
+				process.stdout.isTTY === true,
+			)
+		) {
+			await runStoragePanel({
+				source: flags.source,
+				destination: flags.destination,
+				allowedRoot: flags["allowed-root"],
+				fencePath: flags.fence,
+				journalPath: flags.journal,
+				generationId: flags["generation-id"],
+				jobId: flags["job-id"],
+				allBranches: flags["all-branches"],
+			});
+			return;
+		}
+		if (flags.panel) {
+			process.stderr.write("omp storage --panel requires an interactive TTY\n");
+			process.exitCode = 1;
+			return;
+		}
 		const action = parseStorageAction(args.action);
 		if (!action) {
 			process.stderr.write(`Unknown storage action: ${args.action ?? ""}\n`);
@@ -49,6 +84,8 @@ export default class Storage extends Command {
 			destination: flags.destination,
 			allowedRoot: flags["allowed-root"],
 			fencePath: flags.fence,
+			journalPath: flags.journal,
+			generationId: flags["generation-id"],
 			dryRun: flags["dry-run"],
 			allBranches: flags["all-branches"],
 			jobId: flags["job-id"],
@@ -56,8 +93,11 @@ export default class Storage extends Command {
 			resume: flags.resume,
 			expectedGeneration: flags["expected-generation"],
 			requestedMode: action === "mode" ? parseStorageMode(args.value) : undefined,
-			machine: flags.json || flags.machine,
+			machine,
 			expectedNonce: flags["expected-nonce"],
+			pathsConfirmed: flags["confirm-paths"],
+			secondConfirmation: flags.confirm,
+			backupReceipt: flags["backup-receipt"],
 		});
 		if (report.outcome === "failed" || report.outcome === "rejected") process.exitCode = 1;
 	}

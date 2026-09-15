@@ -1,9 +1,11 @@
 import {
+	assertNoSymlinkComponents,
 	prepareDrainVerifyTransition,
 	readFenceState,
 	type TransitionSteps,
 } from "../../session/repository/migration/fencing";
 import { recoverPublishedExport } from "../../session/repository/migration/recovery";
+import { verifyPublishedBundle } from "../../session/repository/migration/bundle";
 import {
 	createDisabledStorageControlModel,
 	DISABLED_DATABASE_REASON,
@@ -20,41 +22,94 @@ import {
 
 const STORAGE_ACTIONS: Record<StorageAction, true> = {
 	inventory: true,
+	create: true,
+	open: true,
+	"copy-as-is": true,
 	normalize: true,
+	"normalize-copy": true,
 	import: true,
 	export: true,
 	sync: true,
 	verify: true,
+	repair: true,
 	backup: true,
+	rollback: true,
 	recover: true,
+	migrate: true,
+	adopt: true,
 	mode: true,
 	status: true,
 };
 
 const MIGRATION_ACTIONS: Partial<Record<StorageAction, true>> = {
 	inventory: true,
+	create: true,
+	open: true,
+	"copy-as-is": true,
 	normalize: true,
+	"normalize-copy": true,
 	import: true,
 	export: true,
 	sync: true,
 	verify: true,
+	repair: true,
 	backup: true,
+	rollback: true,
 	recover: true,
+	migrate: true,
+	adopt: true,
 };
 const MUTATING_REPOSITORY_ACTIONS: Partial<Record<StorageAction, true>> = {
 	import: true,
 	sync: true,
+	migrate: true,
 };
 
-const SOURCE_ONLY_ACTIONS: Partial<Record<StorageAction, true>> = { inventory: true };
-const SOURCE_AND_DESTINATION_ACTIONS: Partial<Record<StorageAction, true>> = {
+const WRITING_ACTIONS: Partial<Record<StorageAction, true>> = {
+	create: true,
+	"copy-as-is": true,
 	normalize: true,
+	"normalize-copy": true,
+	import: true,
+	export: true,
+	sync: true,
+	repair: true,
+	backup: true,
+	rollback: true,
+	recover: true,
+	migrate: true,
+	adopt: true,
+};
+
+const FRESH_BACKUP_ACTIONS: Partial<Record<StorageAction, true>> = {
+	repair: true,
+	rollback: true,
+	recover: true,
+	migrate: true,
+	adopt: true,
+};
+
+const SOURCE_ONLY_ACTIONS: Partial<Record<StorageAction, true>> = {
+	inventory: true,
+	open: true,
+};
+const DESTINATION_ONLY_ACTIONS: Partial<Record<StorageAction, true>> = {
+	create: true,
+};
+const SOURCE_AND_DESTINATION_ACTIONS: Partial<Record<StorageAction, true>> = {
+	"copy-as-is": true,
+	normalize: true,
+	"normalize-copy": true,
 	import: true,
 	export: true,
 	sync: true,
 	verify: true,
+	repair: true,
 	backup: true,
+	rollback: true,
 	recover: true,
+	migrate: true,
+	adopt: true,
 };
 
 export interface StorageCommandRequest {
@@ -63,6 +118,8 @@ export interface StorageCommandRequest {
 	destination?: string;
 	allowedRoot?: string;
 	fencePath?: string;
+	journalPath?: string;
+	generationId?: string;
 	dryRun?: boolean;
 	allBranches?: boolean;
 	jobId?: string;
@@ -72,6 +129,9 @@ export interface StorageCommandRequest {
 	expectedGeneration?: number;
 	expectedNonce?: string;
 	machine?: boolean;
+	pathsConfirmed?: boolean;
+	secondConfirmation?: boolean;
+	backupReceipt?: string;
 }
 
 export interface StorageOperationResult {
@@ -115,19 +175,34 @@ export class StorageCommandRejectedError extends Error {
 const defaultMigrationController: StorageMigrationController = {
 	async preview(request) {
 		if (request.action === "recover") {
+			if (!request.allowedRoot || !request.source || !request.destination) {
+				throw new StorageCommandRejectedError(
+					"recover requires --allowed-root, --source <published bundle>, and --destination <job journal>",
+				);
+			}
+			const publishedPath = await assertNoSymlinkComponents(request.allowedRoot, request.source);
+			const verified = await verifyPublishedBundle(publishedPath);
 			return {
-				message: "Recovery preview created; no journal receipt was written",
+				message: "Verified published export recovery preview; no journal receipt was written",
+				counts: {
+					origins: verified.bundle.origins.length,
+					branches: verified.bundle.branches.length,
+					versions: verified.bundle.versions.length,
+					events: verified.bundle.events.length,
+				},
 				details: {
 					allowedRoot: request.allowedRoot,
 					publishedPath: request.source,
 					journalPath: request.destination,
+					manifestSha256: verified.manifestSha256,
+					backupReceipt: verified.manifestSha256,
 					writes: false,
 				},
 			};
 		}
 		return {
 			message: `${request.action} preview created; execution remains disabled until a repository migration controller is installed`,
-			details: { executionEnabled: false },
+			details: { executionEnabled: false, writes: false },
 		};
 	},
 	async execute(request) {
@@ -167,6 +242,7 @@ export const defaultStorageCommandDependencies: StorageCommandDependencies = {
 		if (!request.fencePath) return status;
 		const fence = await readFenceState(request.fencePath);
 		status.activeMode = fence.active_mode;
+		status.defaultMode = fence.active_mode;
 		status.configurationGeneration = fence.generation;
 		status.generationToken = { generation: fence.generation, nonce: fence.nonce };
 		if (fence.state !== "stable" && fence.target_mode && fence.transition_id) {
@@ -239,6 +315,9 @@ function validationError(request: Readonly<StorageCommandRequest>): string | und
 	if (SOURCE_ONLY_ACTIONS[request.action] && !request.source) {
 		return `${request.action} requires an explicit --source`;
 	}
+	if (DESTINATION_ONLY_ACTIONS[request.action] && !request.destination) {
+		return `${request.action} requires an explicit --destination`;
+	}
 	if (SOURCE_AND_DESTINATION_ACTIONS[request.action]) {
 		if (!request.source) return `${request.action} requires an explicit --source`;
 		if (!request.destination) return `${request.action} requires an explicit --destination`;
@@ -258,6 +337,17 @@ function validationError(request: Readonly<StorageCommandRequest>): string | und
 	if ((request.cancelAfterCurrentBatch || request.resume) && !request.jobId) {
 		return "--cancel-after-current-batch and --resume require --job-id";
 	}
+	if (request.dryRun !== true && WRITING_ACTIONS[request.action]) {
+		if (request.pathsConfirmed !== true) {
+			return `${request.action} requires explicit path confirmation`;
+		}
+		if (request.secondConfirmation !== true) {
+			return `${request.action} requires a second confirmation after reviewing its dry-run summary`;
+		}
+		if (FRESH_BACKUP_ACTIONS[request.action] && !request.backupReceipt) {
+			return `${request.action} requires a verified fresh backup receipt`;
+		}
+	}
 	if (request.dryRun !== true && MUTATING_REPOSITORY_ACTIONS[request.action]) {
 		if (!request.fencePath || request.expectedGeneration === undefined || !request.expectedNonce) {
 			return `${request.action} requires --fence, --expected-generation, and --expected-nonce for fenced repository mutation`;
@@ -275,6 +365,8 @@ function baseReport(request: Readonly<StorageCommandRequest>): Omit<StorageRepor
 		source: request.source,
 		destination: request.destination,
 		allowedRoot: request.allowedRoot,
+		journalPath: request.journalPath,
+		generationId: request.generationId,
 		fencePath: request.fencePath,
 		allBranches: request.allBranches === true,
 		resume: request.resume === true,
@@ -282,6 +374,9 @@ function baseReport(request: Readonly<StorageCommandRequest>): Omit<StorageRepor
 		requestedMode: request.requestedMode,
 		expectedGeneration: request.expectedGeneration,
 		expectedNonce: request.expectedNonce,
+		pathsConfirmed: request.pathsConfirmed,
+		secondConfirmation: request.secondConfirmation,
+		backupReceipt: request.backupReceipt,
 	};
 }
 
@@ -394,14 +489,49 @@ export async function runStorageCommand(
 		}
 
 		const controller = await deps.loadMigrationController(request);
-		const result = request.dryRun ? await controller.preview(request) : await controller.execute(request);
+		const preview = await controller.preview({ ...request, dryRun: true });
+		if (request.action === "adopt") {
+			return emitReport(
+				{
+					...baseReport(request),
+					outcome: "preview",
+					message: preview.message,
+					counts: preview.counts,
+					details: { ...preview.details, configurationMutated: false, executionEnabled: false },
+				},
+				request,
+				deps,
+			);
+		}
+		if (request.dryRun) {
+			return emitReport(
+				{
+					...baseReport(request),
+					outcome: "preview",
+					message: preview.message,
+					counts: preview.counts,
+					details: preview.details,
+				},
+				request,
+				deps,
+			);
+		}
+		if (FRESH_BACKUP_ACTIONS[request.action]) {
+			const verifiedReceipt = preview.details?.backupReceipt ?? preview.details?.manifestSha256;
+			if (typeof verifiedReceipt !== "string" || verifiedReceipt !== request.backupReceipt) {
+				throw new StorageCommandRejectedError(
+					`Fresh backup verification failed: expected ${request.backupReceipt}, preview verified ${String(verifiedReceipt)}`,
+				);
+			}
+		}
+		const result = await controller.execute(request);
 		return emitReport(
 			{
 				...baseReport(request),
-				outcome: request.dryRun ? "preview" : "ok",
+				outcome: "ok",
 				message: result.message,
 				counts: result.counts,
-				details: result.details,
+				details: { ...result.details, dryRunSummary: preview.message },
 			},
 			request,
 			deps,

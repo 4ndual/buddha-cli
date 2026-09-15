@@ -2,13 +2,21 @@ export type StorageMode = "jsonl" | "db";
 
 export type StorageAction =
 	| "inventory"
+	| "create"
+	| "open"
+	| "copy-as-is"
 	| "normalize"
+	| "normalize-copy"
 	| "import"
 	| "export"
 	| "sync"
 	| "verify"
+	| "repair"
 	| "backup"
+	| "rollback"
 	| "recover"
+	| "migrate"
+	| "adopt"
 	| "mode"
 	| "status";
 
@@ -64,13 +72,37 @@ export interface StorageRecoveryAction {
 	requiresDestination: boolean;
 	destructive: false;
 }
+export type StorageHealth = "healthy" | "degraded" | "unavailable" | "unknown";
+
+export interface StorageBackendStatus {
+	path?: string;
+	engine: string;
+	schemaVersion?: string;
+	counts: Readonly<{
+		sessions: number;
+		origins: number;
+		branches: number;
+		versions: number;
+		events: number;
+		payloads: number;
+	}>;
+	sizeBytes?: number;
+	walBytes?: number;
+	health: {
+		state: StorageHealth;
+		message: string;
+		checkedAt?: string;
+	};
+}
+
 
 /**
- * Headless view model shared by the CLI and a future Storage panel. It contains
- * only control-plane state: rendering it must not initialize the database
- * driver or inspect JSONL session files.
+ * Headless view model shared by the CLI and interactive Storage panel. It
+ * contains only control-plane state: rendering it must not initialize the
+ * database driver or inspect JSONL session files.
  */
 export interface StorageControlModel {
+	defaultMode: StorageMode;
 	activeMode: StorageMode;
 	/** Persisted fencing generation required by every repository mutation. */
 	configurationGeneration: number;
@@ -97,6 +129,10 @@ export interface StorageControlModel {
 		totalItems?: number;
 		cancelAfterCurrentBatch: boolean;
 	};
+	backends: {
+		jsonl: StorageBackendStatus;
+		database: StorageBackendStatus;
+	};
 }
 
 export const DISABLED_DATABASE_REASON =
@@ -105,6 +141,7 @@ export const DISABLED_DATABASE_REASON =
 /** Safe startup state used before a capability provider is installed. */
 export function createDisabledStorageControlModel(): StorageControlModel {
 	return {
+		defaultMode: "jsonl",
 		activeMode: "jsonl",
 		configurationGeneration: 0,
 		modes: [
@@ -124,6 +161,18 @@ export function createDisabledStorageControlModel(): StorageControlModel {
 			unsupported: 0,
 			missingPayload: 0,
 			unresolvedIdentity: 0,
+		},
+		backends: {
+			jsonl: {
+				engine: "OMP JSONL",
+				counts: { sessions: 0, origins: 0, branches: 0, versions: 0, events: 0, payloads: 0 },
+				health: { state: "unknown", message: "Not inspected; status never scans session JSONL" },
+			},
+			database: {
+				engine: "Turso (native embedded)",
+				counts: { sessions: 0, origins: 0, branches: 0, versions: 0, events: 0, payloads: 0 },
+				health: { state: "unavailable", message: DISABLED_DATABASE_REASON },
+			},
 		},
 		recoveryActions: [
 			{

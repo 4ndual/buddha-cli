@@ -243,7 +243,14 @@ describe("storage control surface", () => {
 		expect(
 			(
 				await runStorageCommand(
-					{ ...request, fencePath: "/copied/fence", expectedGeneration: 7, expectedNonce: "nonce-7" },
+					{
+						...request,
+						fencePath: "/copied/fence",
+						expectedGeneration: 7,
+						expectedNonce: "nonce-7",
+						pathsConfirmed: true,
+						secondConfirmation: true,
+					},
 					deps,
 				)
 			).outcome,
@@ -256,18 +263,6 @@ describe("storage control surface", () => {
 		const publishedPath = join(root, "published");
 		const journalPath = join(root, "export.job.json");
 		const dryRunJournal = join(root, "dry-run.job.json");
-		const dryRun = await runStorageCommand(
-			{
-				action: "recover",
-				source: join(root, "missing-publication"),
-				destination: dryRunJournal,
-				allowedRoot: root,
-				dryRun: true,
-			},
-			silentDependencies(),
-		);
-		expect(dryRun.outcome).toBe("preview");
-		expect(await Bun.file(dryRunJournal).exists()).toBe(false);
 		const bundle: LogicalBundle = {
 			format: LOGICAL_BUNDLE_FORMAT,
 			replica_id: "controls-recovery-fixture",
@@ -278,11 +273,24 @@ describe("storage control surface", () => {
 		};
 		const encoded = canonicalJson(bundle);
 		const bundleHash = sha256(encoded);
-		await publishLogicalBundle(bundle, {
+		const publication = await publishLogicalBundle(bundle, {
 			allowedRoot: root,
 			destination: publishedPath,
 			generationId: "controls-proof",
 		});
+		const dryRun = await runStorageCommand(
+			{
+				action: "recover",
+				source: publishedPath,
+				destination: dryRunJournal,
+				allowedRoot: root,
+				dryRun: true,
+			},
+			silentDependencies(),
+		);
+		expect(dryRun.outcome).toBe("preview");
+		expect(dryRun.details?.manifestSha256).toBe(publication.manifestSha256);
+		expect(await Bun.file(dryRunJournal).exists()).toBe(false);
 		await createMigrationJob(journalPath, {
 			jobId: "controls-recovery",
 			kind: "export",
@@ -294,6 +302,9 @@ describe("storage control surface", () => {
 			source: publishedPath,
 			destination: journalPath,
 			allowedRoot: root,
+			pathsConfirmed: true,
+			secondConfirmation: true,
+			backupReceipt: publication.manifestSha256,
 		};
 
 		const recovered = await runStorageCommand(request, silentDependencies());

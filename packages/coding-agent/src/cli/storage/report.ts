@@ -14,12 +14,17 @@ export interface StorageReport {
 	destination?: string;
 	allowedRoot?: string;
 	fencePath?: string;
+	journalPath?: string;
+	generationId?: string;
 	allBranches: boolean;
 	resume: boolean;
 	cancelAfterCurrentBatch: boolean;
 	requestedMode?: StorageMode;
 	expectedGeneration?: number;
 	expectedNonce?: string;
+	pathsConfirmed?: boolean;
+	secondConfirmation?: boolean;
+	backupReceipt?: string;
 	message: string;
 	counts?: Readonly<Record<string, number>>;
 	details?: Readonly<Record<string, unknown>>;
@@ -49,9 +54,21 @@ export function formatStorageReportText(report: StorageReport): string {
 	if (report.destination) lines.push(`destination: ${report.destination}`);
 	if (report.status) {
 		const status = report.status;
+		lines.push(`default mode: ${status.defaultMode === "db" ? "Database" : "JSONL"}`);
 		lines.push(`active backend: ${status.activeMode === "db" ? "Database" : "JSONL"}`);
 		lines.push(`configuration generation: ${status.configurationGeneration}`);
 		lines.push(`quarantined: ${status.quarantine.total}`);
+		for (const [label, backend] of [
+			["JSONL", status.backends.jsonl],
+			["Database", status.backends.database],
+		] as const) {
+			lines.push(
+				`${label}: path=${backend.path ?? "not configured"} engine=${backend.engine} schema=${backend.schemaVersion ?? "unknown"}`,
+			);
+			lines.push(
+				`${label}: sessions=${backend.counts.sessions} branches=${backend.counts.branches} versions=${backend.counts.versions} size=${backend.sizeBytes ?? "unknown"} WAL=${backend.walBytes ?? "unknown"} health=${backend.health.state} (${backend.health.message})`,
+			);
+		}
 		if (status.lastVerifiedTransfer) {
 			lines.push(
 				`last verified transfer: ${status.lastVerifiedTransfer.jobId} (${status.lastVerifiedTransfer.verifiedAt})`,
