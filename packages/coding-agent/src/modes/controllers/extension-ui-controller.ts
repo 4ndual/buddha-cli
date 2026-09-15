@@ -22,6 +22,7 @@ import type {
 	TerminalInputHandler,
 } from "../../extensibility/extensions";
 import { getSessionSlashCommands } from "../../extensibility/extensions/get-commands-handler";
+import type { SessionEventReference } from "../../extensibility/shared-events";
 import { AskDialogComponent, boundPromptTitle } from "../../modes/components/ask-dialog";
 import { installExtensionComposerShape } from "../../modes/components/composer-shape-registry";
 import { EditorTopGap } from "../../modes/components/editor-top-gap";
@@ -553,9 +554,9 @@ export class ExtensionUiController {
 	 */
 	async emitCustomToolSessionEvent(
 		reason: "start" | "switch" | "branch" | "tree" | "shutdown",
-		previousSessionFile?: string,
+		previousSession?: SessionEventReference,
 	): Promise<void> {
-		const event = { reason, previousSessionFile };
+		const event = { reason, previousSession };
 		const uiContext = this.ctx.session.extensionRunner?.getUIContext();
 		if (!uiContext) {
 			return;
