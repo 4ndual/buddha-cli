@@ -4,6 +4,7 @@ export {
 	type TursoCapabilityReport,
 	type TursoCapabilityResult,
 	type TursoCapabilityStatus,
+	type TursoFeasibilityApproach,
 } from "./capabilities";
 export {
 	openLocalTursoDatabase,
