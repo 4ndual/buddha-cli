@@ -12,11 +12,14 @@ export interface StorageReport {
 	jobId?: string;
 	source?: string;
 	destination?: string;
+	allowedRoot?: string;
+	fencePath?: string;
 	allBranches: boolean;
 	resume: boolean;
 	cancelAfterCurrentBatch: boolean;
 	requestedMode?: StorageMode;
 	expectedGeneration?: number;
+	expectedNonce?: string;
 	message: string;
 	counts?: Readonly<Record<string, number>>;
 	details?: Readonly<Record<string, unknown>>;

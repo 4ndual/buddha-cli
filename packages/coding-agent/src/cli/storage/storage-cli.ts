@@ -1,4 +1,10 @@
 import {
+	prepareDrainVerifyTransition,
+	readFenceState,
+	type TransitionSteps,
+} from "../../session/repository/migration/fencing";
+import { recoverPublishedExport } from "../../session/repository/migration/recovery";
+import {
 	createDisabledStorageControlModel,
 	DISABLED_DATABASE_REASON,
 	type StorageAction,
@@ -38,9 +44,7 @@ const MIGRATION_ACTIONS: Partial<Record<StorageAction, true>> = {
 const MUTATING_REPOSITORY_ACTIONS: Partial<Record<StorageAction, true>> = {
 	import: true,
 	sync: true,
-	recover: true,
 };
-
 
 const SOURCE_ONLY_ACTIONS: Partial<Record<StorageAction, true>> = { inventory: true };
 const SOURCE_AND_DESTINATION_ACTIONS: Partial<Record<StorageAction, true>> = {
@@ -57,6 +61,8 @@ export interface StorageCommandRequest {
 	action: StorageAction;
 	source?: string;
 	destination?: string;
+	allowedRoot?: string;
+	fencePath?: string;
 	dryRun?: boolean;
 	allBranches?: boolean;
 	jobId?: string;
@@ -64,6 +70,7 @@ export interface StorageCommandRequest {
 	resume?: boolean;
 	requestedMode?: StorageMode;
 	expectedGeneration?: number;
+	expectedNonce?: string;
 	machine?: boolean;
 }
 
@@ -84,11 +91,16 @@ export interface StorageMigrationController {
 }
 
 export interface StorageCommandDependencies {
-	getStatus(): Promise<StorageControlModel>;
+	getStatus(request: Readonly<StorageCommandRequest>): Promise<StorageControlModel>;
 	loadMigrationController(request: Readonly<StorageCommandRequest>): Promise<StorageMigrationController>;
+	loadTransitionSteps(
+		request: Readonly<StorageCommandRequest>,
+		status: Readonly<StorageControlModel>,
+	): Promise<TransitionSteps>;
 	previewModeTransition(
 		request: Readonly<StorageCommandRequest>,
 		status: Readonly<StorageControlModel>,
+		steps?: TransitionSteps,
 	): Promise<StorageOperationResult>;
 	writeStdout(text: string): void;
 }
@@ -100,32 +112,112 @@ export class StorageCommandRejectedError extends Error {
 	}
 }
 
-const disabledMigrationController: StorageMigrationController = {
+const defaultMigrationController: StorageMigrationController = {
 	async preview(request) {
+		if (request.action === "recover") {
+			return {
+				message: "Recovery preview created; no journal receipt was written",
+				details: {
+					allowedRoot: request.allowedRoot,
+					publishedPath: request.source,
+					journalPath: request.destination,
+					writes: false,
+				},
+			};
+		}
 		return {
 			message: `${request.action} preview created; execution remains disabled until a repository migration controller is installed`,
 			details: { executionEnabled: false },
 		};
 	},
-	async execute() {
-		throw new StorageCommandRejectedError(
-			"Storage migration execution is disabled until the repository migration controller is installed",
-		);
+	async execute(request) {
+		if (request.action !== "recover") {
+			throw new StorageCommandRejectedError(
+				"Storage migration execution is disabled until the repository migration controller is installed",
+			);
+		}
+		if (!request.allowedRoot || !request.source || !request.destination) {
+			throw new StorageCommandRejectedError(
+				"recover requires --allowed-root, --source <published bundle>, and --destination <job journal>",
+			);
+		}
+		const recovered = await recoverPublishedExport({
+			allowedRoot: request.allowedRoot,
+			publishedPath: request.source,
+			journalPath: request.destination,
+		});
+		return {
+			message:
+				recovered.status === "already-recorded"
+					? "Verified recovery receipt was already recorded"
+					: "Recovered the verified published export receipt",
+			counts: { recoveredReceipts: recovered.status === "receipt-recovered" ? 1 : 0 },
+			details: {
+				jobId: recovered.job.job_id,
+				manifestSha256: recovered.manifestSha256,
+				recoveryStatus: recovered.status,
+			},
+		};
 	},
 };
 
 export const defaultStorageCommandDependencies: StorageCommandDependencies = {
-	async getStatus() {
-		return createDisabledStorageControlModel();
+	async getStatus(request) {
+		const status = createDisabledStorageControlModel();
+		if (!request.fencePath) return status;
+		const fence = await readFenceState(request.fencePath);
+		status.activeMode = fence.active_mode;
+		status.configurationGeneration = fence.generation;
+		status.generationToken = { generation: fence.generation, nonce: fence.nonce };
+		if (fence.state !== "stable" && fence.target_mode && fence.transition_id) {
+			status.preparedTransition = {
+				state: fence.state,
+				targetMode: fence.target_mode,
+				transitionId: fence.transition_id,
+				verificationReceipt: fence.verification_receipt ?? undefined,
+			};
+		}
+		return status;
 	},
 	async loadMigrationController() {
-		return disabledMigrationController;
+		return defaultMigrationController;
 	},
-	async previewModeTransition(request, status) {
-		const requested = request.requestedMode;
+	async loadTransitionSteps() {
+		throw new StorageCommandRejectedError(
+			"Mode preparation requires real drain, synchronize, and verify transition steps",
+		);
+	},
+	async previewModeTransition(request, status, steps) {
+		if (
+			!request.fencePath ||
+			request.expectedGeneration === undefined ||
+			!request.expectedNonce ||
+			!request.requestedMode
+		) {
+			throw new StorageCommandRejectedError(
+				"Mode preparation requires --fence, --expected-generation, and --expected-nonce",
+			);
+		}
+		if (!steps) {
+			throw new StorageCommandRejectedError(
+				"Mode preparation requires real drain, synchronize, and verify transition steps",
+			);
+		}
+		const prepared = await prepareDrainVerifyTransition(
+			request.fencePath,
+			{ generation: request.expectedGeneration, nonce: request.expectedNonce },
+			request.requestedMode,
+			steps,
+		);
 		return {
-			message: `Prepared a ${status.activeMode} → ${requested} transition preview; active configuration was not changed`,
-			details: { configurationMutated: false, from: status.activeMode, to: requested },
+			message: `Prepared, drained, synchronized, and verified ${status.activeMode} → ${request.requestedMode}; active configuration was not changed`,
+			details: {
+				configurationMutated: false,
+				from: prepared.fromMode,
+				target: prepared.targetMode,
+				transitionId: prepared.transitionId,
+				verificationReceipt: prepared.verificationReceipt,
+			},
 		};
 	},
 	writeStdout(text) {
@@ -151,6 +243,9 @@ function validationError(request: Readonly<StorageCommandRequest>): string | und
 		if (!request.source) return `${request.action} requires an explicit --source`;
 		if (!request.destination) return `${request.action} requires an explicit --destination`;
 	}
+	if (request.action === "recover" && !request.allowedRoot) {
+		return "recover requires an explicit --allowed-root";
+	}
 	if (request.action === "mode" && !request.requestedMode) {
 		return "mode requires `jsonl` or `db`";
 	}
@@ -163,12 +258,10 @@ function validationError(request: Readonly<StorageCommandRequest>): string | und
 	if ((request.cancelAfterCurrentBatch || request.resume) && !request.jobId) {
 		return "--cancel-after-current-batch and --resume require --job-id";
 	}
-	if (
-		request.dryRun !== true &&
-		(MUTATING_REPOSITORY_ACTIONS[request.action] || request.cancelAfterCurrentBatch) &&
-		request.expectedGeneration === undefined
-	) {
-		return `${request.action} requires --expected-generation for fenced repository mutation`;
+	if (request.dryRun !== true && MUTATING_REPOSITORY_ACTIONS[request.action]) {
+		if (!request.fencePath || request.expectedGeneration === undefined || !request.expectedNonce) {
+			return `${request.action} requires --fence, --expected-generation, and --expected-nonce for fenced repository mutation`;
+		}
 	}
 	return undefined;
 }
@@ -181,11 +274,14 @@ function baseReport(request: Readonly<StorageCommandRequest>): Omit<StorageRepor
 		jobId: request.jobId,
 		source: request.source,
 		destination: request.destination,
+		allowedRoot: request.allowedRoot,
+		fencePath: request.fencePath,
 		allBranches: request.allBranches === true,
 		resume: request.resume === true,
 		cancelAfterCurrentBatch: request.cancelAfterCurrentBatch === true,
 		requestedMode: request.requestedMode,
 		expectedGeneration: request.expectedGeneration,
+		expectedNonce: request.expectedNonce,
 	};
 }
 
@@ -213,7 +309,7 @@ export async function runStorageCommand(
 	}
 
 	try {
-		const status = await deps.getStatus();
+		const status = await deps.getStatus(request);
 		if (request.action === "status") {
 			return emitReport(
 				{
@@ -239,7 +335,10 @@ export async function runStorageCommand(
 					deps,
 				);
 			}
-			const result = await deps.previewModeTransition(request, status);
+			const result = dependencies.previewModeTransition
+				? await deps.previewModeTransition(request, status)
+				: await deps.previewModeTransition(request, status, await deps.loadTransitionSteps(request, status));
+			const currentStatus = await deps.getStatus(request);
 			return emitReport(
 				{
 					...baseReport(request),
@@ -247,7 +346,7 @@ export async function runStorageCommand(
 					message: result.message,
 					counts: result.counts,
 					details: { ...result.details, configurationMutated: false },
-					status,
+					status: currentStatus,
 				},
 				request,
 				deps,
@@ -269,6 +368,22 @@ export async function runStorageCommand(
 				deps,
 			);
 		}
+		if (
+			request.expectedNonce !== undefined &&
+			request.expectedNonce !== status.generationToken?.nonce
+		) {
+			return emitReport(
+				{
+					...baseReport(request),
+					outcome: "rejected",
+					message: "Stale storage generation nonce",
+					status,
+				},
+				request,
+				deps,
+			);
+		}
+
 
 		if (!MIGRATION_ACTIONS[request.action]) {
 			return emitReport(
