@@ -16,6 +16,7 @@ import type {
 	AppendWithExpectedHeadResult,
 	BranchId,
 	ConsumeDraftRequest,
+	CreateSessionRequest,
 	ContextCheckpoint,
 	DropSessionRequest,
 	EventHash,
@@ -26,6 +27,7 @@ import type {
 	ImportArchiveOptions,
 	KeysetCursor,
 	KeysetPage,
+	ListRelatedResourcesQuery,
 	ListSessionsQuery,
 	ModeGeneration,
 	OriginId,
@@ -36,6 +38,7 @@ import type {
 	ReadPayloadRequest,
 	ReadTreeQuery,
 	RegisterRelatedResourceRequest,
+	RelatedResourceBinding,
 	RelatedResourceLocator,
 	RelocateSessionRequest,
 	ReplicaId,
@@ -126,12 +129,13 @@ interface RepositoryManifest {
 }
 
 interface CursorEnvelope {
-	kind: "list" | "search" | "tree" | "events" | "export";
+	kind: "list" | "search" | "tree" | "events" | "related" | "export";
 	filter: string;
 	modifiedAt?: string;
 	branchId?: BranchId;
 	generation?: number;
 	eventHash?: EventHash;
+	relationKey?: string;
 }
 
 export class StaleModeGenerationError extends Error {
@@ -268,6 +272,30 @@ function isAncestor(state: BranchState, possibleAncestor: EventHash | null, desc
 function relatedResourceKey(locator: RelatedResourceLocator): string {
 	return JSON.stringify([locator.owner.branchId, locator.owner.versionId ?? null, locator.kind, locator.key]);
 }
+function relatedResourceLocatorFromKey(value: string): RelatedResourceLocator {
+	const parsed = JSON.parse(value) as unknown;
+	if (!Array.isArray(parsed) || parsed.length !== 4) {
+		throw new RepositoryIntegrityError("Invalid related resource key");
+	}
+	const [branchId, versionId, kind, key] = parsed;
+	if (
+		typeof branchId !== "string" ||
+		(versionId !== null && typeof versionId !== "string") ||
+		(kind !== "artifact" && kind !== "child-session" && kind !== "advisor-session") ||
+		typeof key !== "string"
+	) {
+		throw new RepositoryIntegrityError("Invalid related resource key");
+	}
+	return {
+		owner: {
+			branchId: branchId as BranchId,
+			versionId: versionId === null ? undefined : (versionId as VersionId),
+		},
+		kind,
+		key,
+	};
+}
+
 
 
 /**
@@ -763,6 +791,52 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 	}
 
 
+	async createSession(request: CreateSessionRequest): Promise<RepositorySessionHeader> {
+		await this.#ensureLoaded();
+		if (request.callerKey.length === 0) throw new TypeError("Session caller key must not be empty");
+		if (request.header.type !== "session") throw new RepositoryIntegrityError("Session header type must be session");
+		if (request.header.id !== request.source.nativeId) {
+			throw new RepositoryIntegrityError("Session header id must match the source native id");
+		}
+		const origin = computeOriginIdentity(request.source);
+		const alias = computeSourceAlias(request.source);
+		const branch = computeBranchIdentity({
+			originId: origin.id,
+			replicaId: this.replicaId,
+			branchKey: `create:${request.callerKey}`,
+		});
+		this.#collisions.remember(origin);
+		this.#collisions.remember(alias);
+		this.#collisions.remember(branch);
+		const existing = this.#branches.get(branch.id);
+		if (existing) {
+			if (existing.header.originId !== origin.id || existing.header.sourceAlias !== alias.id) {
+				throw new RepositoryIntegrityError("Stable session caller key resolved to conflicting identity");
+			}
+			this.#assertFenceSync(request.expectedModeGeneration);
+			return existing.header;
+		}
+		const metadata = request.metadata ?? semanticMetadataFromHeader(request.header);
+		const state = this.#buildState(
+			{
+				source: request.source,
+				sourceAlias: alias.id,
+				originId: origin.id,
+				branchId: branch.id,
+				versionId: "" as VersionId,
+				parentVersionId: null,
+				forkPointHash: null,
+				header: physicalHeaderWithMetadata(request.header, metadata),
+				entries: [],
+				metadata,
+			},
+			fileNameForBranch(branch.id),
+			false,
+		);
+		this.#publishStateSync(state, request.expectedModeGeneration);
+		return state.header;
+	}
+
 	async appendWithExpectedHead(request: AppendWithExpectedHeadRequest): Promise<AppendWithExpectedHeadResult> {
 		await this.#ensureLoaded();
 		const current = this.#branches.get(request.branchId);
@@ -983,6 +1057,33 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 		await this.#ensureLoaded();
 		return this.#relatedResources.get(relatedResourceKey(locator));
 	}
+	async listRelatedResources(query: ListRelatedResourcesQuery): Promise<KeysetPage<RelatedResourceBinding>> {
+		await this.#ensureLoaded();
+		const filter = JSON.stringify({
+			ownerBranchId: query.owner.branchId,
+			ownerVersionId: query.owner.versionId ?? null,
+			kind: query.kind ?? null,
+		});
+		const cursor = decodeCursor(query.cursor, "related", filter);
+		const bindings = [...this.#relatedResources.entries()]
+			.map(([key, target]) => ({ key, locator: relatedResourceLocatorFromKey(key), target }))
+			.filter(binding => binding.locator.owner.branchId === query.owner.branchId)
+			.filter(binding => !query.owner.versionId || binding.locator.owner.versionId === query.owner.versionId)
+			.filter(binding => !query.kind || binding.locator.kind === query.kind)
+			.sort((left, right) => lexicalCompare(left.key, right.key));
+		const after = cursorIndexAfter(bindings, cursor, (binding, keyset) => binding.key === keyset.relationKey);
+		const limit = boundedLimit(query.limit);
+		const page = bindings.slice(after, after + limit);
+		const last = page.at(-1);
+		return {
+			items: page.map(({ locator, target }) => ({ locator, target })),
+			nextCursor:
+				last && after + page.length < bindings.length
+					? encodeCursor({ kind: "related", filter, relationKey: last.key })
+					: undefined,
+		};
+	}
+
 
 	async setTerminalSessionPointer(request: SetTerminalSessionPointerRequest): Promise<void> {
 		await this.#ensureLoaded();

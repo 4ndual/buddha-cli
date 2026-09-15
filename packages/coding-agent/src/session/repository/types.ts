@@ -116,6 +116,15 @@ export interface FencedWriteRequest {
 	/** Persisted mode-generation token captured when the caller opened this repository. */
 	expectedModeGeneration: ModeGeneration;
 }
+export interface CreateSessionRequest extends FencedWriteRequest {
+	source: SourceIdentity;
+	/** Native OMP header used when this backend exports a standalone JSONL branch. */
+	header: SessionHeader;
+	metadata?: SessionSemanticMetadata;
+	/** Stable caller-supplied creation key; retrying is idempotent. */
+	callerKey: string;
+}
+
 
 export interface AppendWithExpectedHeadRequest extends FencedWriteRequest {
 	branchId: BranchId;
@@ -193,6 +202,18 @@ export interface RelatedResourceLocator {
 export interface RegisterRelatedResourceRequest extends FencedWriteRequest {
 	locator: RelatedResourceLocator;
 	target: SessionLocator;
+}
+
+export interface RelatedResourceBinding {
+	locator: RelatedResourceLocator;
+	target: SessionLocator;
+}
+
+export interface ListRelatedResourcesQuery {
+	owner: SessionLocator;
+	kind?: RelatedResourceKind;
+	limit?: number;
+	cursor?: KeysetCursor;
 }
 
 export interface TerminalSessionPointer {
@@ -335,6 +356,7 @@ export interface SessionRepository {
 	readEvents(query: ReadEventsQuery): Promise<KeysetPage<RepositoryEvent>>;
 
 
+	createSession(request: CreateSessionRequest): Promise<RepositorySessionHeader>;
 	appendWithExpectedHead(request: AppendWithExpectedHeadRequest): Promise<AppendWithExpectedHeadResult>;
 	fork(request: ForkRequest): Promise<RepositorySessionHeader>;
 	updateTitle(request: UpdateSessionTitleRequest): Promise<RepositorySessionHeader>;
@@ -346,6 +368,7 @@ export interface SessionRepository {
 
 	registerRelatedResource(request: RegisterRelatedResourceRequest): Promise<void>;
 	resolveRelatedResource(locator: RelatedResourceLocator): Promise<SessionLocator | undefined>;
+	listRelatedResources(query: ListRelatedResourcesQuery): Promise<KeysetPage<RelatedResourceBinding>>;
 	setTerminalSessionPointer(request: SetTerminalSessionPointerRequest): Promise<void>;
 	getTerminalSessionPointer(terminalId: string): Promise<TerminalSessionPointer | undefined>;
 	setPinned(request: SetSessionPinnedRequest): Promise<void>;
