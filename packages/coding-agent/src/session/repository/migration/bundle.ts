@@ -52,6 +52,8 @@ export interface LogicalBranch {
 	fork_point_hash: string | null;
 	head_hash: string | null;
 	head_version_id: string;
+	/** Durable source identities that prevent an imported branch from echoing back as a new fork. */
+	replica_aliases?: readonly { replica_id: string; branch_id: string }[];
 }
 
 export interface LogicalBundle {

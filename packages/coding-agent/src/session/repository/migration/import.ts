@@ -14,6 +14,7 @@ export type ImportRelationship = "new" | "extension" | "divergence" | "historica
 export interface ImportVersionPlan {
 	source_replica_id: string;
 	source_branch_id: string;
+	branch_aliases: readonly { replica_id: string; branch_id: string }[];
 	target_branch_id: string;
 	relationship: ImportRelationship;
 	expected_head_hash: string | null;
@@ -61,7 +62,7 @@ export async function importLogicalBundle(
 		const value = plan as unknown as Parameters<typeof checksumJobValue>[0];
 		const encoded = canonicalJson(value);
 		return {
-			key: plan.version.version_id,
+			key: `${plan.source_branch_id}:${plan.version.version_id}`,
 			bytes: Buffer.byteLength(encoded),
 			checksum: checksumJobValue(value),
 			value: { plan },
@@ -114,18 +115,21 @@ export async function planLogicalImport(
 	const mappedBranches = new Map<string, string>();
 	const ordered = topologicalVersions(source.versions);
 	const result: ImportVersionPlan[] = [];
+	const representedBranches = new Set<string>();
 	for (const version of ordered) {
 		const sourceBranch = sourceBranches.get(version.branch_id);
 		if (!sourceBranch) throw new Error(`Version ${version.version_id} references missing source branch ${version.branch_id}`);
+		representedBranches.add(version.branch_id);
 		let mapped = mappedBranches.get(version.branch_id);
 		if (!mapped) {
-			mapped = (await mappingTarget.lookupBranchMapping(source.replica_id, version.branch_id)) ?? undefined;
+			mapped = await lookupMappedBranch(source.replica_id, sourceBranch, mappingTarget);
 			if (mapped) mappedBranches.set(version.branch_id, mapped);
 		}
 		if (existingVersions.has(version.version_id)) {
 			result.push({
 				source_replica_id: source.replica_id,
 				source_branch_id: version.branch_id,
+				branch_aliases: branchAliases(source.replica_id, sourceBranch),
 				target_branch_id: mapped ?? version.branch_id,
 				relationship: "idempotent",
 				expected_head_hash: targetBranches.get(mapped ?? version.branch_id)?.head_hash ?? null,
@@ -177,6 +181,7 @@ export async function planLogicalImport(
 		result.push({
 			source_replica_id: source.replica_id,
 			source_branch_id: version.branch_id,
+			branch_aliases: branchAliases(source.replica_id, sourceBranch),
 			target_branch_id: targetBranchId,
 			relationship,
 			expected_head_hash: expectedHead,
@@ -191,9 +196,67 @@ export async function planLogicalImport(
 			fork_point_hash: version.fork_point_hash,
 			head_hash: version.head_hash,
 			head_version_id: version.version_id,
+			replica_aliases: branchAliases(source.replica_id, sourceBranch),
+		});
+	}
+	for (const sourceBranch of source.branches) {
+		if (representedBranches.has(sourceBranch.branch_id)) continue;
+		const version = source.versions.find((entry) => entry.version_id === sourceBranch.head_version_id);
+		if (!version) throw new Error(`Branch ${sourceBranch.branch_id} references missing head version`);
+		const mapped = await lookupMappedBranch(source.replica_id, sourceBranch, mappingTarget);
+		let targetBranchId = mapped ?? sourceBranch.branch_id;
+		let targetBranch = targetBranches.get(targetBranchId);
+		if (
+			targetBranch &&
+			(targetBranch.origin_id !== sourceBranch.origin_id ||
+				targetBranch.head_version_id !== sourceBranch.head_version_id)
+		) {
+			targetBranchId = derivedBranchId(source.replica_id, sourceBranch.branch_id, version.version_id);
+			targetBranch = targetBranches.get(targetBranchId);
+		}
+		result.push({
+			source_replica_id: source.replica_id,
+			source_branch_id: sourceBranch.branch_id,
+			branch_aliases: branchAliases(source.replica_id, sourceBranch),
+			target_branch_id: targetBranchId,
+			relationship: "idempotent",
+			expected_head_hash: targetBranch?.head_hash ?? null,
+			version,
+			events: [],
+		});
+		targetBranches.set(targetBranchId, {
+			...sourceBranch,
+			branch_id: targetBranchId,
+			replica_aliases: branchAliases(source.replica_id, sourceBranch),
 		});
 	}
 	return result;
+}
+
+async function lookupMappedBranch(
+	sourceReplicaId: string,
+	branch: LogicalBranch,
+	target: Pick<LogicalImportTarget, "lookupBranchMapping">,
+): Promise<string | undefined> {
+	for (const alias of branchAliases(sourceReplicaId, branch)) {
+		const mapped = await target.lookupBranchMapping(alias.replica_id, alias.branch_id);
+		if (mapped) return mapped;
+	}
+	return undefined;
+}
+
+function branchAliases(
+	sourceReplicaId: string,
+	branch: LogicalBranch,
+): readonly { replica_id: string; branch_id: string }[] {
+	const aliases = [{ replica_id: sourceReplicaId, branch_id: branch.branch_id }, ...(branch.replica_aliases ?? [])];
+	const seen = new Set<string>();
+	return aliases.filter((alias) => {
+		const key = `${alias.replica_id}\0${alias.branch_id}`;
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
 }
 
 export function isVersionAncestor(
