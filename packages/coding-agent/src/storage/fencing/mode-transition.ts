@@ -47,9 +47,17 @@ export interface ModeTransitionState {
 export interface ModeTransitionHooks {
 	prepare(token: GenerationToken): Promise<{ allProcessesAcknowledgedOrStopped: boolean }>;
 	drain(token: GenerationToken): Promise<void>;
-	transfer(token: GenerationToken): Promise<{ recoverableJobId: string | null }>;
+	transfer(token: GenerationToken, recoverableJobId: string): Promise<{ recoverableJobId: string | null }>;
 	verify(token: GenerationToken, targetMode: StorageMode): Promise<void>;
 	reopen(mode: StorageMode, token: GenerationToken): Promise<void>;
+}
+
+/** Fault-injection and process-supervisor signal: leave the durable phase resumable instead of marking failure. */
+export class ModeTransitionInterruptedError extends Error {
+	constructor(message = "Mode transition interrupted") {
+		super(message);
+		this.name = "ModeTransitionInterruptedError";
+	}
 }
 
 function tokenBody(token: Omit<GenerationToken, "checksum">) {
@@ -188,20 +196,53 @@ export class ExperimentalModeTransition {
 	async execute(hooks: ModeTransitionHooks, now: () => string = () => new Date().toISOString()): Promise<ModeTransitionState> {
 		if (this.#state.phase === "completed" || this.#state.phase === "failed") return this.state;
 		try {
-			const prepared = await hooks.prepare(this.#state.token);
-			if (!prepared.allProcessesAcknowledgedOrStopped) {
-				throw new Error("Not every running process acknowledged the storage generation fence or stopped");
+			while (true) {
+				switch (this.#state.phase) {
+					case "prepared": {
+						const prepared = await hooks.prepare(this.#state.token);
+						if (!prepared.allProcessesAcknowledgedOrStopped) {
+							throw new Error("Not every running process acknowledged the storage generation fence or stopped");
+						}
+						await this.#advance("draining", now());
+						break;
+					}
+					case "draining":
+						await hooks.drain(this.#state.token);
+						await this.#advance("transferring", now());
+						break;
+					case "transferring": {
+						const recoverableJobId =
+							this.#state.recoverableJobId ??
+							`mode-transition-${checksumJobJson({
+								profileId: this.#state.profileId,
+								transitionId: this.#state.transitionId,
+								generation: this.#state.token.toGeneration,
+							})}`;
+						if (this.#state.recoverableJobId === null) {
+							await this.#update({ recoverableJobId }, now());
+						}
+						const transfer = await hooks.transfer(this.#state.token, recoverableJobId);
+						if (transfer.recoverableJobId !== null && transfer.recoverableJobId !== recoverableJobId) {
+							throw new Error(`Transfer returned unexpected recoverable job ${transfer.recoverableJobId}`);
+						}
+						await this.#advance("verifying", now());
+						break;
+					}
+					case "verifying":
+						await hooks.verify(this.#state.token, this.#state.targetMode);
+						await this.#advance("commit-blocked", now());
+						break;
+					case "commit-blocked":
+					case "committing":
+					case "reopening":
+						throw new Error(EXPERIMENTAL_MODE_SWITCH_CAPABILITY.reason);
+					case "completed":
+					case "failed":
+						return this.state;
+				}
 			}
-			await this.#advance("draining", now());
-			await hooks.drain(this.#state.token);
-			await this.#advance("transferring", now());
-			const transfer = await hooks.transfer(this.#state.token);
-			await this.#update({ recoverableJobId: transfer.recoverableJobId }, now());
-			await this.#advance("verifying", now());
-			await hooks.verify(this.#state.token, this.#state.targetMode);
-			await this.#advance("commit-blocked", now());
-			throw new Error(EXPERIMENTAL_MODE_SWITCH_CAPABILITY.reason);
 		} catch (error) {
+			if (error instanceof ModeTransitionInterruptedError) throw error;
 			const message = error instanceof Error ? error.message : String(error);
 			await this.#update({ phase: "failed", activeMode: this.#state.previousMode, error: message }, now());
 			return this.state;

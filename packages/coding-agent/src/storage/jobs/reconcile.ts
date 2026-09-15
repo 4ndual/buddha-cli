@@ -196,16 +196,13 @@ export function reconcileSameOrigin(options: {
 		} else {
 			kind = "sibling-fork";
 		}
-		const sourceParentExists =
-			source.parentVersionId !== null &&
-			targetByVersion.has(versionKey({ originId: source.originId, versionId: source.parentVersionId }));
 		actions.push({
 			kind,
 			originId: source.originId,
 			versionId: source.versionId,
 			sourceBranchId: source.branchId,
 			targetBranchId,
-			parentVersionId: sourceParentExists ? source.parentVersionId : related.versionId,
+			parentVersionId: source.parentVersionId,
 			forkPointHash: shared === 0 ? null : source.eventHashes[shared - 1]!,
 		});
 	}
