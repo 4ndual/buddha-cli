@@ -4,10 +4,11 @@ import type { WcdbNativeBatchAdapter } from "./server";
 
 /**
  * Probe the exact ABI-v1 SQL request/response framing before repository mode is
- * admitted. The pinned WCDB 2.1.16 build exposes SQLite 3.27.2, while logical
- * schema v1 currently contains STRICT tables (SQLite 3.37+). Long synchronous
- * native calls would also prevent worker message cancellation, so no operation
- * adapter is returned until both schema and interruptibility gates pass.
+ * admitted. Schema migrations are currently published as multi-statement SQL
+ * scripts, while OWRQ deliberately prepares one statement per request item and
+ * exposes no safe tail offset. We therefore never split or partially execute a
+ * migration. Even a pre-initialized database remains disabled until native work
+ * is interruptible without blocking the worker message loop.
  */
 export async function createNativeWcdbAdapter(options: WcdbOpenOptions): Promise<WcdbNativeBatchAdapter> {
 	const handle = loadWcdbNative({
@@ -32,8 +33,14 @@ export async function createNativeWcdbAdapter(options: WcdbOpenOptions): Promise
 		);
 		const sqliteVersion = probe.statements[0]?.rows[0]?.[0];
 		const hasStorageSchema = probe.statements[1]?.rows.length === 1;
+		const blockers = [
+			...(hasStorageSchema
+				? []
+				: ["schema bootstrap requires canonical individually framed migration statements"]),
+			"synchronous ABI calls cannot satisfy active cancellation",
+		];
 		throw new WcdbNativeUnavailableError(
-			`WCDB SQL batch ABI verified (SQLite ${String(sqliteVersion ?? "unknown")}, schema=${hasStorageSchema ? "present" : "absent"}), but repository capability is disabled: schema v1 requires STRICT tables unavailable in pinned SQLite 3.27.2 and synchronous ABI calls cannot satisfy active cancellation`,
+			`WCDB SQL batch ABI verified (SQLite ${String(sqliteVersion ?? "unknown")}, schema=${hasStorageSchema ? "present" : "absent"}), but repository capability is disabled: ${blockers.join("; ")}`,
 		);
 	} finally {
 		await handle.close();
