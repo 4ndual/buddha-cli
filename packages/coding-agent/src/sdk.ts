@@ -1983,10 +1983,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		}
 		toolSession.getArtifactsDir = getArtifactsDir;
 		toolSession.localProtocolOptions = localProtocolOptions;
-		toolSession.agentOutputManager = new AgentOutputManager(
-			getArtifactsDir,
-			options.parentTaskPrefix ? { parentPrefix: options.parentTaskPrefix } : undefined,
-		);
+		toolSession.agentOutputManager = new AgentOutputManager(getArtifactsDir, {
+			...(options.parentTaskPrefix ? { parentPrefix: options.parentTaskPrefix } : {}),
+			getRepositorySource: () => {
+				const repository = sessionManager.getRepository();
+				const locator = sessionManager.getSessionLocator();
+				return repository && locator ? { repository, locator } : null;
+			},
+		});
 
 		// Create built-in tools (already wrapped with meta notice formatting)
 		await logger.time("createAllTools", createTools, toolSession, options.toolNames);
@@ -3337,6 +3341,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			parentId: options.parentAgentId,
 			session: null,
 			sessionFile: sessionManager.getSessionFile() ?? null,
+			sessionLocator: sessionManager.getSessionLocator() ?? null,
+			sessionRepository: sessionManager.getRepository() ?? null,
 			status: "running" as const,
 		};
 		registeredAgentRef =

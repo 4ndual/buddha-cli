@@ -11,7 +11,7 @@ import {
 	type ExplicitRepositoryExportSource,
 	type RepositorySessionSource,
 } from "../../session/repository-consumers";
-import type { KeysetCursor, RelatedResourceKind } from "../../session/repository/types";
+import type { KeysetCursor, RelatedResourceKind, SessionTransferService } from "../../session/repository/types";
 import type { ExportThemeNames } from "./args";
 import templateCssPath from "./template.css" with { type: "file" };
 import templateHtmlPath from "./template.html" with { type: "file" };
@@ -334,6 +334,14 @@ export async function exportSessionToHtml(
 	options?: ExportOptions | string,
 ): Promise<string> {
 	const opts: ExportOptions = typeof options === "string" ? { outputPath: options } : options || {};
+	const repository = sm.getRepository();
+	const locator = sm.getSessionLocator();
+	if (repository && locator && typeof (repository as Partial<SessionTransferService>).exportArchive === "function") {
+		return exportRepositorySessionToHtml(
+			{ repository, transferService: repository as typeof repository & SessionTransferService, locator },
+			opts,
+		);
+	}
 
 	const sessionFile = sm.getSessionFile();
 	if (!sessionFile) throw new Error("Cannot export in-memory session to HTML");
