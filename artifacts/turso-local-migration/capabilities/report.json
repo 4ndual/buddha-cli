@@ -1,0 +1,368 @@
+{
+  "reportVersion": 1,
+  "generatedAt": "2026-09-15T22:27:55.412Z",
+  "databaseModeEnabled": false,
+  "engine": {
+    "package": "@tursodatabase/database",
+    "packageVersion": "0.7.2",
+    "nativePackage": "@tursodatabase/database-linux-x64-gnu",
+    "nativePackageVersion": "0.7.2",
+    "schemaVersion": 2
+  },
+  "runtime": {
+    "bunVersion": "1.4.2",
+    "validatedBunVersion": "1.4.2",
+    "platform": "linux",
+    "arch": "x64"
+  },
+  "probeRoot": "/home/andual/Projects/.turso-migration-owned/engine/databases/capability-1789511274086-2509512",
+  "capabilities": {
+    "offlineInstallAndLocalUse": {
+      "status": "supported",
+      "mandatory": true,
+      "detail": "Fresh staging install from the provisioned Bun cache and local native query passed with network proxies denied",
+      "evidence": {
+        "evidencePath": "/home/andual/Projects/.task-turso-engine/artifacts/turso-local-migration/capabilities/offline-install.json",
+        "nativeBinarySha256": "77fce830a99f41f9e79c09192f05ed2b9848e4f71cd6a6aa493eddc5b6a7c2a0",
+        "cacheWasPrepopulated": true
+      }
+    },
+    "nativeLoading": {
+      "status": "supported",
+      "mandatory": true,
+      "detail": "Pinned native N-API package loads and executes under Bun",
+      "evidence": {
+        "directPath": "/home/andual/Projects/.turso-migration-owned/engine/databases/capability-1789511274086-2509512/native-load.db"
+      }
+    },
+    "nativeVersionEnforcement": {
+      "status": "unsupported",
+      "mandatory": false,
+      "detail": "Executed probe did not establish the guarantee",
+      "evidence": {
+        "exitCode": 1,
+        "stderr": "496 |   }\n497 | }\n498 | \n499 | if (!nativeBinding) {\n500 |   if (loadErrors.length > 0) {\n501 |     throw new Error(\n                    ^\nerror: Cannot find native binding. npm has a bug related to optional dependencies (https://github.com/npm/cli/issues/4828). Please try `npm i` again after removing both package-lock.json and node_modules directory.\n      at /home/andual/Projects/.task-turso-engine/node_modules/@tursodatabase/database/index.js:501:15\n\nBun v1.4.2 (Linux x64)\n",
+        "packageVersion": "0.7.2",
+        "nativePackageVersion": "0.7.2"
+      },
+      "error": "CapabilityProbeFailure: Package loader rejects its own pinned native package when strict version checking is enabled"
+    },
+    "localFileOnlyGuard": {
+      "status": "supported",
+      "mandatory": true,
+      "detail": "URLs, cloud-style schemes, memory databases, and root escapes are rejected before connection",
+      "evidence": {
+        "rejectedTargets": 5
+      }
+    },
+    "schemaAndConnection": {
+      "status": "supported",
+      "mandatory": true,
+      "detail": "Local connection enabled foreign keys and applied every pinned migration transactionally",
+      "evidence": {
+        "databasePath": "/home/andual/Projects/.turso-migration-owned/engine/databases/capability-1789511274086-2509512/sessions.turso.db",
+        "schemaVersion": 2
+      }
+    },
+    "shutdown": {
+      "status": "supported",
+      "mandatory": true,
+      "detail": "Awaited close released the connection and the file reopened read-only",
+      "evidence": {}
+    },
+    "preparedStatements": {
+      "status": "supported",
+      "mandatory": true,
+      "detail": "Prepared bind, execute, and query round trip passed",
+      "evidence": {
+        "changes": 1
+      }
+    },
+    "preparedStatementInterrupt": {
+      "status": "unsupported",
+      "mandatory": false,
+      "detail": "Executed probe did not establish the guarantee",
+      "evidence": {},
+      "error": "Error: not implemented"
+    },
+    "preparedQueryStreaming": {
+      "status": "supported",
+      "mandatory": true,
+      "detail": "Prepared async iterator streamed all rows in order",
+      "evidence": {
+        "rows": 257
+      }
+    },
+    "cancellation": {
+      "status": "supported",
+      "mandatory": true,
+      "detail": "Per-query deadline interrupts native execution",
+      "evidence": {
+        "queryTimeoutMs": 5,
+        "elapsedMs": 5.374772000000007
+      }
+    },
+    "largeIntegers": {
+      "status": "supported",
+      "mandatory": true,
+      "detail": "Signed 64-bit values are returned losslessly as bigint",
+      "evidence": {
+        "value": "9223372036854775807"
+      }
+    },
+    "transactions": {
+      "status": "supported",
+      "mandatory": true,
+      "detail": "Immediate transactions commit atomically and roll back thrown callbacks",
+      "evidence": {
+        "rows": [
+          {
+            "value": "committed"
+          }
+        ]
+      }
+    },
+    "readSnapshots": {
+      "status": "supported",
+      "mandatory": true,
+      "detail": "Concurrent reader retained its snapshot and observed the writer after transaction end",
+      "evidence": {}
+    },
+    "foreignKeys": {
+      "status": "supported",
+      "mandatory": true,
+      "detail": "Foreign-key enforcement is enabled and rejects missing parents",
+      "evidence": {}
+    },
+    "multiprocessLocking": {
+      "status": "supported",
+      "mandatory": true,
+      "detail": "Separate Bun processes serialized writers without losing either commit",
+      "evidence": {
+        "waitedMs": 433.22326799999996,
+        "rows": [
+          {
+            "value": "child"
+          },
+          {
+            "value": "parent"
+          }
+        ]
+      }
+    },
+    "checkpoint": {
+      "status": "supported",
+      "mandatory": true,
+      "detail": "Full WAL checkpoint completed with no busy handles",
+      "evidence": {
+        "busy": 0,
+        "logFrames": 103,
+        "checkpointedFrames": 103
+      }
+    },
+    "restartRecovery": {
+      "status": "supported",
+      "mandatory": true,
+      "detail": "Committed state survived clean close and read-only restart",
+      "evidence": {
+        "restartPath": "/home/andual/Projects/.turso-migration-owned/engine/databases/capability-1789511274086-2509512/restart.db"
+      }
+    },
+    "durableCommitRecovery": {
+      "status": "supported",
+      "mandatory": true,
+      "detail": "FULL synchronous commit returned before SIGKILL and recovered on a new connection",
+      "evidence": {
+        "childExitCode": 137,
+        "synchronous": 2
+      }
+    },
+    "nativeBackupApi": {
+      "status": "unsupported",
+      "mandatory": false,
+      "detail": "Executed probe did not establish the guarantee",
+      "evidence": {},
+      "error": "Error: not implemented"
+    },
+    "closedCheckpointBackup": {
+      "status": "supported",
+      "mandatory": true,
+      "detail": "Checkpoint, close, exclusive full-file copy, fsync, and reopen fallback passed",
+      "evidence": {
+        "sourcePath": "/home/andual/Projects/.turso-migration-owned/engine/databases/capability-1789511274086-2509512/backup-source.db",
+        "destinationPath": "/home/andual/Projects/.turso-migration-owned/engine/databases/capability-1789511274086-2509512/backup-copy.db",
+        "checkpoint": {
+          "busy": 0,
+          "logFrames": 72,
+          "checkpointedFrames": 72
+        },
+        "closedBeforeCopy": true,
+        "copiedAt": 1789511275207
+      }
+    },
+    "nativeFtsIndex": {
+      "status": "supported",
+      "mandatory": true,
+      "detail": "Pinned schema created Turso Tantivy FTS index and transactionally indexed fixtures",
+      "evidence": {}
+    },
+    "ftsPhraseAndFilters": {
+      "status": "supported",
+      "mandatory": true,
+      "detail": "Native phrase search, highlighting, and relational filters returned expected results",
+      "evidence": {
+        "phrase": [
+          {
+            "eventHash": "event-3",
+            "originId": "origin-capability",
+            "role": "user",
+            "eventTime": 3,
+            "score": 0,
+            "highlightedText": "<mark>full</mark> <mark>text</mark> <mark>search</mark> with a local engine"
+          }
+        ],
+        "filtered": [
+          {
+            "eventHash": "event-2",
+            "originId": "origin-capability",
+            "role": "assistant",
+            "eventTime": 2,
+            "score": 0,
+            "highlightedText": "<mark>database</mark> guide for embedded systems"
+          }
+        ]
+      }
+    },
+    "ftsRanking": {
+      "status": "unsupported",
+      "mandatory": true,
+      "detail": "Executed probe did not establish the guarantee",
+      "evidence": {
+        "ranked": [
+          {
+            "eventHash": "event-2",
+            "originId": "origin-capability",
+            "role": "assistant",
+            "eventTime": 2,
+            "score": 0,
+            "highlightedText": "<mark>database</mark> guide for embedded systems"
+          },
+          {
+            "eventHash": "event-1",
+            "originId": "origin-capability",
+            "role": "user",
+            "eventTime": 1,
+            "score": 0,
+            "highlightedText": "<mark>database</mark> <mark>database</mark> <mark>database</mark> local storage"
+          }
+        ]
+      },
+      "error": "CapabilityProbeFailure: Pinned native FTS did not produce differentiating BM25 scores"
+    },
+    "ftsPrefix": {
+      "status": "unsupported",
+      "mandatory": true,
+      "detail": "Executed probe did not establish the guarantee",
+      "evidence": {
+        "query": "data*",
+        "hits": []
+      },
+      "error": "CapabilityProbeFailure: Pinned native FTS prefix query returned incomplete results"
+    },
+    "ftsUpdateDelete": {
+      "status": "supported",
+      "mandatory": true,
+      "detail": "UPDATE removed stale terms and DELETE removed tombstoned hits",
+      "evidence": {
+        "afterUpdate": {
+          "hits": [
+            {
+              "eventHash": "event-1",
+              "originId": "origin-capability",
+              "role": "user",
+              "eventTime": 1,
+              "score": 0,
+              "highlightedText": "<mark>database</mark> <mark>database</mark> <mark>database</mark> local storage"
+            }
+          ]
+        },
+        "afterDelete": {
+          "hits": []
+        }
+      }
+    },
+    "ftsTransactionConsistency": {
+      "status": "supported",
+      "mandatory": true,
+      "detail": "FTS update was visible inside its transaction and remained visible after commit",
+      "evidence": {
+        "visibleInside": true,
+        "afterCommit": [
+          {
+            "eventHash": "event-3",
+            "originId": "origin-capability",
+            "role": "user",
+            "eventTime": 3,
+            "score": 0,
+            "highlightedText": "transactional visibility <mark>sentinel</mark>"
+          }
+        ]
+      }
+    },
+    "ftsOptimizeAndBoundedIteration": {
+      "status": "supported",
+      "mandatory": true,
+      "detail": "OPTIMIZE INDEX rebuilt segments and search materialized only limit+1 rows",
+      "evidence": {
+        "page": {
+          "hits": [
+            {
+              "eventHash": "bounded-event-5",
+              "originId": "origin-capability",
+              "role": "user",
+              "eventTime": 15,
+              "score": 0,
+              "highlightedText": "<mark>bounded</mark> sentinel 5"
+            },
+            {
+              "eventHash": "bounded-event-2",
+              "originId": "origin-capability",
+              "role": "user",
+              "eventTime": 12,
+              "score": 0,
+              "highlightedText": "<mark>bounded</mark> sentinel 2"
+            },
+            {
+              "eventHash": "bounded-event-1",
+              "originId": "origin-capability",
+              "role": "user",
+              "eventTime": 11,
+              "score": 0,
+              "highlightedText": "<mark>bounded</mark> sentinel 1"
+            }
+          ],
+          "nextOffset": 3
+        }
+      }
+    }
+  },
+  "unsupportedGuarantees": [
+    "nativeVersionEnforcement",
+    "preparedStatementInterrupt",
+    "nativeBackupApi",
+    "ftsRanking",
+    "ftsPrefix"
+  ],
+  "unknownGuarantees": [],
+  "mandatoryFailures": [
+    "ftsRanking",
+    "ftsPrefix"
+  ],
+  "nativeLoadApproaches": [
+    {
+      "approach": "package optional native binding via standard ESM import",
+      "outcome": "supported",
+      "detail": "Bun loaded the pinned linux-x64-gnu N-API artifact and used a local file"
+    }
+  ]
+}
