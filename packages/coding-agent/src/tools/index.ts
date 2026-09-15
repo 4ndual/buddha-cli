@@ -265,7 +265,11 @@ export interface ToolSession {
 	sessionManager?: Pick<
 		SessionManager,
 		"appendCustomEntry" | "ensureOnDisk" | "flush" | "getBranch" | "getEntries"
-	> & { getSessionId?: SessionManager["getSessionId"] };
+	> & {
+		getSessionId?: SessionManager["getSessionId"];
+		getRepository?: SessionManager["getRepository"];
+		getSessionLocator?: SessionManager["getSessionLocator"];
+	};
 	/** Get eval kernel owner ID for session-scoped retained-kernel cleanup. */
 	getEvalKernelOwnerId?: () => string | null;
 	/** Current enabled eval prelude definitions. */

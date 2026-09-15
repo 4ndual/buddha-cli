@@ -10,6 +10,7 @@ import {
 	computeVersionIdentity,
 	JsonlSessionRepository,
 	modeGeneration,
+	type ArchiveStreamLimits,
 	type EventHash,
 	type SessionArchiveItem,
 	type SessionSemanticMetadata,
@@ -18,6 +19,14 @@ import {
 
 const generation = modeGeneration("round-trip-generation-1");
 const timestamp = "2026-09-15T12:00:00.000Z";
+const archiveLimits: ArchiveStreamLimits = {
+	maxEntryBytes: 1024 * 1024,
+	maxEntriesPerPage: 16,
+	maxTotalEntries: 1_000,
+	maxTotalEntryBytes: 8 * 1024 * 1024,
+	maxPayloadRefsPerPage: 16,
+	maxTotalPayloadRefs: 1_000,
+};
 
 function customEntry(id: string, parentId: string | null, value: string): CustomEntry<{ value: string }> {
 	return {
@@ -70,6 +79,8 @@ function initialArchiveItem(source: SourceIdentity): SessionArchiveItem {
 		title: metadata.title,
 		titleSource: metadata.titleSource,
 	};
+	const records = entries.map(entry => ({ entry, encodedByteLength: Buffer.byteLength(JSON.stringify(entry)) }));
+	const entryBytes = records.reduce((total, record) => total + record.encodedByteLength, 0);
 	return {
 		source,
 		sourceAlias: alias.id,
@@ -79,28 +90,44 @@ function initialArchiveItem(source: SourceIdentity): SessionArchiveItem {
 		parentVersionId: null,
 		forkPointHash: null,
 		header,
-		entries,
 		metadata,
+		entryCount: records.length,
+		entryBytes,
+		payloadRefCount: 0,
+		async *openEntryPages() {
+			yield { items: records, byteLength: entryBytes };
+		},
+		async *openPayloadPages() {},
 	};
 }
 
 async function collectArchive(repository: JsonlSessionRepository, originId: SessionArchiveItem["originId"]) {
 	const items: SessionArchiveItem[] = [];
-	for await (const item of repository.exportArchive({ originId })) items.push(item);
+	for await (const item of repository.exportArchive({ originId, limits: archiveLimits })) items.push(item);
 	return items.sort((left, right) => left.branchId.localeCompare(right.branchId));
 }
 
-function semanticProjection(items: readonly SessionArchiveItem[]): unknown {
-	return items.map(item => ({
-		originId: item.originId,
-		sourceAlias: item.sourceAlias,
-		branchId: item.branchId,
-		versionId: item.versionId,
-		parentVersionId: item.parentVersionId,
-		forkPointHash: item.forkPointHash,
-		metadata: item.metadata,
-		entries: item.entries,
-	}));
+async function archiveEntries(item: SessionArchiveItem): Promise<SessionEntry[]> {
+	const entries: SessionEntry[] = [];
+	for await (const page of item.openEntryPages()) {
+		for (const record of page.items) entries.push(record.entry);
+	}
+	return entries;
+}
+
+async function semanticProjection(items: readonly SessionArchiveItem[]): Promise<unknown> {
+	return Promise.all(
+		items.map(async item => ({
+			originId: item.originId,
+			sourceAlias: item.sourceAlias,
+			branchId: item.branchId,
+			versionId: item.versionId,
+			parentVersionId: item.parentVersionId,
+			forkPointHash: item.forkPointHash,
+			metadata: item.metadata,
+			entries: await archiveEntries(item),
+		})),
+	);
 }
 
 describe("JSONL repository logical round trip", () => {
@@ -125,6 +152,7 @@ describe("JSONL repository logical round trip", () => {
 		await source.importArchive([initial], {
 			expectedModeGeneration: generation,
 			sourceReplicaId: computeReplicaIdentity("round-trip-producer").id,
+			limits: archiveLimits,
 		});
 		const base = await source.getHeader({ branchId: initial.branchId });
 		if (!base) throw new Error("round-trip base branch missing");
@@ -148,18 +176,22 @@ describe("JSONL repository logical round trip", () => {
 		const firstImport = await target.importArchive(exported, {
 			expectedModeGeneration: generation,
 			sourceReplicaId: source.replicaId,
+			limits: archiveLimits,
 		});
 		expect(firstImport.deleted).toBe(0);
 		const once = await collectArchive(target, initial.originId);
-		expect(semanticProjection(once)).toEqual(semanticProjection(exported));
+		expect(await semanticProjection(once)).toEqual(await semanticProjection(exported));
 
 		const repeated = await target.importArchive(exported, {
 			expectedModeGeneration: generation,
 			sourceReplicaId: source.replicaId,
+			limits: archiveLimits,
 		});
 		expect(repeated.duplicates).toBe(2);
 		expect(repeated.forked).toBe(0);
-		expect(semanticProjection(await collectArchive(target, initial.originId))).toEqual(semanticProjection(once));
+		expect(await semanticProjection(await collectArchive(target, initial.originId))).toEqual(
+			await semanticProjection(once),
+		);
 	});
 
 	it("streams binary payload bytes without coercion or chunk overrun", async () => {
@@ -170,7 +202,12 @@ describe("JSONL repository logical round trip", () => {
 			modeGeneration: generation,
 		});
 		const bytes = new Uint8Array([0, 1, 2, 255, 128, 13, 10, 42]);
-		const descriptor = await repository.writePayload({ bytes: [bytes] });
+		const descriptor = await repository.writePayload({
+			bytes: [bytes],
+			maxBytes: bytes.byteLength,
+			maxChunkBytes: bytes.byteLength,
+			expectedModeGeneration: generation,
+		});
 		const chunks: Uint8Array[] = [];
 		for await (const chunk of repository.readPayload({ payloadHash: descriptor.payloadHash, chunkBytes: 3 })) {
 			chunks.push(chunk);

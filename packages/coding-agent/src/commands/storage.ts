@@ -45,11 +45,11 @@ export default class Storage extends Command {
 
 	async run(): Promise<void> {
 		const { args, flags } = await this.parse(Storage);
-		const machine = flags.json || flags.machine;
+		const machine = Boolean(flags.json || flags.machine);
 		if (
 			shouldLaunchStoragePanel(
 				args.action,
-				flags.panel,
+				flags.panel ?? false,
 				machine,
 				process.stdin.isTTY === true,
 				process.stdout.isTTY === true,

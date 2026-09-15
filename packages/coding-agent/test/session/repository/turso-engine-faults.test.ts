@@ -118,7 +118,9 @@ describe("embedded Turso transactional fault gates", () => {
 		await closeDatabase(database);
 
 		const reopened = await openFixtureDatabase(temp.path());
-		expect(await reopened.get("SELECT value FROM checkpoint_probe WHERE id = 1")).toEqual({ value: "durable" });
+		expect(await reopened.get<{ value: string }>("SELECT value FROM checkpoint_probe WHERE id = 1")).toEqual({
+			value: "durable",
+		});
 	}, 20_000);
 
 	it("never silently loses an acknowledged commit after a killed writer leaves a corrupt WAL", async () => {

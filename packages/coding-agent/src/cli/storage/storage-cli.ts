@@ -181,7 +181,7 @@ const defaultMigrationController: StorageMigrationController = {
 				);
 			}
 			const publishedPath = await assertNoSymlinkComponents(request.allowedRoot, request.source);
-			const verified = await verifyPublishedBundle(publishedPath);
+			const verified = await verifyPublishedBundle(publishedPath, { allowedRoot: request.allowedRoot });
 			return {
 				message: "Verified published export recovery preview; no journal receipt was written",
 				counts: {

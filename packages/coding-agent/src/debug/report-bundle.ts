@@ -12,6 +12,7 @@ import { APP_NAME, getLogPath, getLogsDir, getReportsDir, isEnoent } from "@oh-m
 import { writeArchive } from "@oh-my-pi/pi-utils/ar";
 import {
 	exportRepositorySessionItem,
+	readRepositoryArchiveEntries,
 	RepositoryArtifactManager,
 	type ExplicitRepositoryExportSource,
 } from "../session/repository-consumers";
@@ -194,8 +195,9 @@ async function addRepositorySessionToArchive(
 	if (visited.has(identity)) return;
 	visited.add(identity);
 	const item = await exportRepositorySessionItem(source);
+	const entries = await readRepositoryArchiveEntries(item);
 	const sessionPath = prefix ? `${prefix}/session.jsonl` : "session.jsonl";
-	data[sessionPath] = `${[JSON.stringify(item.header), ...item.entries.map(entry => JSON.stringify(entry))].join("\n")}\n`;
+	data[sessionPath] = `${[JSON.stringify(item.header), ...entries.map(entry => JSON.stringify(entry))].join("\n")}\n`;
 	files.push(sessionPath);
 
 	const health = await source.repository.health();

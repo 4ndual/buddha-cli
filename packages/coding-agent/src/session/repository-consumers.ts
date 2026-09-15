@@ -1,6 +1,8 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { replaceFileAtomically } from "../utils/atomic-file";
 import type {
+	ArchiveStreamLimits,
 	BranchId,
 	KeysetCursor,
 	ModeGeneration,
@@ -20,6 +22,15 @@ import { CURRENT_SESSION_VERSION, type SessionEntry, type SessionHeader, type Se
 export const REPOSITORY_TRANSCRIPT_PAGE_SIZE = 200;
 /** Hard safety ceiling for consumers that deliberately materialize one transcript. */
 export const MAX_MATERIALIZED_TRANSCRIPT_ENTRIES = 200_000;
+/** Hard bounds for one explicitly materialized JSONL-compatible archive item. */
+export const REPOSITORY_ARCHIVE_LIMITS: ArchiveStreamLimits = {
+	maxEntryBytes: 16 * 1024 * 1024,
+	maxEntriesPerPage: REPOSITORY_TRANSCRIPT_PAGE_SIZE,
+	maxTotalEntries: MAX_MATERIALIZED_TRANSCRIPT_ENTRIES,
+	maxTotalEntryBytes: 16 * 1024 * 1024 * 1024,
+	maxPayloadRefsPerPage: REPOSITORY_TRANSCRIPT_PAGE_SIZE,
+	maxTotalPayloadRefs: MAX_MATERIALIZED_TRANSCRIPT_ENTRIES,
+};
 
 export interface RepositorySessionSource {
 	repository: SessionRepository;
@@ -116,13 +127,48 @@ export async function exportRepositorySessionItem(source: ExplicitRepositoryExpo
 	const header = await source.repository.getHeader({ branchId: source.locator.branchId });
 	if (!header) throw new Error(`Unknown repository branch: ${source.locator.branchId}`);
 	const expectedVersion = source.locator.versionId ?? header.versionId;
-	for await (const item of source.transferService.exportArchive({ branchId: source.locator.branchId, limit: 1 })) {
+	for await (const item of source.transferService.exportArchive({
+		branchId: source.locator.branchId,
+		limit: 1,
+		limits: REPOSITORY_ARCHIVE_LIMITS,
+	})) {
 		if (item.versionId !== expectedVersion) {
 			throw new Error(`Export returned version ${item.versionId} instead of ${expectedVersion}`);
 		}
 		return item;
 	}
 	throw new Error(`Repository export returned no item for branch ${source.locator.branchId}`);
+}
+/** Materialize the bounded entry pages exposed by an archive item. */
+export async function readRepositoryArchiveEntries(item: SessionArchiveItem): Promise<SessionEntry[]> {
+	const entries: SessionEntry[] = [];
+	let entryBytes = 0;
+	for await (const page of item.openEntryPages()) {
+		if (page.items.length < 1 || page.items.length > REPOSITORY_ARCHIVE_LIMITS.maxEntriesPerPage) {
+			throw new Error("Repository archive emitted an invalid entry page");
+		}
+		let pageBytes = 0;
+		for (const record of page.items) {
+			const actualBytes = Buffer.byteLength(JSON.stringify(record.entry));
+			if (actualBytes !== record.encodedByteLength || actualBytes > REPOSITORY_ARCHIVE_LIMITS.maxEntryBytes) {
+				throw new Error(`Repository archive entry ${record.entry.id} has invalid byte accounting`);
+			}
+			entries.push(record.entry);
+			pageBytes += actualBytes;
+			entryBytes += actualBytes;
+			if (
+				entries.length > REPOSITORY_ARCHIVE_LIMITS.maxTotalEntries ||
+				entryBytes > REPOSITORY_ARCHIVE_LIMITS.maxTotalEntryBytes
+			) {
+				throw new Error("Repository archive exceeded materialization limits");
+			}
+		}
+		if (pageBytes !== page.byteLength) throw new Error("Repository archive page has invalid byte accounting");
+	}
+	if (entries.length !== item.entryCount || entryBytes !== item.entryBytes) {
+		throw new Error("Repository archive stream does not match its declared entry totals");
+	}
+	return entries;
 }
 
 /**
@@ -134,7 +180,8 @@ export async function exportRepositorySessionToJsonl(
 	outputPath: string,
 ): Promise<string> {
 	const item = await exportRepositorySessionItem(source);
-	const lines = [JSON.stringify(item.header), ...item.entries.map(entry => JSON.stringify(entry))];
+	const entries = await readRepositoryArchiveEntries(item);
+	const lines = [JSON.stringify(item.header), ...entries.map(entry => JSON.stringify(entry))];
 	const destination = path.resolve(outputPath);
 	const tempPath = `${destination}.tmp-${crypto.randomUUID()}`;
 	try {
@@ -159,9 +206,10 @@ export async function readRepositoryExportSnapshot(
 	source: ExplicitRepositoryExportSource,
 ): Promise<RepositorySessionSnapshot> {
 	const item = await exportRepositorySessionItem(source);
+	const entries = await readRepositoryArchiveEntries(item);
 	return {
 		header: item.header,
-		entries: item.entries,
+		entries,
 		originId: item.originId,
 		locator: { branchId: item.branchId, versionId: item.versionId },
 	};
@@ -223,7 +271,14 @@ export class RepositoryArtifactManager {
 		const existing = await this.repository.resolveRelatedResource({ owner: this.owner, kind: "artifact", key: id });
 		if (existing) throw new Error(`Artifact ${id} already exists`);
 		const mediaType = `text/plain; charset=utf-8; tool=${encodeURIComponent(toolType)}`;
-		const descriptor = await this.repository.writePayload({ bytes: [Buffer.from(content)], mediaType });
+		const bytes = Buffer.from(content);
+		const descriptor = await this.repository.writePayload({
+			bytes: [bytes],
+			maxBytes: bytes.byteLength,
+			maxChunkBytes: Math.max(1, bytes.byteLength),
+			expectedModeGeneration: this.modeGeneration,
+			mediaType,
+		});
 		const now = new Date().toISOString();
 		const nativeId = `artifact:${this.owner.branchId}:${id}`;
 		const artifactHeader = await this.repository.createSession({

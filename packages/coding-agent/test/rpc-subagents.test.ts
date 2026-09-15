@@ -398,7 +398,8 @@ describe("readRpcSubagentTranscript", () => {
 		});
 		expect(observedLimit).toBe(200);
 		expect(result.sessionFile).toBeUndefined();
-		expect(result.messages[0]?.content).toBe("repository transcript");
+		const firstMessage = result.messages[0];
+		expect(firstMessage?.role === "user" ? firstMessage.content : undefined).toBe("repository transcript");
 	});
 });
 

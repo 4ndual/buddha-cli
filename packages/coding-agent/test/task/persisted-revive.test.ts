@@ -35,6 +35,10 @@ function createRef(sessionFile: string): AgentRef {
 		status: "parked",
 		session: null,
 		sessionFile,
+		sessionLocator: null,
+		sessionRepository: null,
+		sessionTransferService: null,
+		rosterRootLocator: null,
 		createdAt: 0,
 		lastActivity: 0,
 	};

@@ -509,7 +509,14 @@ describe("TursoSessionRepository authoritative contract", () => {
 			}),
 		).toMatchObject({ branchId: created.branchId });
 
-		const payload = await contract.writePayload({ bytes: [new Uint8Array([1, 2, 3, 4])], mediaType: "application/test" });
+		const payloadBytes = new Uint8Array([1, 2, 3, 4]);
+		const payload = await contract.writePayload({
+			bytes: [payloadBytes],
+			maxBytes: payloadBytes.byteLength,
+			maxChunkBytes: payloadBytes.byteLength,
+			expectedModeGeneration: GENERATION,
+			mediaType: "application/test",
+		});
 		expect((await collect(contract.readPayload({ payloadHash: payload.payloadHash, chunkBytes: 2 }))).map(chunk => chunk.length)).toEqual([
 			2,
 			2,

@@ -24,7 +24,7 @@ function makeTitledSessions(count: number): SessionInfo[] {
 	}));
 }
 
-function makeSelector(rows: number): SessionSelectorComponent {
+function makeSelector(rows: number): SessionSelectorComponent<SessionInfo> {
 	return new SessionSelectorComponent(
 		makeTitledSessions(50),
 		() => {},

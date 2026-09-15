@@ -24,7 +24,7 @@ function makeSessions(count: number): SessionInfo[] {
 	}));
 }
 
-function makeSelector(sessions: SessionInfo[], rows: number): SessionSelectorComponent {
+function makeSelector(sessions: SessionInfo[], rows: number): SessionSelectorComponent<SessionInfo> {
 	return new SessionSelectorComponent(
 		sessions,
 		() => {},

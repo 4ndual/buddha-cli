@@ -659,6 +659,7 @@ function markPhase2FailureWithFallback(
 
 async function collectJsonlMemoryThreads(session: AgentSession, currentThreadId?: string): Promise<MemoryThread[]> {
 	const sessionDir = session.sessionManager.getSessionDir();
+	if (!sessionDir) return [];
 	const files = await fs.readdir(sessionDir);
 	const threads: MemoryThread[] = [];
 	for (const name of files) {

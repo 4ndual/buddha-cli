@@ -3241,7 +3241,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				? SessionManager.createInRepository(options.parentRepositorySource.repository, effectiveCwd).then(async manager => {
 						const locator = manager.getSessionLocator();
 						if (!locator) throw new Error("Repository child session did not receive a logical locator");
-						await registerRepositoryRelatedSession(options.parentRepositorySource!, "child", id, locator);
+						await registerRepositoryRelatedSession(options.parentRepositorySource!, "child-session", id, locator);
 						return manager;
 					})
 				: sessionFile

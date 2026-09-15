@@ -133,7 +133,9 @@ describe("repository-backed SessionManager", () => {
 
 		expect(page.items[0]?.mode).toBe("db");
 		expect(page.items[0]?.path).toBeUndefined();
-		expect(manager.getSessionReference()).toEqual({ locator: manager.getSessionLocator() });
+		const locator = manager.getSessionLocator();
+		if (!locator) throw new Error("Expected repository session locator");
+		expect(manager.getSessionReference()).toEqual({ locator });
 		expect(fs.readFileSync(sentinel, "utf8")).toBe("sentinel");
 		expect(fs.readdirSync(sentinelRoot)).toEqual(["do-not-touch.jsonl"]);
 		await repo.close();

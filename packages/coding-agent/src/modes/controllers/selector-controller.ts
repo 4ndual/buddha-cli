@@ -1729,7 +1729,7 @@ export class SelectorController {
 	async showSessionSelector(source?: ForeignSessionSource): Promise<void> {
 		let sessions: SessionInfo[];
 		let onSelectSession: (session: SessionInfo) => Promise<boolean>;
-		let selectorOptions: SessionSelectorOptions;
+		let selectorOptions: SessionSelectorOptions<SessionInfo>;
 
 		if (source) {
 			const sourceName = foreignSessionSourceName(source);

@@ -48,7 +48,7 @@ function makeCorpus(): SessionInfo[] {
 }
 
 interface Harness {
-	selector: SessionSelectorComponent;
+	selector: SessionSelectorComponent<SessionInfo>;
 	type: (text: string) => void;
 	/** Sessions currently in the filtered list, probed through the public selection surface. */
 	filtered: () => SessionInfo[];

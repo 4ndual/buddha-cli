@@ -225,7 +225,7 @@ describe("SelectorController.handleResumeSession preflight flush", () => {
 				onSelect: (session: SessionInfo) => void,
 				onCancel: () => void,
 				onExit: () => void,
-				options: SessionSelector.SessionSelectorOptions,
+				options: SessionSelector.SessionSelectorOptions<SessionInfo>,
 			) =>
 				new OriginalSelector(
 					sessions,
@@ -281,7 +281,7 @@ describe("SelectorController.handleResumeSession preflight flush", () => {
 				onSelect: (session: SessionInfo) => void,
 				onCancel: () => void,
 				onExit: () => void,
-				options: SessionSelector.SessionSelectorOptions,
+				options: SessionSelector.SessionSelectorOptions<SessionInfo>,
 			) =>
 				new OriginalSelector(
 					sessions,

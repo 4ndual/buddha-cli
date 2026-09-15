@@ -7566,6 +7566,7 @@ export class AgentSession {
 	async newSession(options?: NewSessionOptions): Promise<boolean> {
 		this.#assertVibeSessionTransitionAllowed("start a new session");
 		const previousSessionFile = this.sessionFile;
+		const previousSession = this.sessionManager.getSessionReference();
 
 		// Emit session_before_switch event with reason "new" (can be cancelled)
 		if (this.#extensionRunner?.hasHandlers("session_before_switch")) {
@@ -7665,7 +7666,7 @@ export class AgentSession {
 				await this.#extensionRunner.emit({
 					type: "session_switch",
 					reason: "new",
-					previousSessionFile,
+					previousSession,
 				});
 			}
 
@@ -7695,6 +7696,7 @@ export class AgentSession {
 	async fork(): Promise<boolean> {
 		this.#assertVibeSessionTransitionAllowed("fork the session");
 		const previousSessionFile = this.sessionFile;
+		const previousSession = this.sessionManager.getSessionReference();
 		const previousSessionId = this.sessionManager.getSessionId();
 
 		// Emit session_before_switch event with reason "fork" (can be cancelled)
@@ -7721,7 +7723,7 @@ export class AgentSession {
 			const bashTransition = this.#bash.beginSessionTransition();
 
 			// Fork the session (creates new session file with same entries)
-			let forkResult: { oldSessionFile: string; newSessionFile: string } | undefined;
+			let forkResult;
 			try {
 				forkResult = await this.sessionManager.fork();
 			} catch (error) {
@@ -7738,7 +7740,9 @@ export class AgentSession {
 			// under a fresh id, so the work already produced is still this session's.
 			this.#recovery.reanchorServedAttribution(previousSessionId);
 
-			await copySessionArtifacts(forkResult.oldSessionFile, forkResult.newSessionFile);
+			if (forkResult.previous.path && forkResult.current.path) {
+				await copySessionArtifacts(forkResult.previous.path, forkResult.current.path);
+			}
 
 			// Update agent session ID
 			this.#freshProviderSessionId = undefined;
@@ -7754,7 +7758,7 @@ export class AgentSession {
 				await this.#extensionRunner.emit({
 					type: "session_switch",
 					reason: "fork",
-					previousSessionFile,
+					previousSession,
 				});
 			}
 
@@ -8755,6 +8759,7 @@ export class AgentSession {
 		},
 	): Promise<boolean> {
 		const previousSessionFile = this.sessionManager.getSessionFile();
+		const previousSession = this.sessionManager.getSessionReference();
 		const switchingToDifferentSession = previousSessionFile
 			? path.resolve(previousSessionFile) !== path.resolve(sessionPath)
 			: true;
@@ -8886,7 +8891,7 @@ export class AgentSession {
 				await this.#extensionRunner.emit({
 					type: "session_switch",
 					reason: "resume",
-					previousSessionFile,
+					previousSession,
 				});
 			}
 
@@ -9116,6 +9121,7 @@ export class AgentSession {
 		cancelled: boolean;
 	}> {
 		const previousSessionFile = this.sessionFile;
+		const previousSession = this.sessionManager.getSessionReference();
 		const selectedEntry = this.sessionManager.getEntry(entryId);
 
 		if (selectedEntry?.type !== "message" || selectedEntry.message.role !== "user") {
@@ -9190,7 +9196,7 @@ export class AgentSession {
 			if (this.#extensionRunner) {
 				await this.#extensionRunner.emit({
 					type: "session_branch",
-					previousSessionFile,
+					previousSession,
 				});
 			}
 
@@ -9220,6 +9226,7 @@ export class AgentSession {
 		sessionId: string,
 	): Promise<{ cancelled: boolean; sessionFile: string | undefined }> {
 		const previousSessionFile = this.sessionFile;
+		const previousSession = this.sessionManager.getSessionReference();
 		if (!this.sessionManager.getSessionFile()) {
 			throw new Error("Cannot branch /btw: session is not persisted");
 		}
@@ -9319,7 +9326,7 @@ export class AgentSession {
 			if (this.#extensionRunner) {
 				await this.#extensionRunner.emit({
 					type: "session_branch",
-					previousSessionFile,
+					previousSession,
 				});
 			}
 

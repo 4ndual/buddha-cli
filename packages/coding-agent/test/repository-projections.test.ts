@@ -76,7 +76,7 @@ class PagedRepositoryFake {
 					timestamp: "2026-09-15T10:00:00.000Z",
 					message: {
 						role: "assistant",
-						content: "alpha answer",
+						content: [{ type: "text", text: "alpha answer" }],
 						api: "openai-responses",
 						provider: "openai",
 						model: "gpt-test",

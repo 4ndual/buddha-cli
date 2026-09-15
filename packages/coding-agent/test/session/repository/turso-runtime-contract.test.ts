@@ -9,7 +9,10 @@ import type {
 	BranchId,
 	EventHash,
 	ModeGeneration,
+	OriginId,
+	ReplicaId,
 	RepositorySessionHeader,
+	SourceAlias,
 	VersionId,
 } from "../../../src/session/repository/types";
 import type { KeysetPosition } from "../../../src/session/repository/turso/pagination";
@@ -24,11 +27,11 @@ function header(
 	options: { forkPointHash?: string | null; parentVersionId?: string | null } = {},
 ): RepositorySessionHeader {
 	return {
-		originId: "origin:runtime",
+		originId: "origin:runtime" as OriginId,
 		branchId: branchId as BranchId,
 		versionId: versionId as VersionId,
-		sourceAlias: "source:runtime",
-		replicaId: "replica:runtime",
+		sourceAlias: "source:runtime" as SourceAlias,
+		replicaId: "replica:runtime" as ReplicaId,
 		headEventHash: headEventHash as EventHash | null,
 		forkPointHash: (options.forkPointHash ?? null) as EventHash | null,
 		parentVersionId: (options.parentVersionId ?? null) as VersionId | null,
@@ -103,14 +106,16 @@ describe("Turso runtime concurrency and pagination", () => {
 		const loser = results.find(result => result.status === "forked");
 		expect(winner).toBeDefined();
 		expect(loser).toBeDefined();
-		expect(branches.get("main")?.headEventHash).toBe(winner?.header.headEventHash);
-		expect(loser?.status === "forked" ? loser.conflictedBranchId : undefined).toBe("main");
-		expect(loser?.header.forkPointHash).toBe("base");
-		expect(parents.get(loser!.header.headEventHash!)).toBe("base");
+		if (!winner || !loser) throw new Error("Expected one append winner and one sibling fork");
+		expect(branches.get("main")?.headEventHash).toBe(winner.header.headEventHash);
+		expect(loser.conflictedBranchId).toBe("main" as BranchId);
+		expect(loser.header.forkPointHash).toBe("base" as EventHash);
+		if (!loser.header.headEventHash) throw new Error("Expected forked branch head");
+		expect(parents.get(loser.header.headEventHash)).toBe("base");
 
-		const repeated = await append(loser!.header.headEventHash!);
+		const repeated = await append(loser.header.headEventHash);
 		expect(repeated.status).toBe("forked");
-		expect(repeated.header.branchId).toBe(loser?.header.branchId);
+		expect(repeated.header.branchId).toBe(loser.header.branchId);
 		expect(branches.size).toBe(2);
 	});
 
@@ -134,9 +139,10 @@ describe("Turso runtime concurrency and pagination", () => {
 		const repository = createTursoSessionRepository({ adapter, defaultPageSize: 3, maxPageSize: 3 });
 
 		const first = await repository.listSessions({ limit: 100 });
+		if (!first.nextCursor) throw new Error("Expected first-page cursor");
 		const second = await repository.listSessions({ cursor: first.nextCursor, limit: 100 });
-		expect(first.items.map(row => row.branchId)).toEqual(["branch-000", "branch-001", "branch-002"]);
-		expect(second.items.map(row => row.branchId)).toEqual(["branch-003", "branch-004", "branch-005"]);
+		expect(first.items.map(row => String(row.branchId))).toEqual(["branch-000", "branch-001", "branch-002"]);
+		expect(second.items.map(row => String(row.branchId))).toEqual(["branch-003", "branch-004", "branch-005"]);
 		expect(first.nextCursor).toBeDefined();
 		expect(second.nextCursor).toBeDefined();
 		expect(observedLimits).toEqual([4, 4]);

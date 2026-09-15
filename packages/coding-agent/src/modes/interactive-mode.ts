@@ -1164,7 +1164,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		const recentSessions = await logger.time("InteractiveMode.init:recentSessions", async () => {
 			const preloaded = await options.recentSessions;
 			if (preloaded) return preloaded;
-			const sessions = await getRecentSessions(this.sessionManager.getSessionDir());
+			const sessionDir = this.sessionManager.getSessionDir();
+			if (!sessionDir) return [];
+			const sessions = await getRecentSessions(sessionDir);
 			return sessions.map(s => ({ name: s.name, timeAgo: s.timeAgo }));
 		});
 		const startupQuiet = settings.get("startup.quiet");

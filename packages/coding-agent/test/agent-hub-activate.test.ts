@@ -513,7 +513,9 @@ describe("Agent hub Enter activation", () => {
 		await fs.writeFile(path.join(sourceArtifacts, "OrdinaryTask.jsonl"), persistedChildJsonl("OrdinaryTask"));
 		const fork = await manager.fork();
 		if (!fork) throw new Error("Expected persisted fork");
-		await fs.cp(sourceArtifacts, fork.newSessionFile.slice(0, -6), { recursive: true });
+		const forkedSessionFile = fork.current.path;
+		if (!forkedSessionFile) throw new Error("Expected JSONL fork path");
+		await fs.cp(sourceArtifacts, forkedSessionFile.slice(0, -6), { recursive: true });
 		await manager.close();
 
 		const agents = new AgentRegistry();
@@ -526,7 +528,7 @@ describe("Agent hub Enter activation", () => {
 			registry: agents,
 			irc: new IrcBus(agents),
 			focusAgent: async () => {},
-			sessionFile: fork.newSessionFile,
+			sessionFile: forkedSessionFile,
 		});
 		await hub.persistedSubagentsReady;
 

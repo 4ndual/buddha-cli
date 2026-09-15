@@ -26,7 +26,7 @@ function createSession(id: string, title: string): SessionInfo {
 	};
 }
 
-function createSelector(onDelete: (session: SessionInfo) => Promise<boolean>): SessionSelectorComponent {
+function createSelector(onDelete: (session: SessionInfo) => Promise<boolean>): SessionSelectorComponent<SessionInfo> {
 	return new SessionSelectorComponent(
 		[createSession("session-a", "Alpha"), createSession("session-b", "Beta")],
 		() => {},
@@ -36,7 +36,7 @@ function createSelector(onDelete: (session: SessionInfo) => Promise<boolean>): S
 	);
 }
 
-function renderText(selector: SessionSelectorComponent): string {
+function renderText(selector: SessionSelectorComponent<SessionInfo>): string {
 	return selector.render(120).join("\n");
 }
 

@@ -36,7 +36,7 @@ function makeSelector(
 	sessions: SessionInfo[],
 	onSelect: (s: SessionInfo) => void,
 	rows = 40,
-): SessionSelectorComponent {
+): SessionSelectorComponent<SessionInfo> {
 	return new SessionSelectorComponent(
 		sessions,
 		onSelect,

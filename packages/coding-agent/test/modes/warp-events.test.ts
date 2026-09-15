@@ -686,7 +686,7 @@ describe("Warp CLI-agent events", () => {
 		sessionId = "session-new";
 		write.mockClear();
 
-		sessionSwitch({ type: "session_switch", reason: "new", previousSessionFile: undefined }, context);
+		sessionSwitch({ type: "session_switch", reason: "new", previousSession: undefined }, context);
 		agentEnd({
 			type: "agent_end",
 			messages: [{ role: "assistant", content: [{ type: "text", text: "orphan stop" }] } as never],
@@ -733,7 +733,7 @@ describe("Warp CLI-agent events", () => {
 		sessionId = "session-branched";
 		write.mockClear();
 
-		sessionBranch({ type: "session_branch", previousSessionFile: undefined }, context);
+		sessionBranch({ type: "session_branch", previousSession: undefined }, context);
 		agentEnd({
 			type: "agent_end",
 			messages: [{ role: "assistant", content: [{ type: "text", text: "orphan stop" }] } as never],

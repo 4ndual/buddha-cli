@@ -1582,7 +1582,7 @@ export class SessionManager {
 		this.#repositoryModeGeneration = opened.#repositoryModeGeneration;
 		this.#repositoryHead = opened.#repositoryHead;
 		this.#repositoryTail = Promise.resolve();
-		this.#repositoryDraftRevision = undefined;
+		this.#repositoryDraftRevision = null;
 		this.#sessionFile = undefined;
 		this.#sessionDir = "";
 		this.#suppressBreadcrumb = true;
@@ -2441,8 +2441,12 @@ export class SessionManager {
 				}
 				return;
 			}
+			const bytes = new TextEncoder().encode(text);
 			const descriptor = await this.#repository.writePayload({
-				bytes: [new TextEncoder().encode(text)],
+				bytes: [bytes],
+				maxBytes: bytes.byteLength,
+				maxChunkBytes: Math.max(1, bytes.byteLength),
+				expectedModeGeneration: this.#repositoryModeGeneration,
 				mediaType: "text/plain;charset=utf-8",
 			});
 			const revision = Bun.randomUUIDv7();

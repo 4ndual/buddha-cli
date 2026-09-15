@@ -1346,11 +1346,13 @@ export class AcpAgent implements Agent {
 				const repository = this.#sessionRepository();
 				if (!repository) throw new Error("Repository session is unavailable");
 				await session.switchRepositorySession(repository, storedSession.locator);
-			} else {
+			} else if ("path" in storedSession && storedSession.path) {
 				const success = await session.switchSession(storedSession.path);
 				if (!success) {
 					throw new Error(`ACP session load was cancelled: ${sessionId}`);
 				}
+			} else {
+				throw new Error(`ACP session has no resumable reference: ${sessionId}`);
 			}
 		} catch (error) {
 			await this.#disposeStandaloneSession(session);
@@ -1450,7 +1452,9 @@ export class AcpAgent implements Agent {
 		if (!storedSession) {
 			throw new Error(`ACP session not found: ${sessionId}`);
 		}
-		return storedSession.locator ? { locator: storedSession.locator } : { path: storedSession.path };
+		if (storedSession.locator) return { locator: storedSession.locator };
+		if ("path" in storedSession && storedSession.path) return { path: storedSession.path };
+		throw new Error(`ACP session has no resumable reference: ${sessionId}`);
 	}
 
 	async #handlePromptEvent(record: ManagedSessionRecord, event: AgentSessionEvent): Promise<void> {

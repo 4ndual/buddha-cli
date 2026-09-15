@@ -26,7 +26,8 @@ import { HookSelectorComponent } from "./hook-selector";
 
 import { bottomBorder, OverlayPanel, row, topBorder } from "./overlay-box";
 
-type SessionInfo = JsonlSessionInfo | LogicalSessionInfo;
+export type SelectableSessionInfo = JsonlSessionInfo | LogicalSessionInfo;
+type SessionInfo = SelectableSessionInfo;
 
 /**
  * Themed glyph + colored label for a session's lifecycle status, or `undefined`
@@ -84,9 +85,9 @@ function sessionSearchText(session: SessionInfo): string {
  */
 const kSearchTextLower = Symbol("session.searchTextLower");
 
-interface SearchableSessionInfo extends SessionInfo {
+type SearchableSessionInfo = SessionInfo & {
 	[kSearchTextLower]?: string;
-}
+};
 
 function sessionTextLower(session: SessionInfo): string {
 	const tagged = session as SearchableSessionInfo;
@@ -110,8 +111,8 @@ function compareSessionRecency(a: SessionInfo, b: SessionInfo): number {
 const MIN_PURE_FUZZY_TOKEN_SCORE = -20;
 
 /** One ranked search hit; `index` is the session's position in the unfiltered list (recency order). */
-interface RankedSessionMatch {
-	session: SessionInfo;
+interface RankedSessionMatch<T extends SessionInfo = SessionInfo> {
+	session: T;
 	score: number;
 	index: number;
 }
@@ -136,12 +137,12 @@ function isLiteralMatch(textLower: string, tokens: string[]): boolean {
  * noise. The caller builds `fuzzy` once per session visit so multi-token
  * queries share a single index.
  */
-function scoreFuzzySession(
-	session: SessionInfo,
+function scoreFuzzySession<T extends SessionInfo>(
+	session: T,
 	index: number,
 	tokens: string[],
 	fuzzy: FuzzyText,
-): RankedSessionMatch | undefined {
+): RankedSessionMatch<T> | undefined {
 	let score = 0;
 	let worstTokenScore = Number.NEGATIVE_INFINITY;
 	for (const token of tokens) {
@@ -173,12 +174,12 @@ function compareFuzzyRank(a: RankedSessionMatch, b: RankedSessionMatch): number 
  * This is the synchronous reference implementation; {@link SessionList} runs
  * the same primitives incrementally so huge listings never block a keystroke.
  */
-export function rankSessionSearchMatches(allSessions: SessionInfo[], query: string): SessionInfo[] {
+export function rankSessionSearchMatches<T extends SessionInfo>(allSessions: T[], query: string): T[] {
 	const tokens = tokenizeSessionQuery(query);
 	if (tokens.length === 0) return allSessions;
 
-	const literal: RankedSessionMatch[] = [];
-	const fuzzyMatches: RankedSessionMatch[] = [];
+	const literal: RankedSessionMatch<T>[] = [];
+	const fuzzyMatches: RankedSessionMatch<T>[] = [];
 	for (let index = 0; index < allSessions.length; index++) {
 		const session = allSessions[index]!;
 		const textLower = sessionTextLower(session);
@@ -192,7 +193,7 @@ export function rankSessionSearchMatches(allSessions: SessionInfo[], query: stri
 
 	literal.sort(compareLiteralRank);
 	fuzzyMatches.sort(compareFuzzyRank);
-	const out: SessionInfo[] = [];
+	const out: T[] = [];
 	for (const match of literal) out.push(match.session);
 	for (const match of fuzzyMatches) out.push(match.session);
 	return out;
@@ -211,19 +212,19 @@ export function rankSessionSearchMatches(allSessions: SessionInfo[], query: stri
  * and history matches not present in `allSessions` (e.g. deleted or out-of-scope
  * sessions) are ignored since they cannot be resumed from here.
  */
-export function mergeSessionRanking(
-	allSessions: SessionInfo[],
-	fuzzy: SessionInfo[],
+export function mergeSessionRanking<T extends SessionInfo>(
+	allSessions: T[],
+	fuzzy: T[],
 	historyIds: string[],
-): SessionInfo[] {
+): T[] {
 	if (historyIds.length === 0) return fuzzy;
 
-	const sessionsById = new Map<string, SessionInfo>();
+	const sessionsById = new Map<string, T>();
 	for (const session of allSessions) {
 		if (!sessionsById.has(session.id)) sessionsById.set(session.id, session);
 	}
 
-	const historyMatches: SessionInfo[] = [];
+	const historyMatches: T[] = [];
 	const matchedIdentities = new Set<string>();
 	for (const id of historyIds) {
 		const session = sessionsById.get(id);
@@ -273,8 +274,8 @@ const FUZZY_SCAN_CHUNK_COUNT = 150;
 /**
  * Custom session list component with multi-line items and search
  */
-class SessionList implements Component {
-	#filteredSessions: SessionInfo[] = [];
+class SessionList<T extends SessionInfo> implements Component {
+	#filteredSessions: T[] = [];
 	#selectedIndex: number = 0;
 	// Maps a 0-based line within this list's own render to a filtered-session
 	// index, or undefined for chrome rows (search line, blanks, scrollbar gap).
@@ -283,7 +284,7 @@ class SessionList implements Component {
 	// (where the overlay enables mouse tracking and paints from screen row 0).
 	#hitRows: (number | undefined)[] = [];
 	readonly #searchInput: Input;
-	onSelect?: (session: SessionInfo) => void;
+	onSelect?: (session: T) => void;
 	onCancel?: () => void;
 	onExit: () => void = () => {};
 	onToggleScope?: () => void;
@@ -291,9 +292,9 @@ class SessionList implements Component {
 	// from it per render so the picker fits the viewport (and adapts to resize).
 	readonly #getTerminalRows: () => number;
 
-	onDeleteRequest?: (session: SessionInfo) => void;
+	onDeleteRequest?: (session: T) => void;
 
-	#allSessions: SessionInfo[];
+	#allSessions: T[];
 	#showCwd: boolean;
 	#pinnedIds: ReadonlySet<string>;
 	readonly #historyMatcher?: SessionHistoryMatcher;
@@ -306,9 +307,9 @@ class SessionList implements Component {
 	// #composeFiltered), so late-arriving fuzzy chunks and the debounced
 	// history merge can land in any order without clobbering each other.
 	/** Recency-ranked sessions whose text contains every query token verbatim. */
-	#literalRanked: RankedSessionMatch[] = [];
+	#literalRanked: RankedSessionMatch<T>[] = [];
 	/** Score-ranked fuzzy-only matches, appended by scan chunks. */
-	#fuzzyRanked: RankedSessionMatch[] = [];
+	#fuzzyRanked: RankedSessionMatch<T>[] = [];
 	/** Prompt-history session IDs for the current query, once the merge landed. */
 	#historyIds: string[] = [];
 	/** Invalidates in-flight scan chunks when the query or dataset changes. */
@@ -322,7 +323,7 @@ class SessionList implements Component {
 	#selectionMoved = false;
 
 	constructor(
-		sessions: SessionInfo[],
+		sessions: T[],
 		showCwd = false,
 		historyMatcher?: SessionHistoryMatcher,
 		getTerminalRows: () => number = () => 24,
@@ -369,7 +370,7 @@ class SessionList implements Component {
 	}
 
 	/** Replace the visible dataset, e.g. when toggling folder/all-projects scope. */
-	setSessions(sessions: SessionInfo[], showCwd: boolean, pinnedIds?: ReadonlySet<string>): void {
+	setSessions(sessions: T[], showCwd: boolean, pinnedIds?: ReadonlySet<string>): void {
 		this.#allSessions = sessions;
 		this.#showCwd = showCwd;
 		if (pinnedIds !== undefined) this.#pinnedIds = pinnedIds;
@@ -399,7 +400,7 @@ class SessionList implements Component {
 		// Literal pass: one substring scan per token per session, synchronous so
 		// every keystroke gets immediate recency-ranked feedback regardless of
 		// listing size.
-		const literal: RankedSessionMatch[] = [];
+		const literal: RankedSessionMatch<T>[] = [];
 		const rest: number[] = [];
 		const all = this.#allSessions;
 		for (let index = 0; index < all.length; index++) {
@@ -455,7 +456,7 @@ class SessionList implements Component {
 	 */
 	#composeFiltered(): void {
 		this.#fuzzyRanked.sort(compareFuzzyRank);
-		const base: SessionInfo[] = [];
+		const base: T[] = [];
 		for (const match of this.#literalRanked) base.push(match.session);
 		for (const match of this.#fuzzyRanked) base.push(match.session);
 		this.#filteredSessions =
@@ -504,7 +505,7 @@ class SessionList implements Component {
 		}
 	}
 
-	removeSession(session: SessionInfo): void {
+	removeSession(session: T): void {
 		const identity = sessionIdentity(session);
 		const index = this.#allSessions.findIndex(candidate => sessionIdentity(candidate) === identity);
 		if (index === -1) return;
@@ -584,7 +585,7 @@ class SessionList implements Component {
 		// worst-case count-based window would leave (then padded by
 		// fill-height).
 		const filtered = this.#filteredSessions;
-		const itemHeight = (session: SessionInfo): number => (session.title ? 4 : 3);
+		const itemHeight = (session: T): number => (session.title ? 4 : 3);
 		const budget = this.#lineBudget();
 		let startIndex = this.#selectedIndex;
 		let endIndex = this.#selectedIndex + 1;
@@ -655,7 +656,7 @@ class SessionList implements Component {
 			if (status) {
 				metadata += ` ${dot} ${status}`;
 			}
-			if (session.parentSessionPath) {
+			if ("parentSessionPath" in session && session.parentSessionPath) {
 				metadata += ` ${dot} ${dim(`${theme.icon.branch} fork`)}`;
 			}
 			if (this.#showCwd && session.cwd) {
@@ -770,13 +771,13 @@ class SessionList implements Component {
 	}
 }
 
-export interface SessionSelectorOptions {
-	onDelete?: (session: SessionInfo) => Promise<boolean>;
+export interface SessionSelectorOptions<T extends SessionInfo = SessionInfo> {
+	onDelete?: (session: T) => Promise<boolean>;
 	historyMatcher?: SessionHistoryMatcher;
 	/** Loads sessions across all projects for the all-projects scope toggle (Tab). */
-	loadAllSessions?: () => Promise<SessionInfo[]>;
+	loadAllSessions?: () => Promise<T[]>;
 	/** Preloaded all-projects list; cached so the first Tab toggle is instant. */
-	allSessions?: SessionInfo[];
+	allSessions?: T[];
 	/** Picker heading; defaults to "Resume Session". */
 	title?: string;
 	/** Fixed scope label, or false to omit the scope suffix. */
@@ -802,8 +803,8 @@ export interface SessionSelectorOptions {
 /**
  * Component that renders a session selector with optional confirmation dialog
  */
-export class SessionSelectorComponent extends OverlayPanel {
-	#sessionList: SessionList;
+export class SessionSelectorComponent<T extends SessionInfo = SessionInfo> extends OverlayPanel {
+	#sessionList: SessionList<T>;
 	#confirmationDialog: HookSelectorComponent | null = null;
 	// Hosts whichever of `#sessionList` / `#confirmationDialog` is live this
 	// frame. The delete dialog REPLACES the list in this slot rather than being
@@ -813,11 +814,11 @@ export class SessionSelectorComponent extends OverlayPanel {
 	// scrollback, stranding it above the viewport once the dialog closed).
 	#contentSlot: Container;
 	#messageContainer: Container;
-	#onDelete?: (session: SessionInfo) => Promise<boolean>;
+	#onDelete?: (session: T) => Promise<boolean>;
 	#onRequestRender?: () => void;
-	readonly #loadAllSessions?: () => Promise<SessionInfo[]>;
-	#folderSessions: SessionInfo[];
-	#globalSessions: SessionInfo[] | null = null;
+	readonly #loadAllSessions?: () => Promise<T[]>;
+	#folderSessions: T[];
+	#globalSessions: T[] | null = null;
 	#scope: "folder" | "all" = "folder";
 	#toggling = false;
 	#inputLocked = false;
@@ -836,11 +837,11 @@ export class SessionSelectorComponent extends OverlayPanel {
 	readonly #scopeLabel: string | false | undefined;
 
 	constructor(
-		sessions: SessionInfo[],
-		onSelect: (session: SessionInfo) => void,
+		sessions: T[],
+		onSelect: (session: T) => void,
 		onCancel: () => void,
 		onExit: () => void,
-		options: SessionSelectorOptions = {},
+		options: SessionSelectorOptions<T> = {},
 	) {
 		super(options.title ?? "Resume Session");
 
@@ -883,7 +884,7 @@ export class SessionSelectorComponent extends OverlayPanel {
 			onExit();
 		};
 		this.#sessionList.onRequestRender = () => this.#onRequestRender?.();
-		this.#sessionList.onDeleteRequest = (session: SessionInfo) => {
+		this.#sessionList.onDeleteRequest = (session: T) => {
 			this.#showDeleteConfirmation(session);
 		};
 		if (this.#loadAllSessions || this.#globalSessions) {
@@ -971,7 +972,7 @@ export class SessionSelectorComponent extends OverlayPanel {
 		this.#messageContainer.addChild(new Spacer(1));
 	}
 
-	#showDeleteConfirmation(session: SessionInfo): void {
+	#showDeleteConfirmation(session: T): void {
 		const displayName = session.title || session.firstMessage.slice(0, 40) || session.id;
 		const closeDialog = () => {
 			this.#confirmationDialog = null;
@@ -1075,7 +1076,7 @@ export class SessionSelectorComponent extends OverlayPanel {
 		});
 	}
 
-	getSessionList(): SessionList {
+	getSessionList(): SessionList<T> {
 		return this.#sessionList;
 	}
 }
