@@ -346,6 +346,71 @@ BEFORE DELETE ON events
 BEGIN
   SELECT RAISE(ABORT, 'events are immutable');
 END;
+CREATE TRIGGER origins_identity_immutable_before_update
+BEFORE UPDATE OF origin_id, source_namespace, native_id, canonical_length, canonical_bytes ON origins
+BEGIN
+  SELECT RAISE(ABORT, 'origin identity is immutable');
+END;
+
+CREATE TRIGGER source_aliases_identity_immutable_before_update
+BEFORE UPDATE OF source_alias, origin_id, harness, install_namespace, native_id ON source_aliases
+BEGIN
+  SELECT RAISE(ABORT, 'source alias identity is immutable');
+END;
+
+CREATE TRIGGER payloads_identity_immutable_before_update
+BEFORE UPDATE OF payload_id, content_hash, codec, dictionary_id, uncompressed_length, encoded_length, chunk_count, canonical_length ON payloads
+BEGIN
+  SELECT RAISE(ABORT, 'payload identity is immutable');
+END;
+
+CREATE TRIGGER metadata_revisions_immutable_before_update
+BEFORE UPDATE ON metadata_revisions
+BEGIN
+  SELECT RAISE(ABORT, 'metadata revisions are immutable');
+END;
+
+CREATE TRIGGER metadata_revisions_immutable_before_delete
+BEFORE DELETE ON metadata_revisions
+BEGIN
+  SELECT RAISE(ABORT, 'metadata revisions are immutable');
+END;
+
+CREATE TRIGGER branches_identity_immutable_before_update
+BEFORE UPDATE OF branch_id, origin_id, parent_branch_id, fork_point_hash, created_at ON branches
+BEGIN
+  SELECT RAISE(ABORT, 'branch identity and lineage are immutable');
+END;
+
+CREATE TRIGGER metadata_observations_identity_immutable_before_update
+BEFORE UPDATE OF observation_id, origin_id, version_id, field_name, provenance, observed_at, source_alias ON metadata_observations
+BEGIN
+  SELECT RAISE(ABORT, 'metadata observation identity is immutable');
+END;
+
+CREATE TRIGGER checkpoints_identity_immutable_before_update
+BEFORE UPDATE OF branch_id, head_hash, context_builder_version, context_hash, payload_id ON checkpoints
+BEGIN
+  SELECT RAISE(ABORT, 'checkpoint identity is immutable');
+END;
+
+CREATE TRIGGER search_documents_identity_immutable_before_update
+BEFORE UPDATE OF event_hash, origin_id ON search_documents
+BEGIN
+  SELECT RAISE(ABORT, 'search document identity is immutable');
+END;
+
+CREATE TRIGGER branch_mappings_immutable_before_update
+BEFORE UPDATE ON branch_mappings
+BEGIN
+  SELECT RAISE(ABORT, 'branch mappings are immutable');
+END;
+
+CREATE TRIGGER replica_receipts_immutable_before_update
+BEFORE UPDATE ON replica_receipts
+BEGIN
+  SELECT RAISE(ABORT, 'replica receipts are immutable');
+END;
 
 CREATE TRIGGER versions_immutable_before_update
 BEFORE UPDATE ON versions
@@ -490,7 +555,7 @@ export const WCDB_SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
 	{
 		version: 1,
 		name: "initial-session-repository",
-		checksum: "sha256:887b890fa26c6f511d5a6809583271803bbd38a0ff2b15d99f259d9d89dbb4d9",
+		checksum: "sha256:86bbc5fe56ca431bb3b7b270a9046edfb06a0a24b0917372ac1fb3885cdb24e7",
 		upSql: [CORE_SCHEMA_SQL],
 	},
 ];

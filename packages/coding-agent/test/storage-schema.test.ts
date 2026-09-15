@@ -108,6 +108,9 @@ describe("WCDB logical schema", () => {
 			expect(() => insertBranch.run("bad-fork", "origin-a", null, "event-b", "event-a")).toThrow(
 				"branch fork point must exist in the same origin",
 			);
+			expect(() => database.run("UPDATE branches SET origin_id = 'origin-b' WHERE branch_id = 'root'")).toThrow(
+				"branch identity and lineage are immutable",
+			);
 			expect(() => database.run("UPDATE branches SET parent_branch_id = 'foreign' WHERE branch_id = 'root'")).toThrow(
 				"branch parent must exist in the same origin",
 			);
@@ -120,6 +123,9 @@ describe("WCDB logical schema", () => {
 			);
 			insertMetadata.run("metadata-a", "origin-a", "payload-origin-a", "metadata-hash-a", Uint8Array.of(1));
 			insertMetadata.run("metadata-b", "origin-b", "payload-origin-b", "metadata-hash-b", Uint8Array.of(2));
+			expect(() => database.run("UPDATE metadata_revisions SET origin_id = 'origin-b' WHERE metadata_revision_id = 'metadata-a'")).toThrow(
+				"metadata revisions are immutable",
+			);
 			const insertVersion = database.prepare(
 				"INSERT INTO versions (version_id, origin_id, branch_id, parent_version_id, head_hash, metadata_revision_id, created_at, canonical_length, canonical_bytes) VALUES (?, ?, ?, ?, ?, ?, '2026-09-15T00:00:00Z', 1, ?)",
 			);
