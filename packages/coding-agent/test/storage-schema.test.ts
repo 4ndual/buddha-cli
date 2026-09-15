@@ -79,36 +79,70 @@ describe("WCDB logical schema", () => {
 		}
 	});
 
-	it("enforces same-origin ancestry, immutable events, branch acyclicity, and restrictive foreign keys", () => {
+	it("enforces same-origin ancestry, immutable records, branch acyclicity, and restrictive foreign keys", () => {
 		const database = createReferenceDatabase();
 		try {
 			seedOrigin(database, "origin-a");
 			seedOrigin(database, "origin-b");
-			database
-				.prepare(
-					"INSERT INTO events (event_hash, origin_id, parent_hash, native_entry_id, kind, timestamp, payload_id, canonicalizer_version, canonical_length, canonical_bytes) VALUES ('event-a', 'origin-a', NULL, 'entry-a', 'message', '2026-09-15T00:00:00Z', 'payload-origin-a', 1, 1, ?)",
-				)
-				.run(Uint8Array.of(1));
+			const insertEvent = database.prepare(
+				"INSERT INTO events (event_hash, origin_id, parent_hash, native_entry_id, kind, timestamp, payload_id, canonicalizer_version, canonical_length, canonical_bytes) VALUES (?, ?, ?, ?, 'message', '2026-09-15T00:00:00Z', ?, 1, 1, ?)",
+			);
+			insertEvent.run("event-a", "origin-a", null, "entry-a", "payload-origin-a", Uint8Array.of(1));
+			insertEvent.run("event-b", "origin-b", null, "entry-b", "payload-origin-b", Uint8Array.of(2));
 			expect(() =>
-				database
-					.prepare(
-						"INSERT INTO events (event_hash, origin_id, parent_hash, native_entry_id, kind, timestamp, payload_id, canonicalizer_version, canonical_length, canonical_bytes) VALUES ('event-b', 'origin-b', 'event-a', 'entry-b', 'message', '2026-09-15T00:00:00Z', 'payload-origin-b', 1, 1, ?)",
-					)
-					.run(Uint8Array.of(2)),
+				insertEvent.run("event-bad-parent", "origin-b", "event-a", "entry-bad", "payload-origin-b", Uint8Array.of(3)),
 			).toThrow("event parent must exist in the same origin");
 			expect(() => database.run("UPDATE events SET native_entry_id = 'rewritten' WHERE event_hash = 'event-a'")).toThrow(
 				"events are immutable",
 			);
 
-			database.run(
-				"INSERT INTO branches (branch_id, origin_id, parent_branch_id, fork_point_hash, head_hash, head_version_id, generation, created_at, updated_at) VALUES ('root', 'origin-a', NULL, NULL, 'event-a', NULL, 1, '2026-09-15T00:00:00Z', '2026-09-15T00:00:00Z')",
+			const insertBranch = database.prepare(
+				"INSERT INTO branches (branch_id, origin_id, parent_branch_id, fork_point_hash, head_hash, head_version_id, generation, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NULL, 1, '2026-09-15T00:00:00Z', '2026-09-15T00:00:00Z')",
 			);
-			database.run(
-				"INSERT INTO branches (branch_id, origin_id, parent_branch_id, fork_point_hash, head_hash, head_version_id, generation, created_at, updated_at) VALUES ('child', 'origin-a', 'root', 'event-a', 'event-a', NULL, 1, '2026-09-15T00:00:00Z', '2026-09-15T00:00:00Z')",
+			insertBranch.run("root", "origin-a", null, null, "event-a");
+			insertBranch.run("child", "origin-a", "root", "event-a", "event-a");
+			insertBranch.run("foreign", "origin-b", null, null, "event-b");
+			expect(() => insertBranch.run("bad-head", "origin-a", null, null, "event-b")).toThrow(
+				"branch head must exist in the same origin",
+			);
+			expect(() => insertBranch.run("bad-fork", "origin-a", null, "event-b", "event-a")).toThrow(
+				"branch fork point must exist in the same origin",
+			);
+			expect(() => database.run("UPDATE branches SET parent_branch_id = 'foreign' WHERE branch_id = 'root'")).toThrow(
+				"branch parent must exist in the same origin",
 			);
 			expect(() => database.run("UPDATE branches SET parent_branch_id = 'child' WHERE branch_id = 'root'")).toThrow(
 				"branch cycle",
 			);
+
+			const insertMetadata = database.prepare(
+				"INSERT INTO metadata_revisions (metadata_revision_id, origin_id, payload_id, semantic_hash, canonical_length, canonical_bytes, created_at) VALUES (?, ?, ?, ?, 1, ?, '2026-09-15T00:00:00Z')",
+			);
+			insertMetadata.run("metadata-a", "origin-a", "payload-origin-a", "metadata-hash-a", Uint8Array.of(1));
+			insertMetadata.run("metadata-b", "origin-b", "payload-origin-b", "metadata-hash-b", Uint8Array.of(2));
+			const insertVersion = database.prepare(
+				"INSERT INTO versions (version_id, origin_id, branch_id, parent_version_id, head_hash, metadata_revision_id, created_at, canonical_length, canonical_bytes) VALUES (?, ?, ?, ?, ?, ?, '2026-09-15T00:00:00Z', 1, ?)",
+			);
+			insertVersion.run("version-a", "origin-a", "root", null, "event-a", "metadata-a", Uint8Array.of(1));
+			insertVersion.run("version-b", "origin-b", "foreign", null, "event-b", "metadata-b", Uint8Array.of(2));
+			expect(() =>
+				insertVersion.run("bad-branch", "origin-a", "foreign", null, "event-a", "metadata-a", Uint8Array.of(3)),
+			).toThrow("version branch must exist in the same origin");
+			expect(() =>
+				insertVersion.run("bad-parent", "origin-a", "child", "version-b", "event-a", "metadata-a", Uint8Array.of(4)),
+			).toThrow("version parent must exist in the same origin");
+			expect(() =>
+				insertVersion.run("bad-head-version", "origin-a", "child", null, "event-b", "metadata-a", Uint8Array.of(5)),
+			).toThrow("version head must exist in the same origin");
+			expect(() =>
+				insertVersion.run("bad-metadata", "origin-a", "child", null, "event-a", "metadata-b", Uint8Array.of(6)),
+			).toThrow("version metadata must exist in the same origin");
+
+			database.run("UPDATE branches SET head_version_id = 'version-a' WHERE branch_id = 'root'");
+			expect(() => database.run("UPDATE branches SET head_version_id = 'version-a' WHERE branch_id = 'child'")).toThrow(
+				"selected version must match branch origin and head",
+			);
+			for (const audit of WCDB_SCHEMA_INVARIANT_AUDITS) expect(database.prepare(audit.sql).all()).toEqual([]);
 			expect(() => database.run("DELETE FROM origins WHERE origin_id = 'origin-a'")).toThrow();
 		} finally {
 			database.close();

@@ -13,6 +13,7 @@ import {
 	planCasAppend,
 	reconcileAction,
 	replicaId,
+	semanticProjection,
 	sourceAlias,
 	versionId,
 	type ReconciliationObservation,
@@ -54,6 +55,9 @@ describe("canonical semantic identity", () => {
 		const identityC = metadataRevisionId({ title: "B", exportPath: "/one" });
 		expect(identityA).toBe(identityB);
 		expect(identityA).not.toBe(identityC);
+		const constructorMetadata = metadataRevisionId({ constructor: "meaningful" });
+		expect(constructorMetadata).not.toBe(metadataRevisionId({}));
+		expect(Object.getPrototypeOf(semanticProjection({ constructor: "meaningful" }))).toBeNull();
 	});
 
 	it("detects equal-hash records whose canonical bytes do not match", () => {
@@ -61,6 +65,12 @@ describe("canonical semantic identity", () => {
 			assertSameCanonicalIdentity(
 				{ hash: "sha256:forced", canonicalLength: 1, canonical: Uint8Array.of(1) },
 				{ hash: "sha256:forced", canonicalLength: 1, canonical: Uint8Array.of(2) },
+			),
+		).toThrow("Canonical hash collision");
+		expect(() =>
+			assertSameCanonicalIdentity(
+				{ hash: "sha256:forced", canonicalLength: 1, canonical: Uint8Array.of(1) },
+				{ hash: "sha256:forced", canonicalLength: 1, canonical: Uint8Array.of(1, 2) },
 			),
 		).toThrow("Canonical hash collision");
 	});
