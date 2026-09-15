@@ -359,18 +359,32 @@ BEGIN
   SELECT RAISE(ABORT, 'versions are immutable');
 END;
 
-CREATE TRIGGER branches_parent_same_origin_before_insert
-BEFORE INSERT ON branches WHEN NEW.parent_branch_id IS NOT NULL
+CREATE TRIGGER branches_origin_links_before_insert
+BEFORE INSERT ON branches
 BEGIN
-  SELECT CASE WHEN NOT EXISTS (
+  SELECT CASE WHEN NEW.parent_branch_id IS NOT NULL AND NOT EXISTS (
     SELECT 1 FROM branches parent
     WHERE parent.branch_id = NEW.parent_branch_id AND parent.origin_id = NEW.origin_id
   ) THEN RAISE(ABORT, 'branch parent must exist in the same origin') END;
+  SELECT CASE WHEN NEW.fork_point_hash IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM events fork_point
+    WHERE fork_point.event_hash = NEW.fork_point_hash AND fork_point.origin_id = NEW.origin_id
+  ) THEN RAISE(ABORT, 'branch fork point must exist in the same origin') END;
+  SELECT CASE WHEN NEW.head_hash IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM events head
+    WHERE head.event_hash = NEW.head_hash AND head.origin_id = NEW.origin_id
+  ) THEN RAISE(ABORT, 'branch head must exist in the same origin') END;
+  SELECT CASE WHEN NEW.head_version_id IS NOT NULL
+    THEN RAISE(ABORT, 'new branch cannot select a version before the branch exists') END;
 END;
 
 CREATE TRIGGER branches_parent_cycle_before_update
 BEFORE UPDATE OF parent_branch_id ON branches WHEN NEW.parent_branch_id IS NOT OLD.parent_branch_id
 BEGIN
+  SELECT CASE WHEN NEW.parent_branch_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM branches parent
+    WHERE parent.branch_id = NEW.parent_branch_id AND parent.origin_id = NEW.origin_id
+  ) THEN RAISE(ABORT, 'branch parent must exist in the same origin') END;
   WITH RECURSIVE ancestors(branch_id) AS (
     SELECT NEW.parent_branch_id
     UNION ALL
@@ -381,22 +395,94 @@ BEGIN
     THEN RAISE(ABORT, 'branch cycle') END;
 END;
 
-CREATE TRIGGER versions_parent_same_origin_before_insert
-BEFORE INSERT ON versions WHEN NEW.parent_version_id IS NOT NULL
+CREATE TRIGGER branches_event_links_before_update
+BEFORE UPDATE OF fork_point_hash, head_hash, head_version_id ON branches
 BEGIN
-  SELECT CASE WHEN NOT EXISTS (
-    SELECT 1 FROM versions parent
-    WHERE parent.version_id = NEW.parent_version_id AND parent.origin_id = NEW.origin_id
-  ) THEN RAISE(ABORT, 'version parent must exist in the same origin') END;
-END;
-
-CREATE TRIGGER branches_head_event_same_origin_before_update
-BEFORE UPDATE OF head_hash ON branches WHEN NEW.head_hash IS NOT NULL
-BEGIN
-  SELECT CASE WHEN NOT EXISTS (
+  SELECT CASE WHEN NEW.fork_point_hash IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM events fork_point
+    WHERE fork_point.event_hash = NEW.fork_point_hash AND fork_point.origin_id = NEW.origin_id
+  ) THEN RAISE(ABORT, 'branch fork point must exist in the same origin') END;
+  SELECT CASE WHEN NEW.head_hash IS NOT NULL AND NOT EXISTS (
     SELECT 1 FROM events head
     WHERE head.event_hash = NEW.head_hash AND head.origin_id = NEW.origin_id
   ) THEN RAISE(ABORT, 'branch head must exist in the same origin') END;
+  SELECT CASE WHEN NEW.head_version_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM versions selected
+    WHERE selected.version_id = NEW.head_version_id
+      AND selected.origin_id = NEW.origin_id
+      AND selected.branch_id = NEW.branch_id
+      AND selected.head_hash IS NEW.head_hash
+  ) THEN RAISE(ABORT, 'selected version must match branch origin and head') END;
+END;
+
+CREATE TRIGGER versions_origin_links_before_insert
+BEFORE INSERT ON versions
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM branches owning_branch
+    WHERE owning_branch.branch_id = NEW.branch_id AND owning_branch.origin_id = NEW.origin_id
+  ) THEN RAISE(ABORT, 'version branch must exist in the same origin') END;
+  SELECT CASE WHEN NEW.parent_version_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM versions parent
+    WHERE parent.version_id = NEW.parent_version_id AND parent.origin_id = NEW.origin_id
+  ) THEN RAISE(ABORT, 'version parent must exist in the same origin') END;
+  SELECT CASE WHEN NEW.head_hash IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM events head
+    WHERE head.event_hash = NEW.head_hash AND head.origin_id = NEW.origin_id
+  ) THEN RAISE(ABORT, 'version head must exist in the same origin') END;
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM metadata_revisions metadata
+    WHERE metadata.metadata_revision_id = NEW.metadata_revision_id AND metadata.origin_id = NEW.origin_id
+  ) THEN RAISE(ABORT, 'version metadata must exist in the same origin') END;
+END;
+
+CREATE TRIGGER checkpoints_origin_links_before_insert
+BEFORE INSERT ON checkpoints WHEN NEW.head_hash IS NOT NULL
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM branches
+    JOIN events ON events.event_hash = NEW.head_hash AND events.origin_id = branches.origin_id
+    WHERE branches.branch_id = NEW.branch_id
+  ) THEN RAISE(ABORT, 'checkpoint head must belong to branch origin') END;
+END;
+
+CREATE TRIGGER search_documents_origin_before_insert
+BEFORE INSERT ON search_documents
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM events
+    WHERE events.event_hash = NEW.event_hash AND events.origin_id = NEW.origin_id
+  ) THEN RAISE(ABORT, 'search document must match event origin') END;
+END;
+
+CREATE TRIGGER metadata_observations_origin_before_insert
+BEFORE INSERT ON metadata_observations
+BEGIN
+  SELECT CASE WHEN NEW.version_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM versions
+    WHERE versions.version_id = NEW.version_id AND versions.origin_id = NEW.origin_id
+  ) THEN RAISE(ABORT, 'metadata observation version must match origin') END;
+  SELECT CASE WHEN NEW.source_alias IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM source_aliases
+    WHERE source_aliases.source_alias = NEW.source_alias AND source_aliases.origin_id = NEW.origin_id
+  ) THEN RAISE(ABORT, 'metadata observation alias must match origin') END;
+END;
+
+CREATE TRIGGER branch_mappings_origin_before_insert
+BEFORE INSERT ON branch_mappings
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM source_aliases
+    WHERE source_aliases.source_alias = NEW.source_alias AND source_aliases.origin_id = NEW.origin_id
+  ) THEN RAISE(ABORT, 'branch mapping alias must match origin') END;
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM versions
+    WHERE versions.version_id = NEW.canonical_version_id AND versions.origin_id = NEW.origin_id
+  ) THEN RAISE(ABORT, 'branch mapping version must match origin') END;
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM branches
+    WHERE branches.branch_id = NEW.branch_id AND branches.origin_id = NEW.origin_id
+  ) THEN RAISE(ABORT, 'branch mapping branch must match origin') END;
 END;
 `;
 
@@ -404,7 +490,7 @@ export const WCDB_SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
 	{
 		version: 1,
 		name: "initial-session-repository",
-		checksum: "sha256:19522f3dac24b46c6eb14b0297fec8c555211f71ccacd2fc33d47f2bbbba4eb3",
+		checksum: "sha256:887b890fa26c6f511d5a6809583271803bbd38a0ff2b15d99f259d9d89dbb4d9",
 		upSql: [CORE_SCHEMA_SQL],
 	},
 ];
@@ -520,13 +606,41 @@ export const WCDB_SCHEMA_INVARIANT_AUDITS: readonly SchemaInvariantAudit[] = [
 		expectsNoRows: true,
 	},
 	{
+		name: "branch-parent-origin",
+		sql: `SELECT child.branch_id FROM branches child JOIN branches parent ON parent.branch_id = child.parent_branch_id WHERE child.origin_id <> parent.origin_id`,
+		expectsNoRows: true,
+	},
+	{
+		name: "branch-fork-origin",
+		sql: `SELECT branches.branch_id FROM branches JOIN events ON events.event_hash = branches.fork_point_hash WHERE branches.origin_id <> events.origin_id`,
+		expectsNoRows: true,
+	},
+	{
+		name: "version-origin-links",
+		sql: `SELECT versions.version_id FROM versions
+JOIN branches ON branches.branch_id = versions.branch_id
+JOIN metadata_revisions ON metadata_revisions.metadata_revision_id = versions.metadata_revision_id
+LEFT JOIN events ON events.event_hash = versions.head_hash
+LEFT JOIN versions parent ON parent.version_id = versions.parent_version_id
+WHERE versions.origin_id <> branches.origin_id
+   OR versions.origin_id <> metadata_revisions.origin_id
+   OR (versions.head_hash IS NOT NULL AND versions.origin_id <> events.origin_id)
+   OR (versions.parent_version_id IS NOT NULL AND versions.origin_id <> parent.origin_id)`,
+		expectsNoRows: true,
+	},
+	{
+		name: "checkpoint-head-origin",
+		sql: `SELECT checkpoints.branch_id FROM checkpoints JOIN branches USING (branch_id) JOIN events ON events.event_hash = checkpoints.head_hash WHERE branches.origin_id <> events.origin_id`,
+		expectsNoRows: true,
+	},
+	{
 		name: "payload-chunk-accounting",
 		sql: `SELECT payloads.payload_id FROM payloads LEFT JOIN payload_chunks USING (payload_id) GROUP BY payloads.payload_id HAVING count(payload_chunks.chunk_index) <> payloads.chunk_count OR coalesce(sum(length(payload_chunks.data)), 0) <> payloads.encoded_length`,
 		expectsNoRows: true,
 	},
 	{
 		name: "selected-version-head",
-		sql: `SELECT branches.branch_id FROM branches JOIN versions ON versions.version_id = branches.head_version_id WHERE versions.branch_id <> branches.branch_id OR versions.head_hash IS NOT branches.head_hash`,
+		sql: `SELECT branches.branch_id FROM branches JOIN versions ON versions.version_id = branches.head_version_id WHERE versions.origin_id <> branches.origin_id OR versions.branch_id <> branches.branch_id OR versions.head_hash IS NOT branches.head_hash`,
 		expectsNoRows: true,
 	},
 ];
