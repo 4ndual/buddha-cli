@@ -43,6 +43,8 @@
     { "id": "maintenance.fts-rebuild", "suite": "maintenance", "observable": "rebuild restores code/path/Unicode/Spanish/phrase/prefix results without duplicates" },
     { "id": "maintenance.backup", "suite": "maintenance", "observable": "backup verifies every branch head and payload hash" },
     { "id": "maintenance.native-crash-reopen", "suite": "maintenance", "observable": "repository reopens after isolated native crash without losing acknowledged commits" },
+    { "id": "worker.byte-backpressure", "suite": "worker", "observable": "byte-bounded queue streams oversized payloads without full JS materialization" },
+    { "id": "worker.timeout-cancel-shutdown", "suite": "worker", "observable": "timeouts cancel work, reject late writes, and close native handles" },
     { "id": "filesystem.db-no-jsonl", "suite": "filesystem", "observable": "DB list/search/tree/header/append/fork/tail/payload/flush never stat, open, or glob session JSONL" },
     { "id": "startup.jsonl-without-native", "suite": "filesystem", "observable": "JSONL starts and operates with native library removed" },
     { "id": "startup.db-without-native", "suite": "filesystem", "observable": "DB mode fails capability-disabled without fallback" },
