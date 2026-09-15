@@ -355,6 +355,7 @@ import {
 	type SessionMaintenanceHost,
 } from "./session-maintenance";
 import { cleanupEmptyMoveSession, copySessionArtifacts, type SessionManager } from "./session-manager";
+import type { SessionLocator, SessionRepository } from "./repository/types";
 import { SessionMemory, type SessionMemoryHost } from "./session-memory";
 import { buildSessionMetadata } from "./session-metadata";
 import { SessionProviderBoundary, type SessionProviderBoundaryHost } from "./session-provider-boundary";
@@ -8697,6 +8698,48 @@ export class AgentSession {
 		const switched = await this.switchSession(sessionFile);
 		if (!switched) throw new Error("Session reload cancelled");
 	}
+	/**
+	 * Switch to a logical repository session without synthesizing a JSONL path.
+	 * The live manager is retargeted in place so every session coordinator keeps
+	 * the same persistence boundary.
+	 */
+	async switchRepositorySession(repository: SessionRepository, locator: SessionLocator): Promise<void> {
+		const previousSessionId = this.sessionManager.getSessionId();
+		this.#disconnectFromAgent();
+		await this.abort({ goalReason: "internal" });
+		await this.#sessionBeforeSwitchReconciler?.();
+		await this.#bash.flushPending();
+		await this.#advisors.drainAndDetachRecorders();
+		this.agent.clearAllQueues();
+		this.#irc.clearPending();
+		this.#sessionGeneration++;
+		try {
+			await this.sessionManager.setRepositorySession(repository, locator);
+			this.#syncAgentSessionId(undefined, false);
+			this.#memory.rekeyForCurrentSessionId();
+			this.#rehydrateCheckpointRewindState();
+			this.agent.replaceMessages(this.buildDisplaySessionContext().messages);
+			this.#advisors.resetSessionState({ preserveCost: true });
+			this.#todo.syncFromBranch();
+			this.#closeAllProviderSessions("repository session switch");
+			await this.#memory.resetContextForNewTranscript();
+			this.#clearSessionScopedToolState();
+			this.#reconnectToAgent();
+			await this.#sessionSwitchReconciler?.();
+			try {
+				await this.refreshBaseSystemPrompt();
+			} catch (error) {
+				logger.warn("Failed to refresh system prompt after repository session switch", { error: String(error) });
+			}
+			if (previousSessionId !== this.sessionManager.getSessionId()) this.#notifySessionChangeCallbacks();
+		} catch (error) {
+			this.#advisors.resetAllRuntimes();
+			this.#advisors.reattachRecorderFeeds();
+			this.#reconnectToAgent();
+			throw error;
+		}
+	}
+
 	/**
 	 * Switch to a different session file.
 	 * Aborts current operation, loads messages, restores model/thinking.
