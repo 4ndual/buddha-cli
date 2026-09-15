@@ -1,8 +1,8 @@
 import { type SelectItem, SelectList, Spacer, Text, truncateToWidth } from "@oh-my-pi/pi-tui";
-import { replaceTabs } from "../../tools/render-utils";
+import { replaceTabs, shortenPath } from "../../tools/render-utils";
 import { getSelectListTheme, theme } from "../../modes/theme/theme";
 import { OverlayPanel } from "../../modes/components/overlay-box";
-import type { StorageControlResult, StorageControlStatus } from "./types";
+import type { StorageControlResult, StorageControlStatus, StorageTransferSelection } from "./types";
 
 export const STORAGE_PANEL_ACTIONS = [
 	"mode-jsonl",
@@ -18,8 +18,20 @@ export const STORAGE_PANEL_ACTIONS = [
 ] as const;
 
 export type StoragePanelAction = (typeof STORAGE_PANEL_ACTIONS)[number];
+export type StoragePanelConfiguration = "source" | "destination" | "scope";
 
 const ACTION_ITEMS: SelectItem[] = [
+	{ value: "configure-source", label: "Choose source…", description: "Required for import, export, sync, and recovery" },
+	{
+		value: "configure-destination",
+		label: "Choose destination…",
+		description: "Required for transfer, backup, and recovery publication",
+	},
+	{
+		value: "configure-scope",
+		label: "Choose transfer scope…",
+		description: "Selected branch, origin with all forks, or full archive",
+	},
 	{ value: "mode-jsonl", label: "Use JSONL mode", description: "Select the independent JSONL repository" },
 	{ value: "mode-db", label: "Use Database mode", description: "Requires native, transfer, and rollback gates" },
 	{ value: "jsonl-to-db", label: "JSONL → DB", description: "Preview normalized versions before importing" },
@@ -42,6 +54,20 @@ function safeLine(value: string, width = 120): string {
 
 function yesNo(value: boolean): string {
 	return value ? theme.fg("success", "ready") : theme.fg("warning", "blocked");
+}
+const SCOPE_LABELS = {
+	branch: "selected branch",
+	origin: "origin with all forks",
+	"full-archive": "full archive",
+} as const;
+
+function formatSelection(selection: StorageTransferSelection): string {
+	const source = selection.source ? safeLine(shortenPath(selection.source), 72) : theme.fg("warning", "not selected");
+	const destination = selection.destination
+		? safeLine(shortenPath(selection.destination), 72)
+		: theme.fg("warning", "not selected");
+	const scope = selection.scope ? SCOPE_LABELS[selection.scope] : theme.fg("warning", "not selected");
+	return `${theme.bold("Source")}  ${source}\n${theme.bold("Destination")}  ${destination}\n${theme.bold("Scope")}  ${scope}`;
 }
 
 function formatStatus(status: StorageControlStatus): string {
@@ -96,25 +122,34 @@ function formatExtensionLimitations(status: StorageControlStatus): string | unde
 
 export interface StoragePanelCallbacks {
 	onAction(action: StoragePanelAction): void;
+	onConfigure(kind: StoragePanelConfiguration): void;
 	onCancel(): void;
 }
 
 export class StoragePanelComponent extends OverlayPanel {
 	readonly #statusText: Text;
+	readonly #selectionText: Text;
 	readonly #resultText: Text;
 	readonly #limitationsText: Text;
 	readonly #actions: SelectList;
 
-	constructor(status: StorageControlStatus, callbacks: StoragePanelCallbacks) {
+	constructor(status: StorageControlStatus, selection: StorageTransferSelection, callbacks: StoragePanelCallbacks) {
 		super("Storage");
 		this.#statusText = new Text(formatStatus(status), 0, 0);
+		this.#selectionText = new Text(formatSelection(selection), 0, 0);
 		this.#resultText = new Text(formatResult(undefined), 0, 0);
 		this.#limitationsText = new Text("", 0, 0);
 		this.#actions = new SelectList(ACTION_ITEMS, ACTION_ITEMS.length, getSelectListTheme());
-		this.#actions.onSelect = item => callbacks.onAction(item.value as StoragePanelAction);
+		this.#actions.onSelect = item => {
+			if (item.value === "configure-source") callbacks.onConfigure("source");
+			else if (item.value === "configure-destination") callbacks.onConfigure("destination");
+			else if (item.value === "configure-scope") callbacks.onConfigure("scope");
+			else callbacks.onAction(item.value as StoragePanelAction);
+		};
 		this.#actions.onCancel = callbacks.onCancel;
 
 		this.addChild(this.#statusText);
+		this.addChild(this.#selectionText);
 		this.addChild(new Spacer(1));
 		this.addChild(this.#resultText);
 		this.addChild(new Spacer(1));
@@ -130,6 +165,10 @@ export class StoragePanelComponent extends OverlayPanel {
 		this.#resultText.setText(formatResult(result));
 		const limitations = formatExtensionLimitations(status);
 		this.#limitationsText.setText(limitations ? `${theme.bold("Path-dependent extensions")}\n${limitations}\n` : "");
+	}
+
+	updateSelection(selection: StorageTransferSelection): void {
+		this.#selectionText.setText(formatSelection(selection));
 	}
 
 	setBusy(label: string): void {
