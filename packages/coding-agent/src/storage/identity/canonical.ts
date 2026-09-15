@@ -241,9 +241,9 @@ export function semanticProjection(value: CanonicalValue, options: SemanticProje
 	) {
 		return value;
 	}
-	const projected: Record<string, CanonicalValue> = {};
+	const projected = Object.create(null) as Record<string, CanonicalValue>;
 	for (const [key, child] of Object.entries(value)) {
-		if (!(key in excluded)) projected[key] = semanticProjection(child, options);
+		if (!Object.hasOwn(excluded, key)) projected[key] = semanticProjection(child, options);
 	}
 	return projected;
 }
@@ -264,7 +264,12 @@ export function canonicalIdentityRecord(value: CanonicalValue): CanonicalIdentit
 /** Hash equality is accepted only after byte length and canonical bytes also match. */
 export function assertSameCanonicalIdentity(left: CanonicalIdentityRecord, right: CanonicalIdentityRecord): void {
 	if (left.hash !== right.hash) return;
-	if (left.canonicalLength !== right.canonicalLength || !left.canonical.every((value, index) => right.canonical[index] === value)) {
+	const declarationsMatchBytes =
+		left.canonicalLength === left.canonical.byteLength && right.canonicalLength === right.canonical.byteLength;
+	const bytesMatch =
+		left.canonical.byteLength === right.canonical.byteLength &&
+		left.canonical.every((value, index) => right.canonical[index] === value);
+	if (!declarationsMatchBytes || left.canonicalLength !== right.canonicalLength || !bytesMatch) {
 		throw new Error(`Canonical hash collision detected for ${left.hash}`);
 	}
 }
