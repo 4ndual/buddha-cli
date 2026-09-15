@@ -281,6 +281,9 @@ async function run(): Promise<void> {
 			nativeGateSha256: native.gateSha256,
 			nativeLibrarySha256: native.librarySha256,
 			nativeBuildManifestSha256: native.buildManifestSha256,
+			nativeBridgeExecutableSha256: native.bridgeExecutableSha256,
+			wcdbCommit: native.wcdbCommit,
+			sqliteVersion: native.sqliteVersion,
 		},
 		limits: {
 			maxInputBytes: options.maxInputBytes,

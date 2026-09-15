@@ -42,9 +42,10 @@ export interface AccountCorpusOptions {
 	maxRecordBytes: number;
 }
 
-async function walkFiles(root: string): Promise<string[]> {
+async function walkFiles(root: string): Promise<{ files: string[]; symlinks: string[] }> {
 	const pending = [root];
 	const files: string[] = [];
+	const symlinks: string[] = [];
 	while (pending.length > 0) {
 		const current = pending.pop();
 		if (!current) break;
@@ -52,16 +53,17 @@ async function walkFiles(root: string): Promise<string[]> {
 		try {
 			entries = await fs.readdir(current, { withFileTypes: true });
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return { files: [], symlinks: [] };
 			throw error;
 		}
 		for (const entry of entries.toSorted((a, b) => b.name.localeCompare(a.name))) {
 			const child = path.join(current, entry.name);
 			if (entry.isDirectory()) pending.push(child);
 			else if (entry.isFile()) files.push(child);
+			else if (entry.isSymbolicLink()) symlinks.push(child);
 		}
 	}
-	return files.toSorted();
+	return { files: files.toSorted(), symlinks: symlinks.toSorted() };
 }
 
 function findStrings(value: unknown, predicate: (key: string) => boolean, into: string[]): void {
@@ -221,7 +223,7 @@ export async function accountCorpus(options: AccountCorpusOptions): Promise<Corp
 	const recordOutput = await fs.open(options.recordsPath, "a");
 	const inventoryLedger = await loadLedger(options.inventoryLedgerPath);
 	const normalizationLedger = await loadLedger(options.normalizationLedgerPath);
-	const files = await walkFiles(options.root);
+	const { files, symlinks } = await walkFiles(options.root);
 	const fileManifestHasher = new Bun.CryptoHasher("sha256");
 	const dispositions: Record<string, number> = {};
 	let records = 0;
@@ -235,6 +237,34 @@ export async function accountCorpus(options: AccountCorpusOptions): Promise<Corp
 	let contextHashes = 0;
 	let stoppedForCap = false;
 	try {
+		for (const symlinkPath of symlinks) {
+			const relativePath = path.relative(options.root, symlinkPath);
+			const target = await fs.readlink(symlinkPath);
+			const symlinkHash = sha256Text(`symlink\0${relativePath}\0${target}`);
+			const linkBytes = Buffer.byteLength(target);
+			fileManifestHasher.update(`${relativePath}\0${symlinkHash}\0symlink:${linkBytes}\n`);
+			const receipt: CorpusRecordDisposition = {
+				recordId: `${symlinkHash}:symlink`,
+				fileSha256: symlinkHash,
+				recordSha256: symlinkHash,
+				path: relativePath,
+				line: null,
+				bytes: linkBytes,
+				kind: "symbolic-link",
+				disposition: "excluded",
+				reason: "symbolic link target was not followed; explicitly excluded to preserve the copied-corpus boundary",
+				originId: null,
+				branchHead: null,
+				contextHash: null,
+				parentHash: null,
+				attachmentHashes: [],
+				provenance: { source: "copied-corpus", symlinkTargetHash: sha256Text(target) },
+			};
+			await recordOutput.write(`${JSON.stringify(receipt)}\n`);
+			records++;
+			bytes += linkBytes;
+			dispositions.excluded = (dispositions.excluded ?? 0) + 1;
+		}
 		for (let index = 0; index < inventoryLedger.items.length; index++) {
 			const item = inventoryLedger.items[index];
 			const normalized = item.keys.map(key => normalizationLedger.lookup.get(key)).find(value => value !== undefined);
@@ -399,7 +429,7 @@ export async function accountCorpus(options: AccountCorpusOptions): Promise<Corp
 	const unresolved = (dispositions["copied-awaiting-normalization"] ?? 0) + (dispositions.quarantined ?? 0);
 	const status = files.length === 0 || stoppedForCap || unresolved > 0 || missingParents > 0 || cycles > 0 || missingAttachments > 0 ? "blocked" : "measured";
 	const reasons: string[] = [];
-	if (files.length === 0) reasons.push("copied corpus is empty");
+	if (files.length === 0) reasons.push("copied corpus has no regular files");
 	if (stoppedForCap) reasons.push("input byte cap excluded one or more files");
 	if (unresolved > 0) reasons.push(`${unresolved} records are awaiting normalization or quarantined`);
 	if (missingParents > 0) reasons.push(`${missingParents} parent references are unresolved`);
@@ -409,14 +439,13 @@ export async function accountCorpus(options: AccountCorpusOptions): Promise<Corp
 		status,
 		reason: reasons.length > 0 ? reasons.join("; ") : undefined,
 		root: options.root,
-		files: files.length,
+		files: files.length + symlinks.length,
 		records,
 		bytes,
 		fileManifestHash: fileManifestHasher.digest("hex"),
 		dispositions,
 		parseErrors,
 		missingParents,
-		cycles,
 		branchHeads,
 		attachmentReferences,
 		missingAttachments,
@@ -431,7 +460,7 @@ export async function readBenchmarkRows(
 	maxRecordBytes: number,
 	visit: (row: { id: string; originId: string; parentId: string | null; kind: string; text: string; payload: Uint8Array }) => void | Promise<void>,
 ): Promise<{ rows: number; bytes: number }> {
-	const files = await walkFiles(root);
+	const { files } = await walkFiles(root);
 	let rows = 0;
 	let bytes = 0;
 	for (const filePath of files) {

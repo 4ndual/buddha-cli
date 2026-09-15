@@ -251,6 +251,13 @@ function appendRow(database: Database, ordinal: number): number {
 	return payload.byteLength;
 }
 
+function hashSemanticRows(database: Database): string {
+	const hasher = new Bun.CryptoHasher("sha256");
+	const query = database.query("SELECT id, origin_id, parent_id, kind, search_text, hex(payload) AS payload_hex, sequence FROM events ORDER BY sequence");
+	for (const row of query.iterate() as Iterable<Record<string, unknown>>) hasher.update(`${JSON.stringify(row)}\n`);
+	return hasher.digest("hex");
+}
+
 async function exportDatabase(database: Database, exportPath: string): Promise<{ rows: number; bytes: number; semanticHash: string }> {
 	await Bun.write(exportPath, "");
 	const output = await fs.open(exportPath, "a");
@@ -279,6 +286,7 @@ async function reimportExport(exportPath: string, reimportPath: string): Promise
 	await fs.rm(`${reimportPath}-shm`, { force: true });
 	const database = openDatabase(reimportPath);
 	let rows = 0;
+	let semanticHash = "";
 	try {
 		const insertEvent = database.prepare(
 			"INSERT INTO events(id, origin_id, parent_id, kind, search_text, payload, sequence, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
@@ -300,10 +308,11 @@ async function reimportExport(exportPath: string, reimportPath: string): Promise
 		});
 		if (batch.length > 0) transaction(batch);
 		database.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+		semanticHash = hashSemanticRows(database);
 	} finally {
 		database.close();
 	}
-	return { rows, semanticHash: await sha256File(exportPath) };
+	return { rows, semanticHash };
 }
 
 export async function runDirectSqlite(options: DirectSqliteOptions): Promise<DirectSqliteResult> {
@@ -403,6 +412,15 @@ export async function runDirectSqlite(options: DirectSqliteOptions): Promise<Dir
 			rowsReimported: reimported.rows,
 			semanticHashBefore: exported.value.semanticHash,
 			semanticHashAfter: reimported.semanticHash,
+		};
+		metrics.export.details = {
+			exportSha256,
+			reimportDatabaseSha256,
+			rowsExported: exported.value.rows,
+			rowsReimported: reimported.rows,
+			semanticHashBefore: exported.value.semanticHash,
+			semanticHashAfter: reimported.semanticHash,
+			hashSource: "canonical event rows queried independently from source and reimport databases",
 		};
 	} finally {
 		try {
