@@ -13,6 +13,7 @@ import type { ContextUsage } from "../../extensibility/extensions/types";
 import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
 import type { FileEntry } from "../../session/session-entries";
 import type { AvailableSlashCommandSource } from "../../slash-commands/available-commands";
+import type { SessionLocator } from "../../session/repository/types";
 import type {
 	AgentProgress,
 	SubagentEventPayload,
@@ -25,6 +26,8 @@ import type { RpcMessagesPage } from "./rpc-messages";
 // ============================================================================
 // RPC Commands (stdin)
 // ============================================================================
+
+export type RpcSessionReference = { locator: SessionLocator; path?: never } | { path: string; locator?: never };
 
 export type RpcCommand =
 	// Protocol
@@ -85,7 +88,7 @@ export type RpcCommand =
 	// Session
 	| { id?: string; type: "get_session_stats" }
 	| { id?: string; type: "export_html"; outputPath?: string }
-	| { id?: string; type: "switch_session"; sessionPath: string }
+	| { id?: string; type: "switch_session"; session: RpcSessionReference }
 	| { id?: string; type: "branch"; entryId: string }
 	| { id?: string; type: "get_branch_messages" }
 	| { id?: string; type: "get_last_assistant_text" }
@@ -112,7 +115,7 @@ export interface RpcSessionState {
 	steeringMode: "all" | "one-at-a-time";
 	followUpMode: "all" | "one-at-a-time";
 	interruptMode: "immediate" | "wait";
-	sessionFile?: string;
+	session?: RpcSessionReference;
 	sessionId: string;
 	sessionName?: string;
 	autoCompactionEnabled: boolean;

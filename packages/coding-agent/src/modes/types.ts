@@ -16,6 +16,7 @@ import type {
 	ExtensionWidgetOptions,
 } from "../extensibility/extensions";
 import type { CompactOptions } from "../extensibility/extensions/types";
+import type { SessionEventReference } from "../extensibility/shared-events";
 import type { Skill } from "../extensibility/skills";
 import type { MCPManager } from "../mcp";
 import type { PlanApprovalDetails } from "../plan-mode/approved-plan";
@@ -527,7 +528,7 @@ export interface InteractiveModeContext {
 	getToolUIContext(): ExtensionUIContext | undefined;
 	emitCustomToolSessionEvent(
 		reason: "start" | "switch" | "branch" | "tree" | "shutdown",
-		previousSessionFile?: string,
+		previousSession?: SessionEventReference,
 	): Promise<void>;
 	setHookWidget(key: string, content: ExtensionWidgetContent, options?: ExtensionWidgetOptions): void;
 	setHookStatus(key: string, text: string | undefined): void;

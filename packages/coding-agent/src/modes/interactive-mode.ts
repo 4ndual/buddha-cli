@@ -79,6 +79,7 @@ import type {
 	ExtensionWidgetOptions,
 } from "../extensibility/extensions";
 import type { CompactOptions } from "../extensibility/extensions/types";
+import type { SessionEventReference } from "../extensibility/shared-events";
 import type { Skill } from "../extensibility/skills";
 import type { FileSlashCommand } from "../extensibility/slash-commands";
 import { loadSlashCommands } from "../extensibility/slash-commands";
@@ -5994,9 +5995,9 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	emitCustomToolSessionEvent(
 		reason: "start" | "switch" | "branch" | "tree" | "shutdown",
-		previousSessionFile?: string,
+		previousSession?: SessionEventReference,
 	): Promise<void> {
-		return this.#extensionUiController.emitCustomToolSessionEvent(reason, previousSessionFile);
+		return this.#extensionUiController.emitCustomToolSessionEvent(reason, previousSession);
 	}
 
 	setHookWidget(key: string, content: ExtensionWidgetContent, options?: ExtensionWidgetOptions): void {

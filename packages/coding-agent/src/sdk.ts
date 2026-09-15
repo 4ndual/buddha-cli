@@ -1091,21 +1091,15 @@ function createCustomToolsExtension(tools: CustomTool[], sourcePaths?: ReadonlyM
 			}
 		};
 
-		api.on("session_start", async (_event, ctx) =>
-			runOnSession({ reason: "start", previousSessionFile: undefined }, ctx),
-		);
+		api.on("session_start", async (_event, ctx) => runOnSession({ reason: "start" }, ctx));
 		api.on("session_switch", async (event, ctx) =>
-			runOnSession({ reason: "switch", previousSessionFile: event.previousSessionFile }, ctx),
+			runOnSession({ reason: "switch", previousSession: event.previousSession }, ctx),
 		);
 		api.on("session_branch", async (event, ctx) =>
-			runOnSession({ reason: "branch", previousSessionFile: event.previousSessionFile }, ctx),
+			runOnSession({ reason: "branch", previousSession: event.previousSession }, ctx),
 		);
-		api.on("session_tree", async (_event, ctx) =>
-			runOnSession({ reason: "tree", previousSessionFile: undefined }, ctx),
-		);
-		api.on("session_shutdown", async (_event, ctx) =>
-			runOnSession({ reason: "shutdown", previousSessionFile: undefined }, ctx),
-		);
+		api.on("session_tree", async (_event, ctx) => runOnSession({ reason: "tree" }, ctx));
+		api.on("session_shutdown", async (_event, ctx) => runOnSession({ reason: "shutdown" }, ctx));
 		api.on("auto_compaction_start", async (event, ctx) =>
 			runOnSession({ reason: "auto_compaction_start", trigger: event.reason, action: event.action }, ctx),
 		);

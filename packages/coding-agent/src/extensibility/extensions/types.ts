@@ -105,6 +105,7 @@ import type {
 	SessionCompactingEvent,
 	SessionCompactingResult,
 	SessionEvent,
+	SessionEventReference,
 	SessionShutdownEvent,
 	SessionStartEvent,
 	SessionStopEvent,
@@ -612,8 +613,8 @@ export interface ToolRenderResultOptions {
 export interface ToolSessionEvent {
 	/** Reason for the session event */
 	reason: "start" | "switch" | "branch" | "tree" | "shutdown";
-	/** Previous session file path, or undefined for "start" and "shutdown" */
-	previousSessionFile: string | undefined;
+	/** Previous logical session, or undefined for "start" and "shutdown". */
+	previousSession?: SessionEventReference;
 }
 
 /** Shell invocation details supplied to a registered tool's environment hook. */
