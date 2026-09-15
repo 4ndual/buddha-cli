@@ -33,6 +33,7 @@ import { loadSlashCommands } from "../../extensibility/slash-commands";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { AgentSession } from "../../session/agent-session";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
+import type { SessionRepository } from "../../session/repository/types";
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
 import { buildAvailableSlashCommands } from "../../slash-commands/available-commands";
 import { defaultLoadModeForToolName } from "../../tools/essential-tools";
@@ -119,7 +120,10 @@ export type RpcSessionChangeResult =
 	| { type: "switch_session"; data: { cancelled: boolean } }
 	| { type: "branch"; data: { text: string; cancelled: boolean } };
 
-export type RpcSessionChangeSession = Pick<AgentSession, "newSession" | "switchSession" | "branch">;
+export type RpcSessionChangeSession = Pick<
+	AgentSession,
+	"newSession" | "switchSession" | "switchRepositorySession" | "branch"
+>;
 
 export type RpcSkillCommandSession = Pick<AgentSession, "promptCustomMessage" | "skills" | "skillsSettings">;
 export type RpcSkillCommandResult = { agentInvoked: true };
@@ -546,6 +550,7 @@ export async function handleRpcSessionChange(
 	session: RpcSessionChangeSession,
 	command: RpcSessionChangeCommand,
 	subagentRegistry?: RpcSubagentResetRegistry,
+	repository?: SessionRepository,
 ): Promise<RpcSessionChangeResult> {
 	switch (command.type) {
 		case "new_session": {
@@ -556,8 +561,11 @@ export async function handleRpcSessionChange(
 		}
 
 		case "switch_session": {
-			if (!command.session.path) {
-				throw new Error("Logical session switching requires a repository-aware AgentSession");
+			if (command.session.locator) {
+				if (!repository) throw new Error("Logical session switching requires an active repository");
+				await session.switchRepositorySession(repository, command.session.locator);
+				subagentRegistry?.clear();
+				return { type: "switch_session", data: { cancelled: false } };
 			}
 			const cancelled = !(await session.switchSession(command.session.path));
 			if (!cancelled) subagentRegistry?.clear();
@@ -1187,7 +1195,12 @@ export async function runRpcMode(
 			case "new_session":
 			case "switch_session":
 			case "branch": {
-				const result = await handleRpcSessionChange(session, command, subagentRegistry);
+				const result = await handleRpcSessionChange(
+					session,
+					command,
+					subagentRegistry,
+					session.sessionManager.getRepository(),
+				);
 				if (!result.data.cancelled) await emitAvailableCommandsUpdate();
 				return success(id, result.type, result.data);
 			}

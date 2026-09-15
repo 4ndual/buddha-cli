@@ -78,6 +78,7 @@ interface EventRow {
 	native_entry_id: string;
 	timestamp: number | bigint;
 	entry_json: Uint8Array | ArrayBuffer;
+	generation?: number | bigint;
 }
 
 function sha256(bytes: Uint8Array): string {
@@ -143,7 +144,9 @@ function payloadId(hash: string): string {
 function position(sortKey: string, id: string) {
 	return { sortKey, id };
 }
-
+function relatedStateKey(locator: RelatedResourceLocator): string {
+	return `related:${encodeURIComponent(locator.owner.branchId)}:${encodeURIComponent(locator.kind)}:${encodeURIComponent(locator.key)}`;
+}
 function paddedTime(value: number | bigint): string {
 	return Number(value).toString().padStart(16, "0");
 }
@@ -159,12 +162,12 @@ function isTextContentPart(value: unknown): value is { type: "text"; text: strin
 }
 
 function entryText(entry: RepositoryEvent["entry"]): { role: string; text: string } | undefined {
-	if (entry.type !== "message") return undefined;
+	if (entry.type !== "message" || !("content" in entry.message)) return undefined;
 	const role = entry.message.role;
 	const content = entry.message.content;
 	if (typeof content === "string") return { role, text: content };
 	if (!Array.isArray(content)) return undefined;
-	const text = content.filter(isTextContentPart).map(part => part.text).join("\n");
+	const text = content.flatMap(part => (isTextContentPart(part) ? [part.text] : [])).join("\n");
 	return text ? { role, text } : undefined;
 }
 
@@ -272,12 +275,12 @@ async function ancestry(
 }
 
 function mapEvents(rows: readonly EventRow[]): RepositoryEvent[] {
-	return rows.map((row, generation) => ({
+	return rows.map((row, index) => ({
 		eventHash: row.event_hash as EventHash,
 		originId: row.origin_id as RepositoryEvent["originId"],
 		parentEventHash: row.parent_hash as EventHash | null,
 		nativeEntryId: row.native_entry_id,
-		generation,
+		generation: row.generation === undefined ? index : Number(row.generation),
 		entry: parseJson(row.entry_json),
 	}));
 }
@@ -411,7 +414,13 @@ class EmbeddedTransaction implements TursoRuntimeTransaction {
 			parentHash = proof.id;
 		}
 		const existingTarget = await this.getHeader(mutation.targetBranchId);
-		if (existingTarget?.headEventHash === parentHash) return { header: existingTarget, changed: false };
+		const metadata = mutation.request.metadata ?? parent.metadata;
+		if (
+			existingTarget?.headEventHash === parentHash &&
+			sha256(canonicalSerialize(existingTarget.metadata)) === sha256(canonicalSerialize(metadata))
+		) {
+			return { header: existingTarget, changed: false };
+		}
 		if (!existingTarget) {
 			await this.transaction.run(
 				`INSERT INTO branches(branch_id, origin_id, parent_branch_id, fork_point_hash, head_hash, head_version_id, generation, created_at)
@@ -426,11 +435,28 @@ class EmbeddedTransaction implements TursoRuntimeTransaction {
 			);
 		}
 		const baseRows = await ancestry(this.transaction, mutation.request.expectedHeadHash);
+		if (!existingTarget) {
+			for (let generation = 0; generation < baseRows.length; generation++) {
+				await this.transaction.run(
+					"INSERT INTO branch_events(branch_id, generation, event_hash) VALUES (?, ?, ?)",
+					mutation.targetBranchId,
+					generation,
+					baseRows[generation].event_hash,
+				);
+			}
+		}
+		for (let index = 0; index < eventHashes.length; index++) {
+			await this.transaction.run(
+				"INSERT OR IGNORE INTO branch_events(branch_id, generation, event_hash) VALUES (?, ?, ?)",
+				mutation.targetBranchId,
+				baseRows.length + index,
+				eventHashes[index],
+			);
+		}
 		const treeEventHashes = [...baseRows.map(row => row.event_hash as EventHash), ...eventHashes];
-		const metadata = mutation.request.metadata ?? parent.metadata;
 		const metadataRevisionId = await putMetadata(this.transaction, parent.originId, metadata);
 		const version = computeVersionIdentity({ originId: parent.originId, headEventHash: parentHash, treeEventHashes, metadata });
-		const versionCreatedAt = timestamp(mutation.request.entries.at(-1)?.timestamp ?? metadata.createdAt);
+		const versionCreatedAt = timestamp(mutation.request.entries.at(-1)?.timestamp ?? existingTarget?.modifiedAt ?? parent.modifiedAt);
 		await this.transaction.run(
 			`INSERT OR IGNORE INTO versions(version_id, origin_id, branch_id, parent_version_id, head_hash, metadata_revision_id, created_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -473,14 +499,23 @@ class EmbeddedTransaction implements TursoRuntimeTransaction {
 		const metadataRevisionId = await putMetadata(this.transaction, parent.originId, metadata);
 		await this.transaction.run(
 			`INSERT INTO branches(branch_id, origin_id, parent_branch_id, fork_point_hash, head_hash, head_version_id, generation, created_at)
-			 VALUES (?, ?, ?, ?, ?, NULL, 0, ?)`,
+			 VALUES (?, ?, ?, ?, ?, NULL, ?, ?)`,
 			mutation.targetBranchId,
 			parent.originId,
 			parent.branchId,
 			mutation.request.atEventHash,
 			mutation.request.atEventHash,
+			Math.max(0, tree.length - 1),
 			Date.now(),
 		);
+		for (let generation = 0; generation < tree.length; generation++) {
+			await this.transaction.run(
+				"INSERT INTO branch_events(branch_id, generation, event_hash) VALUES (?, ?, ?)",
+				mutation.targetBranchId,
+				generation,
+				tree[generation].event_hash,
+			);
+		}
 		await this.transaction.run(
 			`INSERT OR IGNORE INTO versions(version_id, origin_id, branch_id, parent_version_id, head_hash, metadata_revision_id, created_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -558,11 +593,24 @@ class EmbeddedTransaction implements TursoRuntimeTransaction {
 	}
 
 	async relocate(request: RelocateSessionRequest): Promise<SessionLocator> {
-		await statePut(this.transaction, `location:${request.locator.branchId}`, request.logicalLocation);
-		return request.locator;
+		const current = await this.getHeader(request.locator.branchId);
+		if (!current) throw new Error(`Unknown Turso branch ${request.locator.branchId}`);
+		if (request.locator.versionId && request.locator.versionId !== current.versionId) {
+			throw new Error("Relocation locator version is stale");
+		}
+		await statePut(this.transaction, `location:${current.branchId}`, request.logicalLocation);
+		return { branchId: current.branchId, versionId: current.versionId };
 	}
 
 	async saveDraft(request: SaveDraftRequest): Promise<SessionDraft> {
+		if (!(await this.getHeader(request.draft.branchId))) {
+			throw new Error(`Unknown Turso branch ${request.draft.branchId}`);
+		}
+		const payload = await this.transaction.get<{ payload_id: string }>(
+			"SELECT payload_id FROM payloads WHERE content_hash = ?",
+			request.draft.payloadHash,
+		);
+		if (!payload) throw new Error(`Unknown Turso draft payload ${request.draft.payloadHash}`);
 		const key = `draft:${request.draft.branchId}`;
 		const existing = await stateGet<SessionDraft>(this.transaction, key);
 		if ((existing?.revision ?? null) !== request.expectedRevision) throw new Error("Turso draft revision conflict");
@@ -573,20 +621,34 @@ class EmbeddedTransaction implements TursoRuntimeTransaction {
 	async consumeDraft(request: ConsumeDraftRequest): Promise<SessionDraft | undefined> {
 		const key = `draft:${request.branchId}`;
 		const existing = await stateGet<SessionDraft>(this.transaction, key);
-		if (!existing || existing.revision !== request.expectedRevision) return undefined;
+		if (!existing) return undefined;
+		if (request.expectedRevision !== undefined && existing.revision !== request.expectedRevision) {
+			throw new Error("Turso draft revision conflict");
+		}
 		await stateDelete(this.transaction, key);
 		return existing;
 	}
 
 	async registerRelatedResource(request: RegisterRelatedResourceRequest): Promise<void> {
-		await statePut(this.transaction, `related:${request.locator.owner.branchId}:${request.locator.kind}:${request.locator.key}`, request.target);
+		if (!(await this.getHeader(request.locator.owner.branchId)) || !(await this.getHeader(request.target.branchId))) {
+			throw new Error("Related resource locator references an unknown Turso branch");
+		}
+		const locator = { ...request.locator, owner: { branchId: request.locator.owner.branchId } };
+		await statePut(this.transaction, relatedStateKey(locator), {
+			locator,
+			target: { branchId: request.target.branchId },
+		} satisfies RelatedResourceBinding);
 	}
 
 	async setTerminalSessionPointer(request: SetTerminalSessionPointerRequest): Promise<void> {
+		if (!(await this.getHeader(request.pointer.session.branchId))) {
+			throw new Error(`Unknown Turso branch ${request.pointer.session.branchId}`);
+		}
 		await statePut(this.transaction, `terminal:${request.pointer.terminalId}`, request.pointer);
 	}
 
 	async setPinned(request: SetSessionPinnedRequest): Promise<void> {
+		if (!(await this.getHeader(request.branchId))) throw new Error(`Unknown Turso branch ${request.branchId}`);
 		if (request.pinned) await statePut(this.transaction, `pinned:${request.branchId}`, true);
 		else await stateDelete(this.transaction, `pinned:${request.branchId}`);
 	}
@@ -595,6 +657,9 @@ class EmbeddedTransaction implements TursoRuntimeTransaction {
 		if (request.checkpoint.headEventHash === null) throw new Error("Turso checkpoints require a non-empty head");
 		const header = await this.getHeader(request.checkpoint.branchId);
 		if (!header) throw new Error("Unknown checkpoint branch");
+		if (header.headEventHash !== request.checkpoint.headEventHash) {
+			throw new Error("Checkpoint head is not the current Turso branch head");
+		}
 		const revision = metadataId(header.originId, header.metadata);
 		await this.transaction.run(
 			`INSERT INTO checkpoints(checkpoint_key, branch_id, head_hash, metadata_revision_id, context_builder_version, context_hash, payload_id, created_at)
@@ -688,56 +753,128 @@ export class EmbeddedTursoRuntimeAdapter implements TursoRuntimeAdapter {
 
 	async search(query: TursoPageRequest & { text: string; originId?: RepositorySessionHeader["originId"] }): Promise<readonly TursoKeysetRow<SessionSearchHit>[]> {
 		this.#assertOpen();
-		const offset = query.after ? Number(query.after.sortKey) : 0;
-		const page = await searchTursoDocuments(this.#database, { query: query.text, limit: Math.min(query.limit, 100), offset, originId: query.originId });
+		let offset = query.after ? Number(query.after.sortKey) : 0;
+		if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("Invalid Turso search cursor");
 		const rows: TursoKeysetRow<SessionSearchHit>[] = [];
-		for (let index = 0; index < page.hits.length; index++) {
-			const hit = page.hits[index];
-			const branch = await this.#database.get<{ branch_id: string }>("SELECT branch_id FROM branches WHERE origin_id = ? ORDER BY generation DESC, branch_id ASC LIMIT 1", hit.originId);
-			if (!branch) continue;
-			const header = await this.getHeader(branch.branch_id as BranchId);
-			if (!header) continue;
-			rows.push({ value: { header, eventHash: hit.eventHash as EventHash, snippet: hit.highlightedText }, position: position(String(offset + index + 1), hit.eventHash) });
+		while (rows.length < query.limit) {
+			const page = await searchTursoDocuments(this.#database, {
+				query: query.text,
+				limit: Math.min(100, query.limit - rows.length),
+				offset,
+				originId: query.originId,
+			});
+			for (let index = 0; index < page.hits.length && rows.length < query.limit; index++) {
+				const hit = page.hits[index];
+				const rawPosition = offset + index + 1;
+				const branch = await this.#database.get<{ branch_id: string }>(
+					`SELECT b.branch_id FROM branch_events be JOIN branches b ON b.branch_id = be.branch_id
+					 WHERE be.event_hash = ? AND b.origin_id = ?
+					   AND NOT EXISTS (
+						   SELECT 1 FROM maintenance_state ms
+						   WHERE ms.name = ? || b.branch_id
+					   )
+					 ORDER BY b.generation DESC, b.branch_id ASC LIMIT 1`,
+					hit.eventHash,
+					hit.originId,
+					`${MAINTENANCE_PREFIX}dropped:`,
+				);
+				if (!branch) continue;
+				const header = await this.getHeader(branch.branch_id as BranchId);
+				if (!header) continue;
+				rows.push({
+					value: { header, eventHash: hit.eventHash as EventHash, snippet: hit.highlightedText },
+					position: position(String(rawPosition), hit.eventHash),
+				});
+			}
+			if (rows.length >= query.limit || page.nextOffset === undefined) break;
+			offset = page.nextOffset;
 		}
 		return rows;
 	}
 
-	async readTree(query: TursoPageRequest & { branchId: BranchId }): Promise<readonly TursoKeysetRow<RepositoryTreeNode>[]> {
+	async readTree(query: TursoPageRequest & { branchId: BranchId; versionId?: RepositorySessionHeader["versionId"] }): Promise<readonly TursoKeysetRow<RepositoryTreeNode>[]> {
 		const events = await this.readEvents(query);
+		const maximum = query.versionId
+			? await this.#database.get<{ generation: number | bigint }>(
+					`SELECT be.generation FROM versions v
+					 JOIN branch_events be ON be.branch_id = v.branch_id AND be.event_hash = v.head_hash
+					 WHERE v.version_id = ? AND v.branch_id = ?`,
+					query.versionId,
+					query.branchId,
+				)
+			: undefined;
+		const maximumGeneration = maximum ? Number(maximum.generation) : Number.MAX_SAFE_INTEGER;
 		const output: TursoKeysetRow<RepositoryTreeNode>[] = [];
 		for (const row of events) {
-			const children = await this.#database.all<{ event_hash: string }>("SELECT event_hash FROM events WHERE parent_hash = ? ORDER BY event_hash", row.value.eventHash);
-			output.push({ value: { ...row.value, childEventHashes: children.map(child => child.event_hash as EventHash) }, position: row.position });
+			const children = await this.#database.all<{ event_hash: string }>(
+				`SELECT e.event_hash FROM events e
+				 JOIN branch_events be ON be.event_hash = e.event_hash
+				 WHERE e.parent_hash = ? AND be.branch_id = ? AND be.generation <= ?
+				 ORDER BY e.event_hash`,
+				row.value.eventHash,
+				query.branchId,
+				maximumGeneration,
+			);
+			output.push({
+				value: { ...row.value, childEventHashes: children.map(child => child.event_hash as EventHash) },
+				position: row.position,
+			});
 		}
 		return output;
 	}
 
 	async readEvents(query: TursoPageRequest & { branchId: BranchId; versionId?: RepositorySessionHeader["versionId"] }): Promise<readonly TursoKeysetRow<RepositoryEvent>[]> {
 		this.#assertOpen();
-		let head: EventHash | null;
+		let maximumGeneration: number;
 		if (query.versionId) {
-			const version = await this.#database.get<{ head_hash: string | null }>("SELECT head_hash FROM versions WHERE version_id = ? AND branch_id = ?", query.versionId, query.branchId);
+			const version = await this.#database.get<{ generation: number | bigint }>(
+				`SELECT be.generation FROM versions v
+				 JOIN branch_events be ON be.branch_id = v.branch_id AND be.event_hash = v.head_hash
+				 WHERE v.version_id = ? AND v.branch_id = ?`,
+				query.versionId,
+				query.branchId,
+			);
 			if (!version) return [];
-			head = version.head_hash as EventHash | null;
+			maximumGeneration = Number(version.generation);
 		} else {
 			const header = await this.getHeader(query.branchId);
-			if (!header) return [];
-			head = header.headEventHash;
+			if (!header || header.headEventHash === null) return [];
+			maximumGeneration = header.generation;
 		}
-		let events = mapEvents(await ancestry(this.#database, head));
-		if (query.after) events = events.filter(event => paddedTime(timestamp(event.entry.timestamp)) > query.after!.sortKey || (paddedTime(timestamp(event.entry.timestamp)) === query.after!.sortKey && event.eventHash > query.after!.id));
-		return events.slice(0, query.limit).map(event => ({ value: event, position: position(paddedTime(timestamp(event.entry.timestamp)), event.eventHash) }));
+		const afterGeneration = query.after ? Number(query.after.sortKey) : -1;
+		if (!Number.isSafeInteger(afterGeneration) || afterGeneration < -1) throw new Error("Invalid Turso event cursor");
+		const rows = await this.#database.all<EventRow>(
+			`SELECT e.event_hash, e.origin_id, e.parent_hash, e.native_entry_id, e.timestamp,
+			        pc.data AS entry_json, be.generation
+			 FROM branch_events be JOIN events e ON e.event_hash = be.event_hash
+			 JOIN payload_chunks pc ON pc.payload_id = e.payload_id AND pc.chunk_index = 0
+			 WHERE be.branch_id = ? AND be.generation > ? AND be.generation <= ?
+			 ORDER BY be.generation LIMIT ?`,
+			query.branchId,
+			afterGeneration,
+			maximumGeneration,
+			query.limit,
+		);
+		return mapEvents(rows).map(event => ({
+			value: event,
+			position: position(paddedTime(event.generation), event.eventHash),
+		}));
 	}
 
 	async listRelatedResources(query: TursoPageRequest & Pick<ListRelatedResourcesQuery, "owner" | "kind">): Promise<readonly TursoKeysetRow<RelatedResourceBinding>[]> {
-		const prefix = `${MAINTENANCE_PREFIX}related:${query.owner.branchId}:${query.kind ?? ""}`;
-		const rows = await this.#database.all<{ name: string; value: string }>("SELECT name, value FROM maintenance_state WHERE name >= ? AND name < ? ORDER BY name LIMIT ?", prefix, `${prefix}\uffff`, query.limit);
-		return rows.map(row => {
-			const parts = row.name.slice(`${MAINTENANCE_PREFIX}related:`.length).split(":");
-			const kindIndex = parts.length - 2;
-			const locator: RelatedResourceLocator = { owner: query.owner, kind: parts[kindIndex] as RelatedResourceLocator["kind"], key: parts.at(-1)! };
-			return { value: { locator, target: JSON.parse(row.value) as SessionLocator }, position: position(row.name, row.name) };
-		});
+		const prefix = `${MAINTENANCE_PREFIX}related:${encodeURIComponent(query.owner.branchId)}:${query.kind ? `${encodeURIComponent(query.kind)}:` : ""}`;
+		const parameters: unknown[] = [prefix, `${prefix}\uffff`];
+		const after = query.after ? " AND name > ?" : "";
+		if (query.after) parameters.push(query.after.sortKey);
+		parameters.push(query.limit);
+		const rows = await this.#database.all<{ name: string; value: string }>(
+			`SELECT name, value FROM maintenance_state WHERE name >= ? AND name < ?${after} ORDER BY name LIMIT ?`,
+			...parameters,
+		);
+		return rows.map(row => ({
+			value: JSON.parse(row.value) as RelatedResourceBinding,
+			position: position(row.name, row.name),
+		}));
 	}
 
 	async getHeader(branchId: BranchId): Promise<RepositorySessionHeader | undefined> {
@@ -749,10 +886,29 @@ export class EmbeddedTursoRuntimeAdapter implements TursoRuntimeAdapter {
 
 	async *readContextTail(query: { branchId: BranchId; afterEventHash?: EventHash; limit: number }): AsyncIterable<RepositoryEvent> {
 		const header = await this.getHeader(query.branchId);
-		if (!header) return;
-		const events = mapEvents(await ancestry(this.#database, header.headEventHash));
-		const start = query.afterEventHash ? events.findIndex(event => event.eventHash === query.afterEventHash) + 1 : 0;
-		for (const event of events.slice(Math.max(0, start), Math.max(0, start) + query.limit)) yield event;
+		if (!header || header.headEventHash === null) return;
+		let afterGeneration = -1;
+		if (query.afterEventHash) {
+			const cursor = await this.#database.get<{ generation: number | bigint }>(
+				"SELECT generation FROM branch_events WHERE branch_id = ? AND event_hash = ?",
+				query.branchId,
+				query.afterEventHash,
+			);
+			if (!cursor) return;
+			afterGeneration = Number(cursor.generation);
+		}
+		const rows = await this.#database.all<EventRow>(
+			`SELECT e.event_hash, e.origin_id, e.parent_hash, e.native_entry_id, e.timestamp,
+			        pc.data AS entry_json, be.generation
+			 FROM branch_events be JOIN events e ON e.event_hash = be.event_hash
+			 JOIN payload_chunks pc ON pc.payload_id = e.payload_id AND pc.chunk_index = 0
+			 WHERE be.branch_id = ? AND be.generation > ?
+			 ORDER BY be.generation LIMIT ?`,
+			query.branchId,
+			afterGeneration,
+			query.limit,
+		);
+		for (const event of mapEvents(rows)) yield event;
 	}
 
 	async writePayload(request: WritePayloadRequest): Promise<PayloadDescriptor> {
@@ -824,7 +980,10 @@ export class EmbeddedTursoRuntimeAdapter implements TursoRuntimeAdapter {
 		});
 	}
 
-	async *readPayload(query: { payloadHash: ReadPayloadRequest["payloadHash"]; chunkBytes: number }): AsyncIterable<Uint8Array> {
+	async *readPayload(query: {
+		payloadHash: ReadPayloadRequest["payloadHash"];
+		chunkBytes: number;
+	}): AsyncIterable<Uint8Array> {
 		this.#assertOpen();
 		const id = payloadId(query.payloadHash);
 		const payload = await this.#database.get<{ chunk_count: number | bigint }>(
@@ -844,7 +1003,7 @@ export class EmbeddedTursoRuntimeAdapter implements TursoRuntimeAdapter {
 	}
 
 	async resolveRelatedResource(locator: RelatedResourceLocator): Promise<SessionLocator | undefined> {
-		return stateGet(this.#database, `related:${locator.owner.branchId}:${locator.kind}:${locator.key}`);
+		return (await stateGet<RelatedResourceBinding>(this.#database, relatedStateKey(locator)))?.target;
 	}
 
 	async getTerminalSessionPointer(terminalId: string): Promise<TerminalSessionPointer | undefined> {

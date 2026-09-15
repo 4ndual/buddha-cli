@@ -11,6 +11,7 @@ import {
 	modeGeneration,
 	type SessionRepository,
 } from "../../../src/session/repository";
+import { RepositoryArtifactManager } from "../../../src/session/repository-consumers";
 import { resolveRepositorySession } from "../../../src/session/session-listing";
 import { SessionManager } from "../../../src/session/session-manager";
 
@@ -138,6 +139,33 @@ describe("repository-backed SessionManager", () => {
 		expect(manager.getSessionReference()).toEqual({ locator });
 		expect(fs.readFileSync(sentinel, "utf8")).toBe("sentinel");
 		expect(fs.readdirSync(sentinelRoot)).toEqual(["do-not-touch.jsonl"]);
+		await repo.close();
+	});
+
+	test("repository drafts and artifacts survive resume and branch version changes", async () => {
+		const root = temporaryRoot("omp-manager-repository-state-");
+		const repo = dbFacade(repository(root));
+		const manager = await SessionManager.createInRepository(repo, "/workspace/state");
+		await manager.saveDraft("persisted draft");
+		const initial = manager.getSessionLocator();
+		if (!initial) throw new Error("Expected repository session locator");
+
+		const resumed = await SessionManager.openRepository(repo, initial);
+		expect(await resumed.consumeDraft()).toBe("persisted draft");
+		const artifactId = await resumed.saveArtifact("persisted artifact", "read");
+		expect(artifactId).toBe("0");
+		resumed.appendMessage({ role: "user", content: "advance version", timestamp: 1 });
+		await resumed.flush();
+		const current = resumed.getSessionLocator();
+		if (!current) throw new Error("Expected resumed repository locator");
+		const health = await repo.health();
+		const artifacts = new RepositoryArtifactManager(repo, current, health.modeGeneration);
+		expect(new TextDecoder().decode(await artifacts.read(artifactId!))).toBe("persisted artifact");
+
+		await resumed.saveDraft("old branch draft");
+		await resumed.newSession();
+		await resumed.saveDraft("new branch draft");
+		expect(await resumed.consumeDraft()).toBe("new branch draft");
 		await repo.close();
 	});
 

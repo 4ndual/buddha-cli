@@ -323,7 +323,7 @@ function isAncestor(state: BranchState, possibleAncestor: EventHash | null, desc
 	return false;
 }
 function relatedResourceKey(locator: RelatedResourceLocator): string {
-	return JSON.stringify([locator.owner.branchId, locator.owner.versionId ?? null, locator.kind, locator.key]);
+	return JSON.stringify([locator.owner.branchId, null, locator.kind, locator.key]);
 }
 function relatedResourceLocatorFromKey(value: string): RelatedResourceLocator {
 	const parsed = JSON.parse(value) as unknown;
@@ -1446,7 +1446,7 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 		await this.#ensureLoaded();
 		const draft = this.#drafts.get(request.branchId);
 		if (!draft) return undefined;
-		if (draft.revision !== request.expectedRevision) {
+		if (request.expectedRevision !== undefined && draft.revision !== request.expectedRevision) {
 			throw new RepositoryIntegrityError("Draft revision compare-and-swap failed");
 		}
 		this.#withPublicationFenceSync(request.expectedModeGeneration, () => {
@@ -1462,7 +1462,7 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 			throw new RepositoryIntegrityError("Related resource locator references an unknown branch");
 		}
 		this.#withPublicationFenceSync(request.expectedModeGeneration, () => {
-			this.#relatedResources.set(relatedResourceKey(request.locator), request.target);
+			this.#relatedResources.set(relatedResourceKey(request.locator), { branchId: request.target.branchId });
 			this.#writeManifestSync();
 		});
 	}
@@ -1475,14 +1475,12 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 		await this.#ensureLoaded();
 		const filter = JSON.stringify({
 			ownerBranchId: query.owner.branchId,
-			ownerVersionId: query.owner.versionId ?? null,
 			kind: query.kind ?? null,
 		});
 		const cursor = decodeCursor(query.cursor, "related", filter);
 		const bindings = [...this.#relatedResources.entries()]
 			.map(([key, target]) => ({ key, locator: relatedResourceLocatorFromKey(key), target }))
 			.filter(binding => binding.locator.owner.branchId === query.owner.branchId)
-			.filter(binding => !query.owner.versionId || binding.locator.owner.versionId === query.owner.versionId)
 			.filter(binding => !query.kind || binding.locator.kind === query.kind)
 			.sort((left, right) => lexicalCompare(left.key, right.key));
 		const after = cursorIndexAfter(bindings, cursor, (binding, keyset) => binding.key === keyset.relationKey);

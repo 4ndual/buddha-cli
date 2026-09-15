@@ -180,13 +180,52 @@ export async function exportRepositorySessionToJsonl(
 	outputPath: string,
 ): Promise<string> {
 	const item = await exportRepositorySessionItem(source);
-	const entries = await readRepositoryArchiveEntries(item);
-	const lines = [JSON.stringify(item.header), ...entries.map(entry => JSON.stringify(entry))];
 	const destination = path.resolve(outputPath);
 	const tempPath = `${destination}.tmp-${crypto.randomUUID()}`;
+	let entryCount = 0;
+	let entryBytes = 0;
 	try {
-		await Bun.write(tempPath, `${lines.join("\n")}\n`);
+		const handle = await fs.open(tempPath, "wx");
+		try {
+			await handle.writeFile(`${JSON.stringify(item.header)}\n`);
+			for await (const page of item.openEntryPages()) {
+				if (page.items.length < 1 || page.items.length > REPOSITORY_ARCHIVE_LIMITS.maxEntriesPerPage) {
+					throw new Error("Repository archive emitted an invalid entry page");
+				}
+				let pageBytes = 0;
+				for (const record of page.items) {
+					const serialized = JSON.stringify(record.entry);
+					const actualBytes = Buffer.byteLength(serialized);
+					if (actualBytes !== record.encodedByteLength || actualBytes > REPOSITORY_ARCHIVE_LIMITS.maxEntryBytes) {
+						throw new Error(`Repository archive entry ${record.entry.id} has invalid byte accounting`);
+					}
+					entryCount++;
+					entryBytes += actualBytes;
+					pageBytes += actualBytes;
+					if (
+						entryCount > REPOSITORY_ARCHIVE_LIMITS.maxTotalEntries ||
+						entryBytes > REPOSITORY_ARCHIVE_LIMITS.maxTotalEntryBytes
+					) {
+						throw new Error("Repository archive exceeded streaming limits");
+					}
+					await handle.writeFile(`${serialized}\n`);
+				}
+				if (pageBytes !== page.byteLength) throw new Error("Repository archive page has invalid byte accounting");
+			}
+			await handle.sync();
+		} finally {
+			await handle.close();
+		}
+		if (entryCount !== item.entryCount || entryBytes !== item.entryBytes) {
+			throw new Error("Repository archive stream does not match its declared entry totals");
+		}
 		await replaceFileAtomically(tempPath, destination);
+		const parent = await fs.open(path.dirname(destination), "r");
+		try {
+			await parent.sync();
+		} finally {
+			await parent.close();
+		}
 	} catch (error) {
 		await fs.rm(tempPath, { force: true }).catch(() => {});
 		throw error;

@@ -188,7 +188,8 @@ export interface SaveDraftRequest extends FencedWriteRequest {
 
 export interface ConsumeDraftRequest extends FencedWriteRequest {
 	branchId: BranchId;
-	expectedRevision: string;
+	/** Omit only when atomically recovering the current persisted draft after a process restart. */
+	expectedRevision?: string;
 }
 
 export type RelatedResourceKind = "artifact" | "child-session" | "advisor-session";

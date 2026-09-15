@@ -1,4 +1,4 @@
-export const TURSO_SCHEMA_VERSION = 2;
+export const TURSO_SCHEMA_VERSION = 3;
 
 export interface SchemaStatementResult {
 	changes: number;
@@ -8,6 +8,8 @@ export interface SchemaStatementResult {
 export interface SchemaTransaction {
 	exec(sql: string): Promise<void>;
 	run(sql: string, ...parameters: unknown[]): Promise<SchemaStatementResult>;
+	get<T>(sql: string, ...parameters: unknown[]): Promise<T | undefined>;
+	all<T>(sql: string, ...parameters: unknown[]): Promise<T[]>;
 }
 
 export interface SchemaDatabase {
@@ -215,6 +217,19 @@ CREATE INDEX search_documents_role_time_idx ON search_documents(role, event_time
 CREATE INDEX import_items_fingerprint_idx ON import_items(source_fingerprint);
 CREATE INDEX replica_receipts_branch_idx ON replica_receipts(replica_id, branch_id);
 `;
+const BOUNDED_BRANCH_EVENTS_SQL = `
+CREATE TABLE branch_events (
+	branch_id TEXT NOT NULL REFERENCES branches(branch_id),
+	generation INTEGER NOT NULL CHECK (generation >= 0),
+	event_hash TEXT NOT NULL REFERENCES events(event_hash),
+	PRIMARY KEY (branch_id, generation),
+	UNIQUE (branch_id, event_hash)
+);
+
+
+
+CREATE INDEX branch_events_event_branch_idx ON branch_events(event_hash, branch_id);
+`;
 
 const SEARCH_SCHEMA_SQL = `
 CREATE INDEX search_documents_fts ON search_documents USING fts (text);
@@ -233,6 +248,12 @@ export const TURSO_SCHEMA_MIGRATIONS: readonly TursoSchemaMigration[] = [
 		checksum: "omp-turso-schema-v2-native-tantivy-default-search-2026-09-15",
 		sql: SEARCH_SCHEMA_SQL,
 	},
+	{
+		version: 3,
+		name: "bounded-branch-event-pages",
+		checksum: "omp-turso-schema-v3-bounded-branch-event-pages-2026-09-15",
+		sql: BOUNDED_BRANCH_EVENTS_SQL,
+	},
 ];
 
 const MIGRATION_TABLE_SQL = `
@@ -248,6 +269,39 @@ interface MigrationRow {
 	version: number | bigint;
 	name: string;
 	checksum: string;
+}
+
+async function backfillBranchEvents(transaction: SchemaTransaction): Promise<void> {
+	const branches = await transaction.all<{ branch_id: string; head_hash: string | null }>(
+		"SELECT branch_id, head_hash FROM branches WHERE head_hash IS NOT NULL ORDER BY branch_id",
+	);
+	for (const branch of branches) {
+		const reversed: string[] = [];
+		let eventHash = branch.head_hash;
+		while (eventHash !== null) {
+			reversed.push(eventHash);
+			const event = await transaction.get<{ parent_hash: string | null }>(
+				"SELECT parent_hash FROM events WHERE event_hash = ?",
+				eventHash,
+			);
+			if (!event) throw new Error(`Cannot backfill missing Turso event ${eventHash}`);
+			eventHash = event.parent_hash;
+		}
+		reversed.reverse();
+		for (let generation = 0; generation < reversed.length; generation++) {
+			await transaction.run(
+				"INSERT INTO branch_events(branch_id, generation, event_hash) VALUES (?, ?, ?)",
+				branch.branch_id,
+				generation,
+				reversed[generation],
+			);
+		}
+		await transaction.run(
+			"UPDATE branches SET generation = ? WHERE branch_id = ?",
+			Math.max(0, reversed.length - 1),
+			branch.branch_id,
+		);
+	}
 }
 
 export async function migrateTursoSchema(database: SchemaDatabase): Promise<number> {
@@ -284,6 +338,7 @@ export async function migrateTursoSchema(database: SchemaDatabase): Promise<numb
 		}
 		await database.transactionAsync(async transaction => {
 			await transaction.exec(migration.sql);
+			if (migration.version === 3) await backfillBranchEvents(transaction);
 			await transaction.run(
 				"INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)",
 				migration.version,

@@ -97,6 +97,7 @@ import {
 	normalizeWorkspaceDirectory,
 } from "./session-workspace";
 import { recordSessionTitle } from "./title-index";
+import { RepositoryArtifactManager } from "./repository-consumers";
 import type {
 	EventHash,
 	KeysetCursor,
@@ -604,6 +605,7 @@ export class SessionManager {
 	#artifactManager: ArtifactManager | null = null;
 	#artifactManagerSessionFile: string | null = null;
 	#adoptedArtifactManager: ArtifactManager | null = null;
+	#repositoryArtifactManager: RepositoryArtifactManager | null = null;
 	#inMemoryArtifacts: Map<string, string> | null = null;
 	#inMemoryArtifactCounter = 0;
 
@@ -656,6 +658,10 @@ export class SessionManager {
 				entries,
 				metadata: includeMetadata ? this.#semanticMetadata() : undefined,
 			});
+			if (this.#repositoryHeader && this.#repositoryHeader.branchId !== result.header.branchId) {
+				this.#repositoryDraftRevision = null;
+				this.#repositoryArtifactManager = null;
+			}
 			this.#repositoryHeader = result.header;
 			this.#repositoryHead = result.header.headEventHash;
 		});
@@ -1237,6 +1243,7 @@ export class SessionManager {
 		this.#artifactManager = null;
 		this.#artifactManagerSessionFile = null;
 		this.#adoptedArtifactManager = null;
+		this.#repositoryArtifactManager = null;
 		this.#inMemoryArtifacts = null;
 		this.#inMemoryArtifactCounter = 0;
 
@@ -1297,6 +1304,8 @@ export class SessionManager {
 		this.#repositoryHeader = repositoryHeader;
 		this.#repositoryHead = repositoryHeader.headEventHash;
 		this.#sessionFile = undefined;
+		this.#repositoryDraftRevision = null;
+		this.#repositoryArtifactManager = null;
 		this.#additionalDirectories = additionalDirectories;
 		this.#applyEntries(header, []);
 		this.#titleUpdatedAt = timestamp;
@@ -1583,6 +1592,7 @@ export class SessionManager {
 		this.#repositoryHead = opened.#repositoryHead;
 		this.#repositoryTail = Promise.resolve();
 		this.#repositoryDraftRevision = null;
+		this.#repositoryArtifactManager = null;
 		this.#sessionFile = undefined;
 		this.#sessionDir = "";
 		this.#suppressBreadcrumb = true;
@@ -1718,6 +1728,8 @@ export class SessionManager {
 			});
 			this.#repositoryHeader = next;
 			this.#repositoryHead = next.headEventHash;
+			this.#repositoryDraftRevision = null;
+			this.#repositoryArtifactManager = null;
 			this.#sessionId = next.branchId;
 			this.#header = {
 				...this.#header,
@@ -2414,6 +2426,14 @@ export class SessionManager {
 	}
 
 	async saveArtifact(content: string, toolType: string): Promise<string | undefined> {
+		if (this.#repository && this.#repositoryHeader && this.#repositoryModeGeneration) {
+			this.#repositoryArtifactManager ??= new RepositoryArtifactManager(
+				this.#repository,
+				{ branchId: this.#repositoryHeader.branchId },
+				this.#repositoryModeGeneration,
+			);
+			return this.#repositoryArtifactManager.save(content, toolType);
+		}
 		const manager = this.#artifactManagerForSession();
 		if (manager) return manager.save(content, toolType);
 
@@ -2491,10 +2511,9 @@ export class SessionManager {
 
 	async consumeDraft(): Promise<string | null> {
 		if (this.#repository && this.#repositoryHeader && this.#repositoryModeGeneration) {
-			if (!this.#repositoryDraftRevision) return null;
 			const draft = await this.#repository.consumeDraft({
 				branchId: this.#repositoryHeader.branchId,
-				expectedRevision: this.#repositoryDraftRevision,
+				expectedRevision: this.#repositoryDraftRevision ?? undefined,
 				expectedModeGeneration: this.#repositoryModeGeneration,
 			});
 			this.#repositoryDraftRevision = null;

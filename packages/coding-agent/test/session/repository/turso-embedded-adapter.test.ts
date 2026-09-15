@@ -9,7 +9,7 @@ import {
 } from "../../../src/session/repository/turso/embedded-adapter";
 import { openLocalTursoDatabase } from "../../../src/session/repository/turso/database";
 import { createTursoSessionRepository } from "../../../src/session/repository/turso/repository";
-import type { ModeGeneration, ReplicaId, SessionRepository } from "../../../src/session/repository/types";
+import type { KeysetCursor, ModeGeneration, ReplicaId, SessionRepository } from "../../../src/session/repository/types";
 
 const replicaId = "replica:embedded-differential" as ReplicaId;
 const modeGeneration = "mode-generation:embedded-differential" as ModeGeneration;
@@ -54,12 +54,19 @@ async function populate(repository: SessionRepository) {
 		expectedHeadHash: appended.header.headEventHash,
 		title: "Renamed differential",
 		source: "user",
-		updatedAt: "2026-09-15T12:00:02.000Z",
+		updatedAt: "2026-09-15T12:00:00.500Z",
+	});
+	const moved = await repository.appendWithExpectedHead({
+		expectedModeGeneration: modeGeneration,
+		branchId: titled.branchId,
+		expectedHeadHash: titled.headEventHash,
+		entries: [],
+		metadata: { ...titled.metadata, cwd: "/relocated/fixture" },
 	});
 	const forked = await repository.fork({
 		expectedModeGeneration: modeGeneration,
-		branchId: titled.branchId,
-		atEventHash: titled.headEventHash,
+		branchId: moved.header.branchId,
+		atEventHash: moved.header.headEventHash,
 		forkKey: "copy",
 	});
 	const dropped = await repository.drop({
@@ -67,11 +74,17 @@ async function populate(repository: SessionRepository) {
 		locator: { branchId: forked.branchId, versionId: forked.versionId },
 		explicit: true,
 	});
-	const listed = await repository.listSessions({ sourceAlias: titled.sourceAlias, limit: 2 });
-	const events = await repository.readEvents({ branchId: titled.branchId, limit: 2 });
+	const listed = await repository.listSessions({ sourceAlias: moved.header.sourceAlias, limit: 2 });
+	const firstEvents = await repository.readEvents({ branchId: moved.header.branchId, limit: 1 });
+	const secondEvents = await repository.readEvents({
+		branchId: moved.header.branchId,
+		cursor: firstEvents.nextCursor,
+		limit: 1,
+	});
+	const events = [...firstEvents.items, ...secondEvents.items];
 	return {
 		dropped,
-		header: titled,
+		header: moved.header,
 		listed: listed.items.map(item => ({
 			originId: item.originId,
 			branchId: item.branchId,
@@ -79,7 +92,7 @@ async function populate(repository: SessionRepository) {
 			headEventHash: item.headEventHash,
 			metadata: item.metadata,
 		})),
-		events: events.items.map(item => ({
+		events: events.map(item => ({
 			eventHash: item.eventHash,
 			parentEventHash: item.parentEventHash,
 			nativeEntryId: item.nativeEntryId,
@@ -117,6 +130,26 @@ describe("concrete embedded Turso runtime adapter", () => {
 
 		const [embedded, jsonl] = await Promise.all([populate(embeddedRepository), populate(jsonlRepository)]);
 		expect(embedded).toEqual(jsonl);
+		for (const key of ["artifact:one", "artifact:two", "artifact:three"]) {
+			await embeddedRepository.registerRelatedResource({
+				expectedModeGeneration: modeGeneration,
+				locator: { owner: embedded.header, kind: "artifact", key },
+				target: embedded.header,
+			});
+		}
+		const relatedKeys: string[] = [];
+		let relatedCursor: KeysetCursor | undefined;
+		do {
+			const page = await embeddedRepository.listRelatedResources({
+				owner: embedded.header,
+				kind: "artifact",
+				cursor: relatedCursor,
+				limit: 1,
+			});
+			relatedKeys.push(...page.items.map(binding => binding.locator.key));
+			relatedCursor = page.nextCursor;
+		} while (relatedCursor);
+		expect(relatedKeys).toEqual(["artifact:one", "artifact:three", "artifact:two"]);
 		const payloadBytes = new Uint8Array([0, 1, 2, 3, 254, 255]);
 		const descriptor = await embeddedRepository.writePayload({
 			expectedModeGeneration: modeGeneration,
