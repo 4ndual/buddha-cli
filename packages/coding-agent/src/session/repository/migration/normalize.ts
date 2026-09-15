@@ -832,6 +832,102 @@ async function hashFile(filePath: string): Promise<{ sha256: string; size: strin
 	return { sha256: hasher.digest("hex"), size: size.toString() };
 }
 
+
+async function recoverPublishedNormalization(
+	item: InventoryItem,
+	sourceFormat: SourceFormat,
+	disposition: Exclude<AdapterDisposition, "quarantined">,
+	jsonlPath: string,
+	manifestPath: string,
+	destinationRoot: string,
+): Promise<NormalizedOutput | undefined> {
+	let manifestStats;
+	try {
+		manifestStats = await fs.lstat(manifestPath);
+	} catch (error) {
+		if (isRecord(error) && error.code === "ENOENT") return undefined;
+		throw error;
+	}
+	if (
+		!manifestStats.isFile() ||
+		manifestStats.isSymbolicLink() ||
+		manifestStats.nlink !== 1 ||
+		manifestStats.size > 64 * 1024
+	) {
+		throw new NormalizationError(
+			"unsafe-existing-receipt",
+			`Existing normalization receipt is not a safe bounded file: ${manifestPath}`,
+		);
+	}
+	await assertOwnedDirectoryPath(destinationRoot, path.dirname(manifestPath));
+	const handle = await fs.open(manifestPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(await handle.readFile({ encoding: "utf8" }));
+	} catch (error) {
+		throw new NormalizationError(
+			"invalid-existing-receipt",
+			error instanceof Error ? error.message : `Invalid normalization receipt: ${manifestPath}`,
+		);
+	} finally {
+		await handle.close();
+	}
+	if (!isRecord(parsed) || !isRecord(parsed.output)) {
+		throw new NormalizationError("invalid-existing-receipt", `Invalid normalization receipt: ${manifestPath}`);
+	}
+	const output = parsed.output;
+	const expectedJsonlPath = `sessions/${path.basename(jsonlPath)}`;
+	const expectedManifestPath = `sessions/${path.basename(manifestPath)}`;
+	const records = output.records;
+	const size = output.size;
+	if (
+		parsed.schemaVersion !== NORMALIZATION_SCHEMA_VERSION ||
+		parsed.itemId !== item.itemId ||
+		parsed.sourceNamespace !== item.sourceNamespace ||
+		parsed.sourceFormat !== sourceFormat ||
+		parsed.sourceSha256 !== item.original?.sha256 ||
+		output.jsonlPath !== expectedJsonlPath ||
+		output.manifestPath !== expectedManifestPath ||
+		output.disposition !== disposition ||
+		typeof output.sha256 !== "string" ||
+		!/^[a-f0-9]{64}$/.test(output.sha256) ||
+		typeof size !== "string" ||
+		!/^(?:0|[1-9]\d*)$/.test(size) ||
+		typeof records !== "number" ||
+		!Number.isSafeInteger(records) ||
+		records < 1 ||
+		typeof output.originId !== "string" ||
+		typeof output.sourceAlias !== "string"
+	) {
+		throw new NormalizationError(
+			"existing-normalization-receipt-mismatch",
+			`Existing receipt does not match inventory item ${item.itemId}`,
+		);
+	}
+	const outputStats = await fs.lstat(jsonlPath).catch(() => undefined);
+	if (!outputStats?.isFile() || outputStats.isSymbolicLink() || outputStats.nlink !== 1) {
+		throw new NormalizationError("unsafe-existing-output", `Existing normalized output is not a safe regular file: ${jsonlPath}`);
+	}
+	const digest = await hashFile(jsonlPath);
+	if (digest.sha256 !== output.sha256 || digest.size !== size) {
+		throw new NormalizationError(
+			"existing-normalization-output-mismatch",
+			`Existing normalized output does not match its receipt: ${jsonlPath}`,
+		);
+	}
+	return {
+		jsonlPath,
+		manifestPath,
+		sha256: output.sha256,
+		size,
+		records,
+		disposition,
+		originId: output.originId,
+		sourceAlias: output.sourceAlias,
+	};
+}
+
+
 async function publishExistingFileNoClobber(
 	temporary: string,
 	filePath: string,
@@ -932,6 +1028,30 @@ async function normalizeItem(
 	const temporary = `${jsonlPath}.partial-${crypto.randomUUID()}`;
 	try {
 		await verifyCopiedInput(item, options.backupRoot, options.signal);
+		const recovered = await recoverPublishedNormalization(
+			item,
+			item.classification.format,
+			adapter.disposition,
+			jsonlPath,
+			manifestPath,
+			options.destinationRoot,
+		);
+		if (recovered) {
+			return {
+				schemaVersion: NORMALIZATION_SCHEMA_VERSION,
+				itemId: item.itemId,
+				sourceNamespace: item.sourceNamespace,
+				sourceFormat: item.classification.format,
+				sourceSha256: item.original?.sha256,
+				status: "normalized",
+				output: recovered,
+				disposition: {
+					code: adapter.disposition,
+					reason: `Normalized with ${adapter.id}; no tool action was executed`,
+					evidence: [recovered.sha256, `records=${recovered.records}`],
+				},
+			};
+		}
 		const lineOptions = {
 			maxRecordBytes: options.maxRecordBytes,
 			maxTotalBytes: options.maxTotalBytes,

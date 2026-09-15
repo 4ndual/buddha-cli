@@ -13,7 +13,6 @@ import type { ContextUsage } from "../../extensibility/extensions/types";
 import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
 import type { FileEntry } from "../../session/session-entries";
 import type { AvailableSlashCommandSource } from "../../slash-commands/available-commands";
-import type { SessionLocator } from "../../session/repository/types";
 import type {
 	AgentProgress,
 	SubagentEventPayload,

@@ -209,7 +209,7 @@ describe("RPC subagent registry", () => {
 				expected: { type: "new_session", data: { cancelled: false } },
 			},
 			{
-				command: { type: "switch_session", sessionPath: "/tmp/next.jsonl" },
+				command: { type: "switch_session", session: { path: "/tmp/next.jsonl" } },
 				session: createSessionChangeSession({ switchSession: true }),
 				expected: { type: "switch_session", data: { cancelled: false } },
 			},
@@ -250,7 +250,7 @@ describe("RPC subagent registry", () => {
 				expected: { type: "new_session", data: { cancelled: true } },
 			},
 			{
-				command: { type: "switch_session", sessionPath: "/tmp/next.jsonl" },
+				command: { type: "switch_session", session: { path: "/tmp/next.jsonl" } },
 				session: createSessionChangeSession({ switchSession: false }),
 				expected: { type: "switch_session", data: { cancelled: true } },
 			},
