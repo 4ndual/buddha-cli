@@ -1,0 +1,14 @@
+{
+  "schema": "omp.wcdb.github-source-ledger-summary.v1",
+  "acquiredAt": "2026-09-15T22:40:47.969Z",
+  "rangeStart": "2026-01-15T00:00:00.000Z",
+  "fullLedger": "/home/andual/Projects/.omp-wcdb-team/artifacts/inventory/github-source-ledger.json",
+  "fullLedgerSha256": "fe636db100617920e74bed7399d7d0cc998f5bdfa20c60704903ff6aa663b7d1",
+  "repositories": [
+    { "repository": "4ndual/buddha-cli", "releases": 0, "treeSha": "a09adc3f50a08ef830d479162482070792802e34", "treeTruncated": false },
+    { "repository": "can1357/oh-my-pi", "releases": 544, "treeSha": "2529464b5700c9b73ea3e27274df192cdcc1e9c9", "treeTruncated": false }
+  ],
+  "accounting": { "records": 4667, "bytes": 560595262652, "excluded": 4667, "pending": 0, "treeCandidates": 6, "releaseAssets": 4661 },
+  "disposition": "All release assets and current-tree session-like candidates are evidence-backed exclusions: executables/packages/non-session assets or code test fixtures.",
+  "networkPolicy": { "metadataOnly": true, "downloadedAssets": 0, "executableDownloads": 0, "secretMaterialCaptured": false }
+}

@@ -1,0 +1,36 @@
+{
+  "schema": "omp.wcdb.shared-corpus-verification.v1",
+  "verifiedAt": "2026-09-15T22:52:57.173Z",
+  "readOnlySource": true,
+  "productionMutation": false,
+  "snapshotRoot": "/home/andual/Projects/.turso-migration-owned/backup/corpus-2026-09-15",
+  "manifest": {
+    "path": "/home/andual/Projects/.turso-migration-owned/artifacts/copied-corpus-manifest.json",
+    "sha256": "740e312259166e50003d90eef41eeda86ad65f5bf0d1054b6c879d7333bfb82b",
+    "schemaVersion": 1
+  },
+  "verification": {
+    "copiedItems": 31429,
+    "copiedBytes": 40716213247,
+    "excludedItems": 4012,
+    "quarantinedItems": 46,
+    "pendingItems": 0,
+    "itemSequenceSha256": "48210dd74afd8d5b6d12b533bca6ce679a5249c3443d90610aea9ae1010d5634",
+    "allCopiedFilesRehashed": true,
+    "allCopiedFilesSealedReadOnly": true
+  },
+  "databaseSnapshots": {
+    "manifestPath": "/home/andual/Projects/.turso-migration-owned/artifacts/database-snapshot-manifest.json",
+    "manifestSha256": "37351614346ebd6cd04ef84e135738f1a6253b7b6ee5851d60cde4273f45d90f",
+    "snapshottedItems": 28,
+    "explicitlyMissingItems": 2,
+    "bytes": 434839552,
+    "allPresentSnapshotsRehashed": true,
+    "allPresentIntegrityReceiptsOk": true
+  },
+  "capacity": {
+    "duplicateSourceCopyBytes": 0,
+    "sharedImmutableInputBytes": 40716213247,
+    "note": "Mutable normalization, WCDB database, WAL, indexes, and export outputs remain isolated under the WCDB team root."
+  }
+}

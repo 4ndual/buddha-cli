@@ -1,0 +1,39 @@
+{
+  "schema": "omp.wcdb.repository-history-ledger.v1",
+  "repository": "4ndual/buddha-cli",
+  "copyReceipt": "/home/andual/Projects/.omp-wcdb-team/artifacts/inventory/repository-history-copy.json",
+  "search": {
+    "scope": "git log --all",
+    "patterns": ["*.jsonl", "*.bundle", "*session*.json", "*archive*.json", "*manifest*.json"],
+    "provenance": "externally-recorded"
+  },
+  "records": [
+    {
+      "paths": ["compact.jsonl"],
+      "additionCommits": ["54abb5d7ff1e467fb2af873e3bd89108294747c3", "705ba5d4f2637fb66b6ab933438a8b68eaa8e0e9"],
+      "gitBlobSha1": "ef7066638b063bc76a4d5dbb49ea0a4eb0861e3e",
+      "sha256": "ba20fd0beb5d9cd6c05188da2840461f02dd0ce611424623aa40f0c6796211f7",
+      "size": 1614570,
+      "format": "omp-jsonl",
+      "disposition": "copied",
+      "reason": "verified Git blob extraction into team content-addressed copies"
+    },
+    {
+      "paths": ["session.jsonl"],
+      "additionCommits": ["a3dc8b7e4636fa49f5d3601e266db10b51f9983d", "d5dde00d288fb959362e2c590fb685af3d08b19f"],
+      "gitBlobSha1": "cc1fbd63a86389d62feb79adb8d47f735572973e",
+      "sha256": "e7a11b187b926727690f8bb6bc8a8e51c10b52c82ccb70850265eadb22141cce",
+      "size": 946536,
+      "format": "omp-jsonl",
+      "disposition": "copied",
+      "reason": "verified Git blob extraction into team content-addressed copies"
+    },
+    {
+      "paths": ["crates/edit/tests/fixtures/hashline/parity_recovery_session_chain.json", "crates/pi-edit/tests/fixtures/hashline/parity_recovery_session_chain.json", "packages/coding-agent/test/fixtures/**/*.jsonl", "fixtures/llm-oracle/**/*.jsonl", "**/manifest*.json"],
+      "format": "code-test-fixture",
+      "disposition": "excluded",
+      "reason": "repository test/protocol fixture, not a user session archive"
+    }
+  ],
+  "summary": { "uniqueSessionObjects": 2, "sessionBytes": 2561106, "copied": 2, "excludedFixtureGroups": 1 }
+}

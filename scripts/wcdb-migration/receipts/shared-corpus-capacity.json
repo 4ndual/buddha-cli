@@ -1,0 +1,29 @@
+{
+  "schema": "omp.wcdb.shared-corpus-capacity.v1",
+  "observedAt": "2026-09-15T17:52:54-05:00",
+  "sharedImmutableInput": {
+    "root": "/home/andual/Projects/.turso-migration-owned/backup/corpus-2026-09-15",
+    "manifest": "/home/andual/Projects/.turso-migration-owned/artifacts/copied-corpus-manifest.json",
+    "manifestSha256": "740e312259166e50003d90eef41eeda86ad65f5bf0d1054b6c879d7333bfb82b",
+    "items": 31429,
+    "bytes": 40716213247,
+    "sealedReadOnly": true
+  },
+  "capacity": {
+    "freeBytes": 93678587904,
+    "duplicateSourceCopyBytes": 0,
+    "formula": {
+      "originals": 40716213247,
+      "normalized": 44787834572,
+      "stagingDb": 50895266559,
+      "indexes": 14250674637,
+      "wal": 4071621325,
+      "temporaryExport": 44787834572
+    },
+    "mutablePeakBytes": 114005397093,
+    "mutablePeakSufficient": false,
+    "shortfallBytes": 20326809189
+  },
+  "decision": "Shared immutable input is accepted only after independent rehash verification. No duplicate source copy is required. WCDB database/import/export capability remains disabled because isolated mutable peak capacity is insufficient.",
+  "productionMutation": false
+}
