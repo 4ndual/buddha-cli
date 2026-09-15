@@ -1,0 +1,4 @@
+{"type":"user","uuid":"claude-u1","parentUuid":null,"sessionId":"fixture-claude","timestamp":"2026-02-03T04:05:06.000Z","cwd":"/fixture/claude","message":{"role":"user","content":"calculate nothing"}}
+{"type":"assistant","uuid":"claude-a1","parentUuid":"claude-u1","sessionId":"fixture-claude","timestamp":"2026-02-03T04:05:07.000Z","message":{"role":"assistant","model":"claude-fixture","content":[{"type":"tool_use","id":"claude-call-1","name":"read","input":{"path":"copied.txt"}}],"usage":{"input_tokens":4,"output_tokens":2},"stop_reason":"tool_use"}}
+{"type":"user","uuid":"claude-r1","parentUuid":"claude-a1","sessionId":"fixture-claude","timestamp":"2026-02-03T04:05:08.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"claude-call-1","content":"preserved result","is_error":false}]}}
+{"type":"progress","sessionId":"fixture-claude","timestamp":"2026-02-03T04:05:09.000Z","payload":{"unknown":true}}
