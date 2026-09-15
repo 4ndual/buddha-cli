@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-09-15T23:52:54Z",
+  "branch": "experiment/turso-local-migration",
+  "bunVersion": "1.4.2",
+  "databaseModeEnabled": false,
+  "productionMutation": false,
+  "cutoverPerformed": false,
+  "normalization": {
+    "completionReceipt": "/home/andual/Projects/.turso-migration-owned/inventory/artifacts/full-corpus/normalization-completion-receipt.json",
+    "completionReceiptSha256": "a339ec91db5dd0c3da3438207295580ee9278ef52669762c95ca73bcda230ea9",
+    "inventory": {
+      "discovered": 31511,
+      "accounted": 31511,
+      "copied": 30304,
+      "excluded": 1207,
+      "pending": 0,
+      "copiedBytes": "40287358121"
+    },
+    "normalized": 20547,
+    "skipped": 10599,
+    "quarantined": 365,
+    "quarantineByCode": {
+      "malformed-or-truncated-json": 322,
+      "orphan-tool-result": 33,
+      "missing-parent": 8,
+      "non-object-record": 2
+    },
+    "normalizedAggregateSha256": "9c04f3d1db5977409dd7edc6aa6c39a7b88427b30f5ce012eb3e419d8d9edca6",
+    "normalizedTreeBytes": "3105031124"
+  },
+  "implementation": {
+    "schemaVersion": 3,
+    "runtimeAdapter": "real pinned @tursodatabase/database 0.7.2 local-file adapter",
+    "jsonlDefaultIndependent": true,
+    "boundedBranchEvents": true,
+    "versionIdentity": "version_v2(originId,branchId,chainedHeadEventHash,metadata)",
+    "payloadDeduplication": "insert-if-new; existing layout and read integrity validated",
+    "searchProjection": "one best ranked hit per every reachable live branch before keyset pagination"
+  },
+  "verification": {
+    "focusedTests": {
+      "command": "bun test packages/coding-agent/test/session/repository/turso-*.test.ts packages/coding-agent/test/session/repository/turso/*.test.ts packages/coding-agent/test/session/repository/identity.test.ts packages/coding-agent/test/session/repository/jsonl-repository.test.ts packages/coding-agent/test/session/repository/session-manager-cutover.test.ts packages/coding-agent/test/session/repository/migration/inventory-normalize.test.ts packages/coding-agent/test/rpc-subagents.test.ts",
+      "result": "passed",
+      "testFiles": 16,
+      "passes": 75,
+      "failures": 0,
+      "expectations": 399,
+      "durationSeconds": 2.30
+    },
+    "packageTypecheck": {
+      "command": "bun run check:types",
+      "cwd": "packages/coding-agent",
+      "migrationDiagnostics": 0,
+      "result": "baseline-only-failure",
+      "baselineDiagnostics": [
+        "src/modes/controllers/extension-ui-controller.ts(229,4): getTodoPhases is not in ExtensionCommandContextActions",
+        "src/modes/controllers/extension-ui-controller.ts(230,19): phases has implicit any",
+        "src/session/agent-session.ts(6466,3): ExtensionCommandContext is missing getTodoPhases/setTodoPhases"
+      ]
+    },
+    "independentReview": {
+      "reviewer": "TursoMigrationCoordinator2.TursoFinalReview2",
+      "p0": 0,
+      "p1": 0,
+      "result": "clear"
+    }
+  },
+  "capabilityDecision": {
+    "report": "artifacts/turso-local-migration/capabilities/report.json",
+    "reportSchemaVersion": 2,
+    "note": "The preserved capability report predates the bounded branch_events schema-v3 migration; schema-v3 migration and interruption recovery are covered by the focused suite.",
+    "mandatoryFailures": [
+      {
+        "capability": "ftsRanking",
+        "reason": "All pinned native Tantivy scores remained zero, including weighted and field-qualified variants."
+      },
+      {
+        "capability": "ftsPrefix",
+        "reason": "Default-tokenizer prefix queries returned no matches; ngram recovered prefix matching but still failed ranking."
+      }
+    ],
+    "attemptedApproaches": 4,
+    "decision": "fail-closed-database-mode-disabled",
+    "fallbackSearchImplemented": false
+  },
+  "unverifiedBlockedGates": [
+    "database activation and production cutover",
+    "production rollback",
+    "real-corpus database import/performance because mandatory FTS gates fail",
+    "offline installation from an empty cache"
+  ]
+}

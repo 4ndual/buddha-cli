@@ -749,8 +749,8 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 		const eventsByHash = new Map(events.map(event => [event.eventHash, event]));
 		const version = computeVersionIdentity({
 			originId: origin.id,
+			branchId: item.branchId,
 			headEventHash: headEvent?.eventHash ?? null,
-			treeEventHashes: events.map(event => event.eventHash),
 			metadata: item.metadata,
 		});
 		this.#collisions.remember(version);
@@ -1276,9 +1276,11 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 			{
 				...this.#materializedItem(provisional),
 				branchId: sibling.id,
+				versionId: "" as VersionId,
 				header: physicalHeaderForBranch(provisional.physicalHeader, sibling.id),
 			},
 			fileNameForBranch(sibling.id),
+			false,
 		);
 		this.#publishStateSync(siblingState, request.expectedModeGeneration);
 		return { status: "forked", header: siblingState.header, conflictedBranchId: current.header.branchId };

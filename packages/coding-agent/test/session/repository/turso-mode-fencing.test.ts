@@ -73,6 +73,9 @@ describe("Turso storage mode fencing", () => {
 			expectedGeneration: 21,
 			fencePath: "/team/fence.json",
 			expectedNonce: "generation-21",
+			pathsConfirmed: true,
+			secondConfirmation: true,
+			backupReceipt: "verified-backup-receipt",
 		};
 
 		expect((await runStorageCommand(request, dependencies)).outcome).toBe("ok");

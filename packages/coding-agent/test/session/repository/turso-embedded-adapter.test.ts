@@ -130,6 +130,24 @@ describe("concrete embedded Turso runtime adapter", () => {
 
 		const [embedded, jsonl] = await Promise.all([populate(embeddedRepository), populate(jsonlRepository)]);
 		expect(embedded).toEqual(jsonl);
+		const searchPage = await embeddedRepository.search({ text: "real", limit: 2 });
+		expect(searchPage.items.map(hit => hit.header.branchId)).toEqual([embedded.header.branchId]);
+		const eventPayload = new TextEncoder().encode(JSON.stringify(entry));
+		const eventDescriptor = await embeddedRepository.writePayload({
+			expectedModeGeneration: modeGeneration,
+			bytes: [eventPayload.subarray(0, 7), eventPayload.subarray(7)],
+			maxBytes: eventPayload.byteLength,
+			maxChunkBytes: eventPayload.byteLength,
+			mediaType: "application/json",
+		});
+		const observedEventPayload: number[] = [];
+		for await (const chunk of embeddedRepository.readPayload({
+			payloadHash: eventDescriptor.payloadHash,
+			chunkBytes: 11,
+		})) {
+			observedEventPayload.push(...chunk);
+		}
+		expect(observedEventPayload).toEqual([...eventPayload]);
 		for (const key of ["artifact:one", "artifact:two", "artifact:three"]) {
 			await embeddedRepository.registerRelatedResource({
 				expectedModeGeneration: modeGeneration,
@@ -154,6 +172,13 @@ describe("concrete embedded Turso runtime adapter", () => {
 		const descriptor = await embeddedRepository.writePayload({
 			expectedModeGeneration: modeGeneration,
 			bytes: [payloadBytes.subarray(0, 2), payloadBytes.subarray(2)],
+			maxBytes: payloadBytes.byteLength,
+			maxChunkBytes: payloadBytes.byteLength,
+			mediaType: "application/octet-stream",
+		});
+		await embeddedRepository.writePayload({
+			expectedModeGeneration: modeGeneration,
+			bytes: [payloadBytes],
 			maxBytes: payloadBytes.byteLength,
 			maxChunkBytes: payloadBytes.byteLength,
 			mediaType: "application/octet-stream",

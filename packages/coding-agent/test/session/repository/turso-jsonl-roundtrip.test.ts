@@ -66,8 +66,8 @@ function initialArchiveItem(source: SourceIdentity): SessionArchiveItem {
 	};
 	const version = computeVersionIdentity({
 		originId: origin.id,
+		branchId: branch.id,
 		headEventHash: eventHashes.at(-1) ?? null,
-		treeEventHashes: eventHashes,
 		metadata,
 	});
 	const header: SessionHeader = {

@@ -37,7 +37,7 @@ import type {
 	WritePayloadRequest,
 } from "../types";
 import { openLocalTursoDatabase, tursoDatabaseModeCanActivate, type OpenLocalTursoDatabaseOptions, type TursoDatabase, type TursoTransaction } from "./database";
-import { searchTursoDocuments, upsertTursoSearchDocument } from "./fts";
+import { upsertTursoSearchDocument } from "./fts";
 import type {
 	TursoAppendMutation,
 	TursoAppendMutationResult,
@@ -171,10 +171,54 @@ function entryText(entry: RepositoryEvent["entry"]): { role: string; text: strin
 	return text ? { role, text } : undefined;
 }
 
-async function putPayload(writer: Pick<TursoTransaction, "run">, value: Uint8Array, mediaType?: string): Promise<PayloadDescriptor> {
+interface StoredPayloadRow {
+	content_hash: string;
+	codec: string;
+	codec_version: number | bigint;
+	uncompressed_length: number | bigint;
+	stored_length: number | bigint;
+	chunk_count: number | bigint;
+	media_type: string | null;
+}
+
+async function validateStoredPayload(
+	reader: Pick<TursoTransaction, "get">,
+	id: string,
+	contentHash: string,
+	byteLength: number,
+): Promise<void> {
+	const row = await reader.get<StoredPayloadRow>(
+		`SELECT content_hash, codec, codec_version, uncompressed_length, stored_length, chunk_count, media_type
+		 FROM payloads WHERE payload_id = ?`,
+		id,
+	);
+	const chunks = await reader.get<{ chunk_count: number | bigint; stored_length: number | bigint }>(
+		"SELECT COUNT(*) AS chunk_count, COALESCE(SUM(length(data)), 0) AS stored_length FROM payload_chunks WHERE payload_id = ?",
+		id,
+	);
+	if (
+		!row ||
+		!chunks ||
+		row.content_hash !== contentHash ||
+		row.codec !== "identity" ||
+		Number(row.codec_version) !== PAYLOAD_CODEC_VERSION ||
+		Number(row.uncompressed_length) !== byteLength ||
+		Number(row.stored_length) !== byteLength ||
+		Number(chunks.chunk_count) !== Number(row.chunk_count) ||
+		Number(chunks.stored_length) !== byteLength
+	) {
+		throw new Error(`Existing Turso payload metadata conflicts for ${contentHash}`);
+	}
+}
+
+async function putPayload(
+	writer: Pick<TursoTransaction, "run" | "get">,
+	value: Uint8Array,
+	mediaType?: string,
+): Promise<PayloadDescriptor> {
 	const contentHash = sha256(value);
 	const id = payloadId(contentHash);
-	await writer.run(
+	const inserted = await writer.run(
 		`INSERT OR IGNORE INTO payloads(payload_id, content_hash, codec, codec_version, uncompressed_length, stored_length, chunk_count, media_type, created_at)
 		 VALUES (?, ?, 'identity', ?, ?, ?, 1, ?, ?)`,
 		id,
@@ -185,17 +229,21 @@ async function putPayload(writer: Pick<TursoTransaction, "run">, value: Uint8Arr
 		mediaType ?? null,
 		Date.now(),
 	);
-	await writer.run(
-		"INSERT OR IGNORE INTO payload_chunks(payload_id, chunk_index, chunk_hash, data) VALUES (?, 0, ?, ?)",
-		id,
-		contentHash,
-		value,
-	);
+	if (inserted.changes === 1) {
+		await writer.run(
+			"INSERT INTO payload_chunks(payload_id, chunk_index, chunk_hash, data) VALUES (?, 0, ?, ?)",
+			id,
+			contentHash,
+			value,
+		);
+	} else {
+		await validateStoredPayload(writer, id, contentHash, value.byteLength);
+	}
 	return { payloadHash: contentHash as PayloadHash, byteLength: value.byteLength, mediaType };
 }
 
 async function putMetadata(
-	writer: Pick<TursoTransaction, "run">,
+	writer: Pick<TursoTransaction, "run" | "get">,
 	originId: string,
 	metadata: RepositorySessionHeader["metadata"],
 ): Promise<string> {
@@ -248,31 +296,6 @@ function mapHeader(row: HeaderRow, replicaId: ReplicaId): RepositorySessionHeade
 	};
 }
 
-async function ancestry(
-	reader: Pick<TursoDatabase | TursoTransaction, "get">,
-	head: EventHash | null,
-	limit = 200_001,
-): Promise<EventRow[]> {
-	const reversed: EventRow[] = [];
-	const seen = new Set<string>();
-	let cursor: EventHash | null = head;
-	while (cursor !== null) {
-		if (reversed.length >= limit) throw new Error(`Turso ancestry exceeds the ${limit}-event bound`);
-		if (seen.has(cursor)) throw new Error(`Turso ancestry cycle detected at ${cursor}`);
-		seen.add(cursor);
-		const row = await reader.get<EventRow>(
-			`SELECT e.event_hash, e.origin_id, e.parent_hash, e.native_entry_id, e.timestamp, pc.data AS entry_json
-			 FROM events e JOIN payload_chunks pc ON pc.payload_id = e.payload_id AND pc.chunk_index = 0
-			 WHERE e.event_hash = ?`,
-			cursor,
-		);
-		if (!row) throw new Error(`Turso ancestry is missing event ${cursor}`);
-		reversed.push(row);
-		cursor = row.parent_hash as EventHash | null;
-	}
-	reversed.reverse();
-	return reversed;
-}
 
 function mapEvents(rows: readonly EventRow[]): RepositoryEvent[] {
 	return rows.map((row, index) => ({
@@ -323,11 +346,14 @@ class EmbeddedTransaction implements TursoRuntimeTransaction {
 
 	async isEventReachable(branchId: BranchId, eventHash: EventHash | null): Promise<boolean> {
 		if (eventHash === null) return true;
-		const header = await this.getHeader(branchId);
-		if (!header) return false;
-		return (await ancestry(this.transaction, header.headEventHash)).some(row => row.event_hash === eventHash);
+		return Boolean(
+			await this.transaction.get(
+				"SELECT 1 AS reachable FROM branch_events WHERE branch_id = ? AND event_hash = ?",
+				branchId,
+				eventHash,
+			),
+		);
 	}
-
 	async createSession(mutation: TursoCreateMutation): Promise<RepositorySessionHeader> {
 		const { request, originId, sourceAlias, targetBranchId } = mutation;
 		const createdAt = timestamp(request.header.timestamp);
@@ -350,7 +376,7 @@ class EmbeddedTransaction implements TursoRuntimeTransaction {
 		await statePut(this.transaction, `source-alias:${sourceAlias}`, originId);
 		const metadata = request.metadata ?? semanticMetadataFromHeader(request.header);
 		const metadataRevisionId = await putMetadata(this.transaction, originId, metadata);
-		const versionId = computeVersionIdentity({ originId, headEventHash: null, treeEventHashes: [], metadata }).id;
+		const versionId = computeVersionIdentity({ originId, branchId: targetBranchId, headEventHash: null, metadata }).id;
 		await this.transaction.run(
 			`INSERT INTO branches(branch_id, origin_id, parent_branch_id, fork_point_hash, head_hash, head_version_id, generation, created_at)
 			 VALUES (?, ?, NULL, NULL, NULL, NULL, 0, ?)`,
@@ -376,6 +402,15 @@ class EmbeddedTransaction implements TursoRuntimeTransaction {
 	async append(mutation: TursoAppendMutation): Promise<TursoAppendMutationResult> {
 		const parent = await this.getHeader(mutation.request.branchId);
 		if (!parent) throw new Error(`Unknown Turso branch ${mutation.request.branchId}`);
+		const base = mutation.request.expectedHeadHash
+			? await this.transaction.get<{ generation: number | bigint }>(
+					"SELECT generation FROM branch_events WHERE branch_id = ? AND event_hash = ?",
+					mutation.request.branchId,
+					mutation.request.expectedHeadHash,
+				)
+			: undefined;
+		if (mutation.request.expectedHeadHash && !base) throw new Error("Turso append head is not reachable");
+		const baseCount = base ? Number(base.generation) + 1 : 0;
 		let parentHash = mutation.request.expectedHeadHash;
 		const eventHashes: EventHash[] = [];
 		for (const entry of mutation.request.entries) {
@@ -424,38 +459,42 @@ class EmbeddedTransaction implements TursoRuntimeTransaction {
 		if (!existingTarget) {
 			await this.transaction.run(
 				`INSERT INTO branches(branch_id, origin_id, parent_branch_id, fork_point_hash, head_hash, head_version_id, generation, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?, 0, ?)`,
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 				mutation.targetBranchId,
 				parent.originId,
 				mutation.parentBranchId,
 				mutation.forkPointHash,
 				mutation.request.expectedHeadHash,
 				parent.versionId,
+				Math.max(0, baseCount - 1),
 				Date.now(),
 			);
 		}
-		const baseRows = await ancestry(this.transaction, mutation.request.expectedHeadHash);
-		if (!existingTarget) {
-			for (let generation = 0; generation < baseRows.length; generation++) {
-				await this.transaction.run(
-					"INSERT INTO branch_events(branch_id, generation, event_hash) VALUES (?, ?, ?)",
-					mutation.targetBranchId,
-					generation,
-					baseRows[generation].event_hash,
-				);
-			}
+		if (!existingTarget && baseCount > 0) {
+			await this.transaction.run(
+				`INSERT INTO branch_events(branch_id, generation, event_hash)
+				 SELECT ?, generation, event_hash FROM branch_events
+				 WHERE branch_id = ? AND generation < ? ORDER BY generation`,
+				mutation.targetBranchId,
+				mutation.request.branchId,
+				baseCount,
+			);
 		}
 		for (let index = 0; index < eventHashes.length; index++) {
 			await this.transaction.run(
 				"INSERT OR IGNORE INTO branch_events(branch_id, generation, event_hash) VALUES (?, ?, ?)",
 				mutation.targetBranchId,
-				baseRows.length + index,
+				baseCount + index,
 				eventHashes[index],
 			);
 		}
-		const treeEventHashes = [...baseRows.map(row => row.event_hash as EventHash), ...eventHashes];
 		const metadataRevisionId = await putMetadata(this.transaction, parent.originId, metadata);
-		const version = computeVersionIdentity({ originId: parent.originId, headEventHash: parentHash, treeEventHashes, metadata });
+		const version = computeVersionIdentity({
+			originId: parent.originId,
+			branchId: mutation.targetBranchId,
+			headEventHash: parentHash,
+			metadata,
+		});
 		const versionCreatedAt = timestamp(mutation.request.entries.at(-1)?.timestamp ?? existingTarget?.modifiedAt ?? parent.modifiedAt);
 		await this.transaction.run(
 			`INSERT OR IGNORE INTO versions(version_id, origin_id, branch_id, parent_version_id, head_hash, metadata_revision_id, created_at)
@@ -473,7 +512,7 @@ class EmbeddedTransaction implements TursoRuntimeTransaction {
 			 WHERE branch_id = ? AND head_hash IS ?`,
 			parentHash,
 			version.id,
-			Math.max(0, treeEventHashes.length - 1),
+			Math.max(0, baseCount + eventHashes.length - 1),
 			mutation.targetBranchId,
 			existingTarget?.headEventHash ?? mutation.request.expectedHeadHash,
 		);
@@ -488,12 +527,20 @@ class EmbeddedTransaction implements TursoRuntimeTransaction {
 		if (!parent) throw new Error(`Unknown Turso branch ${mutation.request.branchId}`);
 		const existing = await this.getHeader(mutation.targetBranchId);
 		if (existing) return existing;
+		const forkPoint = mutation.request.atEventHash
+			? await this.transaction.get<{ generation: number | bigint }>(
+					"SELECT generation FROM branch_events WHERE branch_id = ? AND event_hash = ?",
+					parent.branchId,
+					mutation.request.atEventHash,
+				)
+			: undefined;
+		if (mutation.request.atEventHash && !forkPoint) throw new Error("Turso fork point is not reachable");
+		const forkGeneration = forkPoint ? Number(forkPoint.generation) : -1;
 		const metadata = mutation.request.metadata ?? parent.metadata;
-		const tree = await ancestry(this.transaction, mutation.request.atEventHash);
 		const version = computeVersionIdentity({
 			originId: parent.originId,
+			branchId: mutation.targetBranchId,
 			headEventHash: mutation.request.atEventHash,
-			treeEventHashes: tree.map(row => row.event_hash as EventHash),
 			metadata,
 		});
 		const metadataRevisionId = await putMetadata(this.transaction, parent.originId, metadata);
@@ -505,15 +552,17 @@ class EmbeddedTransaction implements TursoRuntimeTransaction {
 			parent.branchId,
 			mutation.request.atEventHash,
 			mutation.request.atEventHash,
-			Math.max(0, tree.length - 1),
+			Math.max(0, forkGeneration),
 			Date.now(),
 		);
-		for (let generation = 0; generation < tree.length; generation++) {
+		if (forkGeneration >= 0) {
 			await this.transaction.run(
-				"INSERT INTO branch_events(branch_id, generation, event_hash) VALUES (?, ?, ?)",
+				`INSERT INTO branch_events(branch_id, generation, event_hash)
+				 SELECT ?, generation, event_hash FROM branch_events
+				 WHERE branch_id = ? AND generation <= ? ORDER BY generation`,
 				mutation.targetBranchId,
-				generation,
-				tree[generation].event_hash,
+				parent.branchId,
+				forkGeneration,
 			);
 		}
 		await this.transaction.run(
@@ -547,8 +596,13 @@ class EmbeddedTransaction implements TursoRuntimeTransaction {
 		if (request.source === undefined) delete metadata.titleSource;
 		else metadata.titleSource = request.source;
 		const eventSource = request.source ?? current.metadata.titleSource ?? "user";
-		const tree = await ancestry(this.transaction, request.expectedHeadHash);
-		const nativeParentId = request.expectedHeadHash === null ? null : (tree.at(-1)?.native_entry_id ?? null);
+		const parentEvent = request.expectedHeadHash
+			? await this.transaction.get<{ native_entry_id: string | null }>(
+					"SELECT native_entry_id FROM events WHERE event_hash = ?",
+					request.expectedHeadHash,
+				)
+			: undefined;
+		const nativeParentId = parentEvent?.native_entry_id ?? null;
 		const digest = new Bun.CryptoHasher("sha256")
 			.update(
 				JSON.stringify([
@@ -733,7 +787,7 @@ export class EmbeddedTursoRuntimeAdapter implements TursoRuntimeAdapter {
 			parameters.push(selectedOrigin);
 		}
 		if (query.after) {
-			clauses.push("(v.created_at > ? OR (v.created_at = ? AND b.branch_id > ?))");
+			clauses.push("(v.created_at < ? OR (v.created_at = ? AND b.branch_id > ?))");
 			parameters.push(Number(query.after.sortKey), Number(query.after.sortKey), query.after.id);
 		}
 		const rows = await this.#database.all<HeaderRow>(
@@ -744,7 +798,7 @@ export class EmbeddedTursoRuntimeAdapter implements TursoRuntimeAdapter {
 			 JOIN payload_chunks pc ON pc.payload_id = mr.payload_id AND pc.chunk_index = 0
 			 JOIN source_aliases sa ON sa.origin_id = b.origin_id
 			 ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
-			 ORDER BY v.created_at ASC, b.branch_id ASC LIMIT ?`,
+			 ORDER BY v.created_at DESC, b.branch_id ASC LIMIT ?`,
 			...parameters,
 			query.limit,
 		);
@@ -753,41 +807,84 @@ export class EmbeddedTursoRuntimeAdapter implements TursoRuntimeAdapter {
 
 	async search(query: TursoPageRequest & { text: string; originId?: RepositorySessionHeader["originId"] }): Promise<readonly TursoKeysetRow<SessionSearchHit>[]> {
 		this.#assertOpen();
-		let offset = query.after ? Number(query.after.sortKey) : 0;
-		if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("Invalid Turso search cursor");
-		const rows: TursoKeysetRow<SessionSearchHit>[] = [];
-		while (rows.length < query.limit) {
-			const page = await searchTursoDocuments(this.#database, {
-				query: query.text,
-				limit: Math.min(100, query.limit - rows.length),
-				offset,
-				originId: query.originId,
-			});
-			for (let index = 0; index < page.hits.length && rows.length < query.limit; index++) {
-				const hit = page.hits[index];
-				const rawPosition = offset + index + 1;
-				const branch = await this.#database.get<{ branch_id: string }>(
-					`SELECT b.branch_id FROM branch_events be JOIN branches b ON b.branch_id = be.branch_id
-					 WHERE be.event_hash = ? AND b.origin_id = ?
-					   AND NOT EXISTS (
-						   SELECT 1 FROM maintenance_state ms
-						   WHERE ms.name = ? || b.branch_id
-					   )
-					 ORDER BY b.generation DESC, b.branch_id ASC LIMIT 1`,
-					hit.eventHash,
-					hit.originId,
-					`${MAINTENANCE_PREFIX}dropped:`,
-				);
-				if (!branch) continue;
-				const header = await this.getHeader(branch.branch_id as BranchId);
-				if (!header) continue;
-				rows.push({
-					value: { header, eventHash: hit.eventHash as EventHash, snippet: hit.highlightedText },
-					position: position(String(rawPosition), hit.eventHash),
-				});
+		let cursor: { score: number; eventTime: number; branchId: string } | undefined;
+		if (query.after) {
+			const parsed = JSON.parse(query.after.sortKey) as unknown;
+			if (
+				!Array.isArray(parsed) ||
+				parsed.length !== 2 ||
+				typeof parsed[0] !== "number" ||
+				typeof parsed[1] !== "number"
+			) {
+				throw new Error("Invalid Turso search cursor");
 			}
-			if (rows.length >= query.limit || page.nextOffset === undefined) break;
-			offset = page.nextOffset;
+			cursor = { score: parsed[0], eventTime: parsed[1], branchId: query.after.id };
+		}
+		const rankedFilters = ["fts_match(text, ?)"];
+		const parameters: unknown[] = [query.text, "<mark>", "</mark>", query.text, query.text];
+		if (query.originId) {
+			rankedFilters.push("origin_id = ?");
+			parameters.push(query.originId);
+		}
+		parameters.push(`${MAINTENANCE_PREFIX}dropped:`);
+		const cursorFilter = cursor
+			? `WHERE score < ? OR (score = ? AND event_time < ?)
+			   OR (score = ? AND event_time = ? AND branch_id > ?)`
+			: "";
+		if (cursor) {
+			parameters.push(
+				cursor.score,
+				cursor.score,
+				cursor.eventTime,
+				cursor.score,
+				cursor.eventTime,
+				cursor.branchId,
+			);
+		}
+		parameters.push(query.limit);
+		const hits = await this.#database.all<{
+			branch_id: string;
+			event_hash: string;
+			event_time: number | bigint;
+			score: number;
+			highlighted_text: string;
+		}>(
+			`WITH ranked AS (
+				SELECT event_hash, origin_id, event_time,
+				       fts_score(text, ?) AS score,
+				       fts_highlight(text, ?, ?, ?) AS highlighted_text
+				FROM search_documents
+				WHERE ${rankedFilters.join(" AND ")}
+			), reachable AS (
+				SELECT be.branch_id, ranked.event_hash, ranked.event_time, ranked.score, ranked.highlighted_text,
+				       ROW_NUMBER() OVER (
+					       PARTITION BY be.branch_id
+					       ORDER BY ranked.score DESC, ranked.event_time DESC, ranked.event_hash ASC
+				       ) AS branch_rank
+				FROM ranked JOIN branch_events be ON be.event_hash = ranked.event_hash
+				JOIN branches b ON b.branch_id = be.branch_id
+				WHERE NOT EXISTS (
+					SELECT 1 FROM maintenance_state ms WHERE ms.name = ? || be.branch_id
+				)
+			), best AS (
+				SELECT branch_id, event_hash, event_time, score, highlighted_text
+				FROM reachable WHERE branch_rank = 1
+			)
+			SELECT branch_id, event_hash, event_time, score, highlighted_text
+			FROM best ${cursorFilter}
+			ORDER BY score DESC, event_time DESC, branch_id ASC
+			LIMIT ?`,
+			...parameters,
+		);
+		const rows: TursoKeysetRow<SessionSearchHit>[] = [];
+		for (const hit of hits) {
+			const header = await this.getHeader(hit.branch_id as BranchId);
+			if (!header) continue;
+			const eventTime = Number(hit.event_time);
+			rows.push({
+				value: { header, eventHash: hit.event_hash as EventHash, snippet: hit.highlighted_text },
+				position: position(JSON.stringify([Number(hit.score), eventTime]), hit.branch_id),
+			});
 		}
 		return rows;
 	}
@@ -956,7 +1053,7 @@ export class EmbeddedTursoRuntimeAdapter implements TursoRuntimeAdapter {
 				}
 				const contentHash = hasher.digest("hex");
 				const id = payloadId(contentHash);
-				await transaction.run(
+				const inserted = await transaction.run(
 					`INSERT OR IGNORE INTO payloads(payload_id, content_hash, codec, codec_version, uncompressed_length, stored_length, chunk_count, media_type, created_at)
 					 VALUES (?, ?, 'identity', ?, ?, ?, ?, ?, ?)`,
 					id,
@@ -968,11 +1065,15 @@ export class EmbeddedTursoRuntimeAdapter implements TursoRuntimeAdapter {
 					request.mediaType ?? null,
 					Date.now(),
 				);
-				await transaction.run(
-					`INSERT OR IGNORE INTO payload_chunks(payload_id, chunk_index, chunk_hash, data)
-					 SELECT ?, chunk_index, chunk_hash, data FROM ${stage} ORDER BY chunk_index`,
-					id,
-				);
+				if (inserted.changes === 1) {
+					await transaction.run(
+						`INSERT INTO payload_chunks(payload_id, chunk_index, chunk_hash, data)
+						 SELECT ?, chunk_index, chunk_hash, data FROM ${stage} ORDER BY chunk_index`,
+						id,
+					);
+				} else {
+					await validateStoredPayload(transaction, id, contentHash, byteLength);
+				}
 				return { payloadHash: contentHash as PayloadHash, byteLength, mediaType: request.mediaType };
 			} finally {
 				await transaction.exec(`DROP TABLE IF EXISTS ${stage}`);
@@ -986,19 +1087,41 @@ export class EmbeddedTursoRuntimeAdapter implements TursoRuntimeAdapter {
 	}): AsyncIterable<Uint8Array> {
 		this.#assertOpen();
 		const id = payloadId(query.payloadHash);
-		const payload = await this.#database.get<{ chunk_count: number | bigint }>(
-			"SELECT chunk_count FROM payloads WHERE payload_id = ?",
+		const payload = await this.#database.get<StoredPayloadRow>(
+			`SELECT content_hash, codec, codec_version, uncompressed_length, stored_length, chunk_count, media_type
+			 FROM payloads WHERE payload_id = ?`,
 			id,
 		);
 		if (!payload) throw new Error(`Unknown Turso payload ${query.payloadHash}`);
-		for await (const row of this.#database.iterate<{ data: Uint8Array | ArrayBuffer }>(
-			"SELECT data FROM payload_chunks WHERE payload_id = ? ORDER BY chunk_index",
+		await validateStoredPayload(this.#database, id, query.payloadHash, Number(payload.uncompressed_length));
+		const hasher = new Bun.CryptoHasher("sha256");
+		let chunkCount = 0;
+		let byteLength = 0;
+		for await (const row of this.#database.iterate<{
+			chunk_index: number | bigint;
+			chunk_hash: string;
+			data: Uint8Array | ArrayBuffer;
+		}>(
+			"SELECT chunk_index, chunk_hash, data FROM payload_chunks WHERE payload_id = ? ORDER BY chunk_index",
 			id,
 		)) {
 			const value = bytes(row.data);
+			if (Number(row.chunk_index) !== chunkCount || sha256(value) !== row.chunk_hash) {
+				throw new Error(`Corrupt Turso payload chunk ${chunkCount} for ${query.payloadHash}`);
+			}
+			hasher.update(value);
+			byteLength += value.byteLength;
+			chunkCount++;
 			for (let offset = 0; offset < value.byteLength; offset += query.chunkBytes) {
 				yield value.slice(offset, offset + query.chunkBytes);
 			}
+		}
+		if (
+			chunkCount !== Number(payload.chunk_count) ||
+			byteLength !== Number(payload.uncompressed_length) ||
+			hasher.digest("hex") !== query.payloadHash
+		) {
+			throw new Error(`Corrupt Turso payload ${query.payloadHash}`);
 		}
 	}
 

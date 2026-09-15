@@ -29,9 +29,9 @@ export interface EventIdentityInput {
 
 export interface VersionIdentityInput {
 	originId: OriginId;
+	branchId: BranchId;
+	/** The chained event hash commits the complete ordered ancestry. */
 	headEventHash: EventHash | null;
-	/** The complete immutable tree revision. Ordering does not affect identity. */
-	treeEventHashes: readonly EventHash[];
 	metadata: SessionSemanticMetadata | Readonly<Record<string, unknown>>;
 }
 
@@ -63,11 +63,15 @@ function sha256(bytes: Uint8Array): string {
 	return new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 }
 
-function proof<Id extends string>(prefix: string, semanticEnvelope: unknown): IdentityProof<Id> {
+function proof<Id extends string>(
+	prefix: string,
+	semanticEnvelope: unknown,
+	identityVersion: number = SESSION_IDENTITY_VERSION,
+): IdentityProof<Id> {
 	const canonicalBytes = canonicalSerialize(semanticEnvelope);
 	const canonicalSha256 = sha256(canonicalBytes);
 	return {
-		id: `${prefix}_v${SESSION_IDENTITY_VERSION}_${canonicalSha256}` as Id,
+		id: `${prefix}_v${identityVersion}_${canonicalSha256}` as Id,
 		canonicalLength: canonicalBytes.byteLength,
 		canonicalSha256,
 		canonicalBytes,
@@ -106,15 +110,18 @@ export function computeEventIdentity(input: EventIdentityInput): IdentityProof<E
 }
 
 export function computeVersionIdentity(input: VersionIdentityInput): IdentityProof<VersionId> {
-	const treeEventHashes = [...input.treeEventHashes].sort();
-	return proof<VersionId>("version", {
-		kind: "version",
-		version: SESSION_IDENTITY_VERSION,
-		originId: input.originId,
-		headEventHash: input.headEventHash,
-		treeEventHashes,
-		metadata: input.metadata,
-	});
+	return proof<VersionId>(
+		"version",
+		{
+			kind: "version",
+			version: 2,
+			originId: input.originId,
+			headEventHash: input.headEventHash,
+			branchId: input.branchId,
+			metadata: input.metadata,
+		},
+		2,
+	);
 }
 
 export function computeBranchIdentity(input: BranchIdentityInput): IdentityProof<BranchId> {

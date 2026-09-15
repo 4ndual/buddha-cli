@@ -8,7 +8,7 @@ import {
 	IdentityCollisionError,
 	IdentityCollisionRegistry,
 } from "../../../src/session/repository";
-import type { EventHash, SessionSemanticMetadata } from "../../../src/session/repository";
+import type { BranchId, EventHash, SessionSemanticMetadata } from "../../../src/session/repository";
 
 function hex(value: Uint8Array): string {
 	return Buffer.from(value).toString("hex");
@@ -46,14 +46,14 @@ describe("canonical session identity", () => {
 		const baseMetadata: SessionSemanticMetadata = { createdAt: "2026-09-15T00:00:00.000Z", title: "Before" };
 		const before = computeVersionIdentity({
 			originId: omp.id,
+			branchId: "branch_v1_metadata" as BranchId,
 			headEventHash: event.id,
-			treeEventHashes: [event.id],
 			metadata: baseMetadata,
 		});
 		const after = computeVersionIdentity({
 			originId: omp.id,
+			branchId: "branch_v1_metadata" as BranchId,
 			headEventHash: event.id,
-			treeEventHashes: [event.id],
 			metadata: { ...baseMetadata, title: "After" },
 		});
 		expect(before.id).not.toBe(after.id);
@@ -72,17 +72,22 @@ describe("canonical session identity", () => {
 		).toThrow(IdentityCollisionError);
 	});
 
-	test("tree serialization order does not change a version id", () => {
+	test("uses the chained head hash as the ordered ancestry commitment", () => {
 		const origin = computeOriginIdentity({ sourceNamespace: "omp", installationNamespace: "profile", nativeId: "tree" });
-		const a = "event_v1_a" as EventHash;
-		const b = "event_v1_b" as EventHash;
-		const input = {
+		const metadata = { createdAt: "2026-09-15T00:00:00.000Z" };
+		const first = computeVersionIdentity({
 			originId: origin.id,
-			headEventHash: b,
-			metadata: { createdAt: "2026-09-15T00:00:00.000Z" },
-		};
-		expect(computeVersionIdentity({ ...input, treeEventHashes: [a, b] }).id).toBe(
-			computeVersionIdentity({ ...input, treeEventHashes: [b, a] }).id,
-		);
+			branchId: "branch_v1_tree" as BranchId,
+			headEventHash: "event_v1_a" as EventHash,
+			metadata,
+		});
+		const second = computeVersionIdentity({
+			originId: origin.id,
+			branchId: "branch_v1_tree" as BranchId,
+			headEventHash: "event_v1_b" as EventHash,
+			metadata,
+		});
+		expect(first.id).not.toBe(second.id);
+		expect(first.id).toStartWith("version_v2_");
 	});
 });

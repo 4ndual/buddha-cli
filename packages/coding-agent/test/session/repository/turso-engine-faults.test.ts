@@ -213,7 +213,7 @@ try {
 		expect({ exitCode, stderr }).toEqual({ exitCode: 0, stderr: "" });
 	}, 20_000);
 
-	it("retries a killed schema upgrade from an atomic v1 state while retaining the pre-upgrade snapshot", async () => {
+	it("retries a killed schema upgrade from an atomic v2 state while retaining the pre-upgrade snapshot", async () => {
 		using temp = TempDir.createSync("@omp-turso-upgrade-interrupt-");
 		const dbPath = path.join(temp.path(), "sessions.turso.db");
 		const backupPath = path.join(temp.path(), "pre-upgrade.turso.db");
@@ -221,7 +221,7 @@ try {
 		const downgradeReady = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
 		const downgrade = database.transactionAsync(async transaction => {
-			await transaction.exec("DROP INDEX search_documents_fts");
+			await transaction.exec("DROP TABLE branch_events");
 			await transaction.run("DELETE FROM schema_migrations WHERE version = ?", TURSO_SCHEMA_VERSION);
 			downgradeReady.resolve();
 			await release.promise;
@@ -255,9 +255,9 @@ await database.close();
 		const downgradedVersion = await database.get<{ version: number | bigint; "0"?: number | bigint }>(
 			"SELECT MAX(version) AS version FROM schema_migrations",
 		);
-		expect(Number(downgradedVersion?.version ?? downgradedVersion?.["0"])).toBe(1);
+		expect(Number(downgradedVersion?.version ?? downgradedVersion?.["0"])).toBe(2);
 		expect(
-			await database.get("SELECT name FROM sqlite_schema WHERE type = 'index' AND name = 'search_documents_fts'"),
+			await database.get("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'branch_events'"),
 		).toBeUndefined();
 		const backup = await database.closeAndBackup(backupPath, temp.path());
 		openDatabases.delete(database);
@@ -271,6 +271,11 @@ await database.close();
 				"SELECT name FROM sqlite_schema WHERE type = 'index' AND name = 'search_documents_fts'",
 			),
 		).toEqual({ name: "search_documents_fts" });
+		expect(
+			await upgraded.get<{ name: string }>(
+				"SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'branch_events'",
+			),
+		).toEqual({ name: "branch_events" });
 		expect(
 			await upgraded.get<{ checksum: string }>("SELECT checksum FROM schema_migrations WHERE version = ?", 2),
 		).toEqual({ checksum: TURSO_SCHEMA_MIGRATIONS[1].checksum });
