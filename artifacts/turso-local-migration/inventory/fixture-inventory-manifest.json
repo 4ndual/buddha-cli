@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "omp-migration-inventory-v1",
+  "snapshotAt": "2026-09-15T00:00:00.000Z",
+  "roots": [
+    {
+      "rootId": "golden",
+      "sourceNamespace": "mixed@fixture-v1/golden-fixtures",
+      "runtime": {
+        "name": "mixed",
+        "version": "fixture-v1"
+      }
+    }
+  ],
+  "backupRoot": "caller-owned-backup",
+  "preflight": {
+    "ok": true,
+    "filesystemPath": "caller-owned-backup",
+    "availableBytes": "151718563840",
+    "requiredBytes": "3096",
+    "copyBytes": "3096",
+    "expansionFactor": 1,
+    "reserveBytes": "0"
+  },
+  "summary": {
+    "discovered": 4,
+    "accounted": 4,
+    "copied": 4,
+    "excluded": 0,
+    "pending": 0,
+    "quarantined": 0,
+    "discoveredBytes": "3096",
+    "copiedBytes": "3096",
+    "aggregateSha256": "510b9977e001e7a104db6271507971aa1ea92852ab833ba5a3b4708ec171d2aa"
+  }
+}

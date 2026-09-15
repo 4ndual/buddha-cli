@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"fixture-omp","timestamp":"2026-01-02T03:04:05.000Z","cwd":"/fixture/project","title":"Fixture OMP"}
+{"type":"message","id":"u1","parentId":null,"timestamp":"2026-01-02T03:04:06.000Z","message":{"role":"user","content":"inspect only","timestamp":1767323046000}}
+{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-01-02T03:04:07.000Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"call-1","name":"read","arguments":{"path":"fixture.txt"}}],"api":"test-api","provider":"test-provider","model":"test-model","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse","timestamp":1767323047000}}
+{"type":"message","id":"r1","parentId":"a1","timestamp":"2026-01-02T03:04:08.000Z","message":{"role":"toolResult","toolCallId":"call-1","toolName":"read","content":[{"type":"text","text":"fixture bytes"}],"isError":false,"timestamp":1767323048000}}
+{"type":"future_control","id":"future1","parentId":"r1","timestamp":"2026-01-02T03:04:09.000Z","opaque":{"precision":"preserved","sequence":[3,2,1]}}
