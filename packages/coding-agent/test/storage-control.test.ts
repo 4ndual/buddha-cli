@@ -71,6 +71,7 @@ function createPreviewResult(status: StorageControlStatus): StorageControlResult
 
 class FakeStorageControlService implements StorageControlService {
 	readonly calls: string[] = [];
+	readonly requests: StorageControlRequest[] = [];
 	status: StorageControlStatus;
 	previewResult: StorageControlResult;
 
@@ -85,11 +86,13 @@ class FakeStorageControlService implements StorageControlService {
 	}
 
 	async preview(request: StorageControlRequest): Promise<StorageControlResult> {
+		this.requests.push(request);
 		this.calls.push(`preview:${request.action}:${request.dryRun}`);
 		return this.previewResult;
 	}
 
 	async execute(request: StorageControlRequest): Promise<StorageControlResult> {
+		this.requests.push(request);
 		this.calls.push(`execute:${request.action}:${request.dryRun}:${request.jobId ?? "-"}`);
 		return { outcome: "completed", message: "completed", status: this.status };
 	}
@@ -124,6 +127,7 @@ describe("storage command parsing", () => {
 			source: "/archive",
 			destination: "/staging/sessions.wcdb.sqlite",
 			dryRun: true,
+			scope: "origin",
 			allBranches: true,
 			jobId: "job-9",
 			reportPath: "/reports/import.jsonl",
@@ -205,10 +209,14 @@ describe("storage activation and terminal controller", () => {
 
 	it("requires a transfer preview before the same terminal control can commit its verified job id", async () => {
 		const service = new FakeStorageControlService(createStatus());
-		const controller = new StoragePanelController(service, {
-			onUpdate(): void {},
-			onBusy(): void {},
-		});
+		const controller = new StoragePanelController(
+			service,
+			{
+				onUpdate(): void {},
+				onBusy(): void {},
+			},
+			{ source: "/archive/jsonl", destination: "/staging/sessions.wcdb.sqlite", scope: "origin" },
+		);
 		await controller.initialize();
 		const preview = await controller.select("synchronize");
 		expect(preview?.outcome).toBe("preview");
@@ -216,6 +224,46 @@ describe("storage activation and terminal controller", () => {
 		const committed = await controller.select("synchronize");
 		expect(committed?.outcome).toBe("completed");
 		expect(service.calls).toEqual(["status", "preview:sync:true", "execute:sync:false:preview-1"]);
+		expect(service.requests[0]).toMatchObject({
+			source: "/archive/jsonl",
+			destination: "/staging/sessions.wcdb.sqlite",
+			scope: "origin",
+			allBranches: true,
+			dryRun: true,
+		});
+		expect(service.requests[1]).toMatchObject({
+			source: "/archive/jsonl",
+			destination: "/staging/sessions.wcdb.sqlite",
+			scope: "origin",
+			allBranches: true,
+			dryRun: false,
+			jobId: "preview-1",
+		});
+	});
+
+	it("blocks endpoint-dependent controls until source, destination, and scope are explicitly selected", async () => {
+		const service = new FakeStorageControlService(createStatus());
+		const results: StorageControlResult[] = [];
+		const controller = new StoragePanelController(service, {
+			onUpdate(_status, result): void {
+				if (result) results.push(result);
+			},
+			onBusy(): void {},
+		});
+		await controller.initialize();
+		const blocked = await controller.select("jsonl-to-db");
+		expect(blocked?.outcome).toBe("blocked");
+		expect(blocked?.message).toContain("source, destination, transfer scope");
+		expect(service.calls).toEqual(["status"]);
+		controller.updateSelection({ source: "/sessions", destination: "/staging/db", scope: "full-archive" });
+		expect((await controller.select("jsonl-to-db"))?.outcome).toBe("preview");
+		expect(service.requests[0]).toMatchObject({
+			source: "/sessions",
+			destination: "/staging/db",
+			scope: "full-archive",
+			allBranches: true,
+		});
+		expect(results.at(-1)?.preview?.jobId).toBe("preview-1");
 	});
 
 	it("routes cancel and resume to the displayed durable job instead of inventing a new id", async () => {
@@ -236,10 +284,23 @@ describe("storage activation and terminal controller", () => {
 
 	it("shows every required control, explicit mode/backend state, preview categories, and extension recovery choices", () => {
 		const status = createStatus();
-		const panel = new StoragePanelComponent(status, { onAction(): void {}, onCancel(): void {} });
+		const selection = { source: "/home/test/sessions", destination: "/tmp/export", scope: "origin" } as const;
+		const configurations: string[] = [];
+		const panel = new StoragePanelComponent(status, selection, {
+			onAction(): void {},
+			onConfigure(kind): void {
+				configurations.push(kind);
+			},
+			onCancel(): void {},
+		});
+		panel.handleInput("\r");
+		expect(configurations).toEqual(["source"]);
 		panel.update(status, createPreviewResult(status));
 		const rendered = Bun.stripANSI(panel.render(160).join("\n"));
 		for (const label of [
+			"Choose source…",
+			"Choose destination…",
+			"Choose transfer scope…",
 			"Use JSONL mode",
 			"Use Database mode",
 			"JSONL → DB",
@@ -253,6 +314,7 @@ describe("storage activation and terminal controller", () => {
 		]) {
 			expect(rendered).toContain(label);
 		}
+		expect(rendered).toContain("origin with all forks");
 		expect(rendered).toContain("Mode  JSONL");
 		expect(rendered).toContain("Active backend  OMP JSONL session repository");
 		expect(rendered).toContain("3 versions · 5 extensions · 7 sibling forks · 11 duplicates · 13 quarantined");

@@ -21,11 +21,18 @@ export const STORAGE_ACTIONS = [
 export type StorageAction = (typeof STORAGE_ACTIONS)[number];
 
 export type StorageReportFormat = "json" | "jsonl";
+export type StorageTransferScope = "branch" | "origin" | "full-archive";
+export interface StorageTransferSelection {
+	source?: string;
+	destination?: string;
+	scope?: StorageTransferScope;
+}
 
 export interface StorageControlRequest {
 	action: StorageAction;
 	dryRun: boolean;
 	allBranches: boolean;
+	scope: StorageTransferScope;
 	source?: string;
 	destination?: string;
 	jobId?: string;

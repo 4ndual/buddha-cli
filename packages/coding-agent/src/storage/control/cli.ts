@@ -91,6 +91,7 @@ export function parseStorageCommand(input: ParsedStorageCommandInput): StorageCo
 		action,
 		dryRun: input.dryRun === true,
 		allBranches: input.allBranches === true,
+		scope: input.allBranches === true ? "origin" : "branch",
 		source,
 		destination,
 		jobId: input.jobId,
