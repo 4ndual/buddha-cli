@@ -1,0 +1,39 @@
+{
+  "lane": "transfer",
+  "branch": "experiment/turso-transfer",
+  "source_scope": "packages/coding-agent/src/session/repository/migration",
+  "production_mode_switched": false,
+  "active_archive_mutated": false,
+  "gates": {
+    "resumable_byte_bounded_jobs": "pass",
+    "publication_before_receipt_recovery": "pass",
+    "repeated_bidirectional_sync_no_fork_explosion": "pass",
+    "true_divergence_preserved": "pass",
+    "historical_truncation_preserved": "pass",
+    "partial_output_unpublished": "pass",
+    "stale_generation_rejected": "pass",
+    "export_manifest_verifies": "pass",
+    "scoped_typecheck": "pass"
+  },
+  "proof": {
+    "test_command": "bun test packages/coding-agent/test/session/repository/migration/transfer.test.ts",
+    "test_result": "6 pass, 0 fail, 29 expectations",
+    "typecheck_command": "/home/andual/Projects/buddha-cli/node_modules/.bin/tsgo --ignoreConfig --noEmit --target esnext --module esnext --moduleResolution bundler --typeRoots /home/andual/Projects/buddha-cli/node_modules/@types --types bun,node packages/coding-agent/src/session/repository/migration/*.ts packages/coding-agent/test/session/repository/migration/transfer.test.ts",
+    "typecheck_result": "exit 0"
+  },
+  "durability_order": [
+    "write and fsync bundle payload",
+    "write and fsync checksummed manifest",
+    "write and fsync completion marker",
+    "fsync staging directory",
+    "atomic rename on destination filesystem",
+    "fsync destination parent",
+    "record and fsync migration job receipt"
+  ],
+  "integration": {
+    "import_adapter": "LogicalImportTarget.applyImportBatch must atomically store immutable events/version, expected-head CAS branch update, source branch mapping, and idempotency receipt",
+    "export_adapter": "LogicalExportSource.readLogicalSnapshot must return one pinned logical cutoff",
+    "fencing": "append/fork/checkpoint/flush must assert the persisted generation token inside the same durable commit",
+    "recovery": "recoverPublishedExport accepts only explicit no-symlink paths under allowedRoot and never switches mode or configuration"
+  }
+}
