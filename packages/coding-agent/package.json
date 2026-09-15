@@ -70,6 +70,7 @@
     "@opentelemetry/sdk-metrics": "catalog:",
     "@opentelemetry/sdk-trace-base": "catalog:",
     "@opentelemetry/sdk-trace-node": "catalog:",
+    "@tursodatabase/database": "0.7.2",
     "puppeteer-core": "catalog:"
   },
   "optionalDependencies": {

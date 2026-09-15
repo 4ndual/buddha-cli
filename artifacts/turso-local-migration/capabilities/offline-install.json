@@ -1,0 +1,40 @@
+{
+  "reportVersion": 1,
+  "generatedAt": "2026-09-15T22:23:00Z",
+  "status": "supported",
+  "runtime": {
+    "bunVersion": "1.4.2",
+    "platform": "linux",
+    "arch": "x64",
+    "libc": "glibc-2.39"
+  },
+  "package": {
+    "name": "@tursodatabase/database",
+    "version": "0.7.2",
+    "integrity": "sha512-B84QicyDYnKt97qxgb7861cQQC26kuv/LkUlCnpxGs4tuGT9zgS2z/Mt+BkG/wOo1fB4rsSycOgGCbi0xU0YOQ=="
+  },
+  "nativePackage": {
+    "name": "@tursodatabase/database-linux-x64-gnu",
+    "version": "0.7.2",
+    "integrity": "sha512-rXxInfTxKRPG3XeOAZvzJuX4wF+m9t9BjLbFnKU83Ad8ob2z88r1x+EV7IBzEFhz2FbvrRgriH7PhIEZ7Lx5ug==",
+    "binarySha256": "77fce830a99f41f9e79c09192f05ed2b9848e4f71cd6a6aa493eddc5b6a7c2a0"
+  },
+  "install": {
+    "command": "bun install --offline",
+    "freshStagingDirectory": true,
+    "cacheWasPrepopulated": true,
+    "networkProxiesForcedToRefuse": true,
+    "installedPackageCount": 3,
+    "elapsedMilliseconds": 10
+  },
+  "localUse": {
+    "databasePath": "/home/andual/Projects/.turso-migration-owned/engine/databases/offline-install.db",
+    "databaseSha256": "2bcfad6941602bb75efb40a0f81a310d59075336378cf4cf9bc0bb0522629134",
+    "queryResult": {
+      "value": "verified"
+    }
+  },
+  "limitations": [
+    "The offline install used Bun's already-populated package cache; it proves zero-network resolution/use from cache, not availability on a machine where the package artifacts were never provisioned."
+  ]
+}
