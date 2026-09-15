@@ -26,6 +26,13 @@ export interface TursoCapabilityResult {
 	error?: string;
 }
 
+export interface TursoFeasibilityApproach {
+	approach: string;
+	outcome: TursoCapabilityStatus;
+	detail: string;
+	evidence: Record<string, unknown>;
+}
+
 export interface TursoCapabilityReport {
 	reportVersion: 1;
 	generatedAt: string;
@@ -49,6 +56,7 @@ export interface TursoCapabilityReport {
 	unknownGuarantees: string[];
 	mandatoryFailures: string[];
 	nativeLoadApproaches: Array<{ approach: string; outcome: TursoCapabilityStatus; detail: string }>;
+	ftsRankingPrefixApproaches: TursoFeasibilityApproach[];
 }
 
 export interface ProbeTursoCapabilitiesOptions {
@@ -109,6 +117,97 @@ async function waitForFile(filename: string, timeoutMs: number): Promise<void> {
 		await Bun.sleep(10);
 	}
 	throw new Error(`Timed out waiting for child-process marker: ${filename}`);
+}
+
+async function probeFtsRankingPrefixApproaches(
+	connect: NativeConnect,
+	probeRoot: string,
+): Promise<TursoFeasibilityApproach[]> {
+	const specifications = [
+		{
+			approach: "default-tokenizer-documented-wildcard",
+			indexSql: "CREATE INDEX documents_fts ON documents USING fts (text)",
+			rankingQuery: "database",
+			prefixQuery: "data*",
+		},
+		{
+			approach: "weighted-index-column-qualified-grammar",
+			indexSql: "CREATE INDEX documents_fts ON documents USING fts (text) WITH (weights = 'text=2.0')",
+			rankingQuery: "text:database",
+			prefixQuery: "text:data*",
+		},
+		{
+			approach: "ngram-tokenizer-autocomplete-query",
+			indexSql: "CREATE INDEX documents_fts ON documents USING fts (text) WITH (tokenizer = 'ngram')",
+			rankingQuery: "database",
+			prefixQuery: "data",
+		},
+		{
+			approach: "per-column-default-tokenizer-syntax",
+			indexSql: "CREATE INDEX documents_fts ON documents USING fts (text WITH tokenizer=default)",
+			rankingQuery: "database",
+			prefixQuery: "data*",
+		},
+	] as const;
+	const approaches: TursoFeasibilityApproach[] = [];
+	for (const specification of specifications) {
+		const databasePath = path.join(probeRoot, `fts-approach-${specification.approach}.db`);
+		let database: NativeDatabase | undefined;
+		try {
+			database = await connect(databasePath, { experimental: ["index_method"] });
+			await database.exec("CREATE TABLE documents(id TEXT PRIMARY KEY, text TEXT NOT NULL)");
+			await database.exec(specification.indexSql);
+			await database.exec(
+				"INSERT INTO documents VALUES ('one', 'database database database local storage');" +
+					"INSERT INTO documents VALUES ('two', 'database guide for embedded systems')",
+			);
+			const ranked = await database.all<{ id: string; score: number }>(
+				"SELECT id, fts_score(text, ?) AS score FROM documents WHERE fts_match(text, ?) ORDER BY score DESC",
+				specification.rankingQuery,
+				specification.rankingQuery,
+			);
+			const prefix = await database.all<{ id: string }>(
+				"SELECT id FROM documents WHERE fts_match(text, ?) ORDER BY id",
+				specification.prefixQuery,
+			);
+			const rankingSupported =
+				ranked.length === 2 &&
+				ranked.every(row => Number.isFinite(Number(row.score))) &&
+				new Set(ranked.map(row => Number(row.score))).size === 2;
+			const prefixSupported = prefix.length === 2;
+			approaches.push({
+				approach: specification.approach,
+				outcome: rankingSupported && prefixSupported ? "supported" : "unsupported",
+				detail: `ranking ${rankingSupported ? "differentiated scores" : "did not differentiate scores"}; prefix ${
+					prefixSupported ? "matched both documents" : "did not match both documents"
+				}`,
+				evidence: {
+					indexSql: specification.indexSql,
+					rankingQuery: specification.rankingQuery,
+					prefixQuery: specification.prefixQuery,
+					ranked,
+					prefix,
+					rankingSupported,
+					prefixSupported,
+				},
+			});
+		} catch (error) {
+			approaches.push({
+				approach: specification.approach,
+				outcome: "unsupported",
+				detail: "Pinned engine rejected the documented index/query approach",
+				evidence: {
+					indexSql: specification.indexSql,
+					rankingQuery: specification.rankingQuery,
+					prefixQuery: specification.prefixQuery,
+					error: errorMessage(error),
+				},
+			});
+		} finally {
+			if (database?.open) await database.close();
+		}
+	}
+	return approaches;
 }
 
 async function insertFtsFixture(database: TursoDatabase): Promise<void> {
@@ -244,6 +343,9 @@ export async function probeTursoCapabilities(options: ProbeTursoCapabilitiesOpti
 		});
 		return { detail: "Pinned native N-API package loads and executes under Bun", evidence: { directPath } };
 	});
+	const ftsRankingPrefixApproaches = nativeLoaded
+		? await probeFtsRankingPrefixApproaches(await loadNativeConnect(), probeRoot)
+		: [];
 
 	if (nativeLoaded) {
 		await check("nativeVersionEnforcement", false, async () => {
@@ -742,6 +844,7 @@ export async function probeTursoCapabilities(options: ProbeTursoCapabilitiesOpti
 			.map(([name]) => name),
 		mandatoryFailures,
 		nativeLoadApproaches,
+		ftsRankingPrefixApproaches,
 	};
 	if (options.reportPath) await Bun.write(options.reportPath, `${JSON.stringify(report, null, 2)}\n`);
 	return report;
