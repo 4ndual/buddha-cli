@@ -1,14 +1,13 @@
+import { WCDB_SCHEMA_BOOTSTRAP_STATEMENTS, WCDB_SCHEMA_CONNECTION_STATEMENTS } from "../../schema";
 import { loadWcdbNative, WcdbNativeUnavailableError } from "../native";
 import type { WcdbOpenOptions } from "./protocol";
 import type { WcdbNativeBatchAdapter } from "./server";
 
 /**
- * Probe the exact ABI-v1 SQL request/response framing before repository mode is
- * admitted. Schema migrations are currently published as multi-statement SQL
- * scripts, while OWRQ deliberately prepares one statement per request item and
- * exposes no safe tail offset. We therefore never split or partially execute a
- * migration. Even a pre-initialized database remains disabled until native work
- * is interruptible without blocking the worker message loop.
+ * Probe the exact ABI-v1 SQL framing and bootstrap the pinned schema with
+ * canonical one-statement frames. Capability remains disabled because Bun's
+ * synchronous FFI call blocks the worker loop that must deliver active
+ * cancellation and timeouts.
  */
 export async function createNativeWcdbAdapter(options: WcdbOpenOptions): Promise<WcdbNativeBatchAdapter> {
 	const handle = loadWcdbNative({
@@ -17,6 +16,13 @@ export async function createNativeWcdbAdapter(options: WcdbOpenOptions): Promise
 		create: true,
 	});
 	try {
+		await handle.executeBatch(
+			{
+				transactional: false,
+				statements: WCDB_SCHEMA_CONNECTION_STATEMENTS.map(sql => ({ kind: "execute" as const, sql })),
+			},
+			{ timeoutMs: Math.min(options.busyTimeoutMs ?? 1_000, 5_000) },
+		);
 		const probe = await handle.executeBatch(
 			{
 				transactional: false,
@@ -32,15 +38,35 @@ export async function createNativeWcdbAdapter(options: WcdbOpenOptions): Promise
 			{ timeoutMs: Math.min(options.busyTimeoutMs ?? 1_000, 5_000) },
 		);
 		const sqliteVersion = probe.statements[0]?.rows[0]?.[0];
-		const hasStorageSchema = probe.statements[1]?.rows.length === 1;
-		const blockers = [
-			...(hasStorageSchema
-				? []
-				: ["schema bootstrap requires canonical individually framed migration statements"]),
-			"synchronous ABI calls cannot satisfy active cancellation",
-		];
+		let hasStorageSchema = probe.statements[1]?.rows.length === 1;
+		if (!hasStorageSchema) {
+			await handle.executeBatch(
+				{
+					transactional: true,
+					statements: WCDB_SCHEMA_BOOTSTRAP_STATEMENTS.map(sql => ({ kind: "execute" as const, sql })),
+				},
+				{ timeoutMs: Math.max(options.busyTimeoutMs ?? 1_000, 30_000) },
+			);
+			const verified = await handle.executeBatch(
+				{
+					transactional: false,
+					statements: [
+						{
+							kind: "query",
+							sql: "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'storage_meta' LIMIT 1",
+							maxRows: 1,
+						},
+					],
+				},
+				{ timeoutMs: Math.min(options.busyTimeoutMs ?? 1_000, 5_000) },
+			);
+			hasStorageSchema = verified.statements[0]?.rows.length === 1;
+		}
+		if (!hasStorageSchema) {
+			throw new WcdbNativeUnavailableError("WCDB schema bootstrap completed without creating storage_meta");
+		}
 		throw new WcdbNativeUnavailableError(
-			`WCDB SQL batch ABI verified (SQLite ${String(sqliteVersion ?? "unknown")}, schema=${hasStorageSchema ? "present" : "absent"}), but repository capability is disabled: ${blockers.join("; ")}`,
+			`WCDB SQL batch ABI and schema bootstrap verified (SQLite ${String(sqliteVersion ?? "unknown")}), but repository capability is disabled: synchronous ABI calls cannot satisfy active cancellation`,
 		);
 	} finally {
 		await handle.close();

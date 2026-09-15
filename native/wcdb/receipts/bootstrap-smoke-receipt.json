@@ -1,0 +1,145 @@
+{
+  "schemaVersion": 1,
+  "startedAt": "2026-09-15T23:09:52.113Z",
+  "completedAt": "2026-09-15T23:09:52.375Z",
+  "command": "bun native/wcdb/scripts/bootstrap-smoke.ts /home/andual/Projects/.omp-wcdb-team/staging/native/install-static/lib/libomp_wcdb_bridge.so /home/andual/Projects/.omp-wcdb-team/staging/native/bootstrap/schema-20260915-a /home/andual/Projects/.omp-wcdb-team/artifacts/native/bootstrap-smoke-receipt.json",
+  "ownership": {
+    "teamRoot": "/home/andual/Projects/.omp-wcdb-team",
+    "databasePath": "/home/andual/Projects/.omp-wcdb-team/staging/native/bootstrap/schema-20260915-a/sessions.wcdb.sqlite",
+    "productionMutation": false,
+    "sharedCorpusMutation": false,
+    "jsonlInvolved": false
+  },
+  "pin": {
+    "lockPath": "/home/andual/Projects/.omp-wcdb-local/native/wcdb/wcdb.lock.json",
+    "lockSha256": "4a29465269eb1935d5ce68b4883514e11dd63e19ceed6d0d17f568589fbfd284",
+    "wcdbVersion": "2.1.16",
+    "wcdbCommit": "df808591b9f9a9ab42156006819c3550d5af13a3",
+    "sourceArchiveSha256": "260845053c5dedc4578570203a5ba235c3be1e74a671c2fc1aeb12c988dd5346",
+    "sqliteVersion": "3.27.2",
+    "sqliteSourceId": "2019-02-25 16:06:06 bd49a8271d650fa89e446b42e513b595a717b9212c91dd384aab871fc1d0alt1",
+    "libraryPath": "/home/andual/Projects/.omp-wcdb-team/staging/native/install-static/lib/libomp_wcdb_bridge.so",
+    "librarySha256": "dd73090caa4289eee842b8d09f60e9ea31987f4f36661bbae52de02a06582cb1",
+    "buildId": "omp-wcdb-bridge/1;wcdb/2.1.16;sqlite/3.27.2;protocol/1"
+  },
+  "framing": {
+    "connectionStatements": 1,
+    "transactionalSchemaStatements": 49,
+    "migrationChecksums": [
+      {
+        "version": 1,
+        "checksum": "sha256:c25c8339c98ea0f5481a94ed971ee7798107e4448d59a5db50c8e9a3d7ea06f9"
+      }
+    ]
+  },
+  "verification": {
+    "passed": true,
+    "foreignKeys": "1",
+    "sqliteVersion": "3.27.2",
+    "sqliteSourceId": "2019-02-25 16:06:06 bd49a8271d650fa89e446b42e513b595a717b9212c91dd384aab871fc1d0alt1",
+    "storageMeta": [
+      "1",
+      "1",
+      "1",
+      "1",
+      "team-native-bootstrap-smoke",
+      "2.1.16",
+      "3.27.2",
+      "0"
+    ],
+    "migrations": [
+      [
+        "1",
+        "initial-session-repository",
+        "sha256:c25c8339c98ea0f5481a94ed971ee7798107e4448d59a5db50c8e9a3d7ea06f9"
+      ]
+    ],
+    "missingSchemaObjects": [],
+    "invariantAudits": [
+      {
+        "name": "foreign-key-integrity",
+        "rows": 0
+      },
+      {
+        "name": "event-parent-origin",
+        "rows": 0
+      },
+      {
+        "name": "event-cycles",
+        "rows": 0
+      },
+      {
+        "name": "branch-cycles",
+        "rows": 0
+      },
+      {
+        "name": "version-cycles",
+        "rows": 0
+      },
+      {
+        "name": "branch-head-origin",
+        "rows": 0
+      },
+      {
+        "name": "branch-parent-origin",
+        "rows": 0
+      },
+      {
+        "name": "branch-fork-origin",
+        "rows": 0
+      },
+      {
+        "name": "version-origin-links",
+        "rows": 0
+      },
+      {
+        "name": "checkpoint-head-origin",
+        "rows": 0
+      },
+      {
+        "name": "payload-chunk-accounting",
+        "rows": 0
+      },
+      {
+        "name": "selected-version-head",
+        "rows": 0
+      }
+    ],
+    "connectionStatementCount": 1,
+    "transactionalStatementCount": 51,
+    "requiredSchemaObjects": [
+      "branches",
+      "branch_mappings",
+      "checkpoints",
+      "compression_dictionaries",
+      "events",
+      "export_jobs",
+      "export_manifests",
+      "import_items",
+      "import_jobs",
+      "maintenance_state",
+      "metadata_observations",
+      "metadata_revisions",
+      "origins",
+      "payload_chunks",
+      "payloads",
+      "replica_receipts",
+      "schema_migrations",
+      "search_documents",
+      "search_fts",
+      "source_aliases",
+      "source_manifests",
+      "storage_meta",
+      "versions"
+    ]
+  },
+  "database": {
+    "bytes": 266240,
+    "sha256": "e56b90aae5af3899ebab2d8cf356d70e541d7a9eb971aa92eb3150e98bc790af"
+  },
+  "capability": {
+    "nativeBootstrapPassed": true,
+    "productionModeEnabled": false,
+    "reason": "DB production capability remains disabled because synchronous Bun FFI blocks the worker event loop and cannot provide active cancellation isolation."
+  }
+}

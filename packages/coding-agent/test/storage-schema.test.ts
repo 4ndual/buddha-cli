@@ -5,6 +5,8 @@ import {
 	WCDB_ENGINE_PIN,
 	WCDB_LOGICAL_SCHEMA_VERSION,
 	WCDB_SCHEMA_INVARIANT_AUDITS,
+	WCDB_SCHEMA_BOOTSTRAP_STATEMENTS,
+	WCDB_SCHEMA_CONNECTION_STATEMENTS,
 	WCDB_SCHEMA_MIGRATIONS,
 	assertLogicalSchemaCompatible,
 	assertSchemaCompatible,
@@ -14,9 +16,8 @@ import { CANONICALIZER_VERSION } from "../src/storage/identity";
 
 function createReferenceDatabase(): Database {
 	const database = new Database(":memory:");
-	for (const migration of WCDB_SCHEMA_MIGRATIONS) {
-		for (const sql of migration.upSql) database.exec(sql);
-	}
+	for (const sql of WCDB_SCHEMA_CONNECTION_STATEMENTS) database.exec(sql);
+	for (const sql of WCDB_SCHEMA_BOOTSTRAP_STATEMENTS) database.exec(sql);
 	return database;
 }
 
@@ -39,6 +40,18 @@ describe("WCDB logical schema", () => {
 			const hasher = new Bun.CryptoHasher("sha256");
 			for (const sql of migration.upSql) hasher.update(sql);
 			expect(`sha256:${hasher.digest("hex")}`).toBe(migration.checksum);
+		}
+	});
+
+	it("uses DDL accepted by the pinned SQLite 3.27 engine", () => {
+		expect(WCDB_ENGINE_PIN.bundledSqliteVersion).toBe("3.27.2");
+		for (const migration of WCDB_SCHEMA_MIGRATIONS) {
+			for (const sql of migration.upSql) expect(sql).not.toMatch(/\bSTRICT\b/);
+		}
+		expect(WCDB_SCHEMA_CONNECTION_STATEMENTS).toEqual(["PRAGMA foreign_keys = ON;"]);
+		expect(WCDB_SCHEMA_BOOTSTRAP_STATEMENTS.length).toBeGreaterThan(1);
+		for (const sql of [...WCDB_SCHEMA_CONNECTION_STATEMENTS, ...WCDB_SCHEMA_BOOTSTRAP_STATEMENTS]) {
+			expect(sql.endsWith(";")).toBe(true);
 		}
 	});
 

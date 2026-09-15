@@ -50,7 +50,7 @@ CREATE TABLE storage_meta (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   configuration_generation INTEGER NOT NULL DEFAULT 0 CHECK (configuration_generation >= 0)
-) STRICT;
+);
 
 CREATE TABLE origins (
   origin_id TEXT PRIMARY KEY,
@@ -59,7 +59,7 @@ CREATE TABLE origins (
   created_at TEXT NOT NULL,
   canonical_length INTEGER NOT NULL CHECK (canonical_length > 0),
   canonical_bytes BLOB NOT NULL
-) STRICT;
+);
 
 CREATE TABLE source_aliases (
   source_alias TEXT PRIMARY KEY,
@@ -70,7 +70,7 @@ CREATE TABLE source_aliases (
   original_path TEXT,
   first_observed_at TEXT NOT NULL,
   UNIQUE (harness, install_namespace, native_id)
-) STRICT;
+);
 
 CREATE TABLE payloads (
   payload_id TEXT PRIMARY KEY,
@@ -83,7 +83,7 @@ CREATE TABLE payloads (
   media_type TEXT,
   canonical_length INTEGER NOT NULL CHECK (canonical_length >= 0),
   UNIQUE (content_hash, codec, dictionary_id, uncompressed_length)
-) STRICT;
+);
 
 CREATE TABLE payload_chunks (
   payload_id TEXT NOT NULL REFERENCES payloads(payload_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
@@ -92,7 +92,7 @@ CREATE TABLE payload_chunks (
   data BLOB NOT NULL,
   PRIMARY KEY (payload_id, chunk_index),
   UNIQUE (payload_id, byte_offset)
-) STRICT;
+);
 
 CREATE TABLE compression_dictionaries (
   dictionary_id TEXT PRIMARY KEY,
@@ -100,7 +100,7 @@ CREATE TABLE compression_dictionaries (
   content_hash TEXT NOT NULL UNIQUE,
   data BLOB NOT NULL,
   created_at TEXT NOT NULL
-) STRICT;
+);
 
 CREATE TABLE events (
   event_hash TEXT PRIMARY KEY,
@@ -114,7 +114,7 @@ CREATE TABLE events (
   canonical_length INTEGER NOT NULL CHECK (canonical_length > 0),
   canonical_bytes BLOB NOT NULL,
   UNIQUE (origin_id, native_entry_id, event_hash)
-) STRICT;
+);
 
 CREATE TABLE metadata_revisions (
   metadata_revision_id TEXT PRIMARY KEY,
@@ -125,7 +125,7 @@ CREATE TABLE metadata_revisions (
   canonical_bytes BLOB NOT NULL,
   created_at TEXT NOT NULL,
   UNIQUE (origin_id, semantic_hash, canonical_length)
-) STRICT;
+);
 
 CREATE TABLE branches (
   branch_id TEXT PRIMARY KEY,
@@ -138,7 +138,7 @@ CREATE TABLE branches (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   CHECK (parent_branch_id IS NULL OR parent_branch_id <> branch_id)
-) STRICT;
+);
 
 CREATE TABLE versions (
   version_id TEXT PRIMARY KEY,
@@ -152,7 +152,7 @@ CREATE TABLE versions (
   canonical_bytes BLOB NOT NULL,
   UNIQUE (origin_id, head_hash, metadata_revision_id),
   CHECK (parent_version_id IS NULL OR parent_version_id <> version_id)
-) STRICT;
+);
 
 CREATE TABLE branch_mappings (
   origin_id TEXT NOT NULL REFERENCES origins(origin_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
@@ -163,7 +163,7 @@ CREATE TABLE branch_mappings (
   created_at TEXT NOT NULL,
   PRIMARY KEY (origin_id, replica_id, source_alias, canonical_version_id),
   UNIQUE (replica_id, source_alias, canonical_version_id, branch_id)
-) WITHOUT ROWID, STRICT;
+) WITHOUT ROWID;
 
 CREATE TABLE metadata_observations (
   observation_id TEXT PRIMARY KEY,
@@ -175,7 +175,7 @@ CREATE TABLE metadata_observations (
   observed_at TEXT NOT NULL,
   source_alias TEXT REFERENCES source_aliases(source_alias) ON UPDATE RESTRICT ON DELETE RESTRICT,
   UNIQUE (origin_id, version_id, field_name, value_payload_id, provenance, observed_at)
-) STRICT;
+);
 
 CREATE TABLE checkpoints (
   branch_id TEXT NOT NULL REFERENCES branches(branch_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
@@ -186,7 +186,7 @@ CREATE TABLE checkpoints (
   entry_count INTEGER NOT NULL CHECK (entry_count >= 0),
   created_at TEXT NOT NULL,
   PRIMARY KEY (branch_id, head_hash, context_builder_version)
-) WITHOUT ROWID, STRICT;
+) WITHOUT ROWID;
 
 CREATE TABLE search_documents (
   event_hash TEXT PRIMARY KEY REFERENCES events(event_hash) ON UPDATE RESTRICT ON DELETE RESTRICT,
@@ -194,7 +194,7 @@ CREATE TABLE search_documents (
   role TEXT,
   timestamp TEXT NOT NULL,
   text TEXT NOT NULL
-) STRICT;
+);
 
 CREATE VIRTUAL TABLE search_fts USING fts5(
   text,
@@ -211,7 +211,7 @@ CREATE TABLE search_outbox (
   operation TEXT NOT NULL CHECK (operation IN ('upsert','rebuild')),
   created_at TEXT NOT NULL,
   completed_at TEXT
-) STRICT;
+);
 
 CREATE TABLE import_jobs (
   job_id TEXT PRIMARY KEY,
@@ -225,7 +225,7 @@ CREATE TABLE import_jobs (
   updated_at TEXT NOT NULL,
   completed_at TEXT,
   error TEXT
-) STRICT;
+);
 
 CREATE TABLE import_items (
   job_id TEXT NOT NULL REFERENCES import_jobs(job_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
@@ -237,7 +237,7 @@ CREATE TABLE import_items (
   receipt_hash TEXT,
   error TEXT,
   PRIMARY KEY (job_id, item_key)
-) WITHOUT ROWID, STRICT;
+) WITHOUT ROWID;
 
 CREATE TABLE replica_receipts (
   replica_id TEXT NOT NULL,
@@ -248,7 +248,7 @@ CREATE TABLE replica_receipts (
   manifest_hash TEXT,
   committed_at TEXT NOT NULL,
   PRIMARY KEY (replica_id, operation_id)
-) WITHOUT ROWID, STRICT;
+) WITHOUT ROWID;
 
 CREATE TABLE export_jobs (
   job_id TEXT PRIMARY KEY,
@@ -262,7 +262,7 @@ CREATE TABLE export_jobs (
   updated_at TEXT NOT NULL,
   completed_at TEXT,
   error TEXT
-) STRICT;
+);
 
 CREATE TABLE export_manifests (
   manifest_hash TEXT PRIMARY KEY,
@@ -274,7 +274,7 @@ CREATE TABLE export_manifests (
   published_path TEXT,
   completion_marker_hash TEXT,
   created_at TEXT NOT NULL
-) STRICT;
+);
 
 CREATE TABLE source_manifests (
   manifest_hash TEXT PRIMARY KEY,
@@ -284,7 +284,7 @@ CREATE TABLE source_manifests (
   total_bytes INTEGER NOT NULL CHECK (total_bytes >= 0),
   payload_id TEXT NOT NULL REFERENCES payloads(payload_id) ON UPDATE RESTRICT ON DELETE RESTRICT,
   immutable INTEGER NOT NULL CHECK (immutable = 1)
-) STRICT;
+);
 
 CREATE TABLE schema_migrations (
   version INTEGER PRIMARY KEY,
@@ -292,7 +292,7 @@ CREATE TABLE schema_migrations (
   checksum TEXT NOT NULL,
   rollback_snapshot_hash TEXT,
   applied_at TEXT NOT NULL
-) STRICT;
+);
 
 CREATE TABLE maintenance_state (
   task TEXT PRIMARY KEY,
@@ -301,7 +301,7 @@ CREATE TABLE maintenance_state (
   cursor TEXT,
   updated_at TEXT NOT NULL,
   last_error TEXT
-) STRICT;
+);
 
 CREATE INDEX source_aliases_origin_idx ON source_aliases(origin_id);
 CREATE INDEX source_aliases_native_idx ON source_aliases(harness, install_namespace, native_id);
@@ -551,11 +551,40 @@ BEGIN
 END;
 `;
 
+function canonicalBootstrapStatements(script: string): readonly string[] {
+	const trimmed = script.trim();
+	const statements = trimmed
+		.split(/;\n\n(?=(?:PRAGMA|CREATE|INSERT)\b)/)
+		.map((statement, index, all) => (index === all.length - 1 ? statement : `${statement};`));
+	if (statements.length === 0 || statements.some(statement => !statement.endsWith(";"))) {
+		throw new Error("WCDB schema bootstrap must contain canonical semicolon-terminated statements");
+	}
+	if (statements.join("\n\n") !== trimmed) {
+		throw new Error("WCDB schema bootstrap statement boundary mismatch");
+	}
+	return Object.freeze(statements);
+}
+
+const CANONICAL_SCHEMA_FRAMES = canonicalBootstrapStatements(CORE_SCHEMA_SQL);
+
+/**
+ * Connection-local statements must run before the bridge opens a transaction;
+ * SQLite ignores PRAGMA foreign_keys changes while a transaction is active.
+ */
+export const WCDB_SCHEMA_CONNECTION_STATEMENTS = Object.freeze(
+	CANONICAL_SCHEMA_FRAMES.filter(statement => statement.startsWith("PRAGMA ")),
+);
+
+/** Canonical one-statement frames executed atomically by the native OWRQ bootstrap. */
+export const WCDB_SCHEMA_BOOTSTRAP_STATEMENTS = Object.freeze(
+	CANONICAL_SCHEMA_FRAMES.filter(statement => !statement.startsWith("PRAGMA ")),
+);
+
 export const WCDB_SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
 	{
 		version: 1,
 		name: "initial-session-repository",
-		checksum: "sha256:86bbc5fe56ca431bb3b7b270a9046edfb06a0a24b0917372ac1fb3885cdb24e7",
+		checksum: "sha256:c25c8339c98ea0f5481a94ed971ee7798107e4448d59a5db50c8e9a3d7ea06f9",
 		upSql: [CORE_SCHEMA_SQL],
 	},
 ];
