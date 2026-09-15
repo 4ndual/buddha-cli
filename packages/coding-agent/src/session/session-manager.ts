@@ -109,12 +109,17 @@ import type {
 	SessionSemanticMetadata,
 } from "./repository/types";
 
-export interface SessionReference {
-	/** Canonical for repository-backed sessions. */
-	locator?: SessionLocator;
-	/** Present only for legacy JSONL sessions. DB sessions never synthesize a path. */
-	path?: string;
-}
+export type SessionReference =
+	| {
+			/** Canonical repository identity. */
+			locator: SessionLocator;
+			path?: never;
+	  }
+	| {
+			/** Physical identity for legacy JSONL sessions. */
+			path: string;
+			locator?: never;
+	  };
 
 export interface SessionForkResult {
 	previous: SessionReference;
@@ -2367,8 +2372,8 @@ export class SessionManager {
 
 	getSessionReference(): SessionReference | undefined {
 		const locator = this.getSessionLocator();
-		if (!locator) return undefined;
-		return this.#sessionFile ? { locator, path: this.#sessionFile } : { locator };
+		if (locator) return { locator };
+		return this.#sessionFile ? { path: this.#sessionFile } : undefined;
 	}
 
 	getRepository(): SessionRepository | undefined {
