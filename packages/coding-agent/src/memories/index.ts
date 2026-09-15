@@ -17,6 +17,11 @@ import readPathTemplate from "../prompts/memories/read-path.md" with { type: "te
 import stageOneInputTemplate from "../prompts/memories/stage_one_input.md" with { type: "text" };
 import stageOneSystemTemplate from "../prompts/memories/stage_one_system.md" with { type: "text" };
 import type { AgentSession } from "../session/agent-session";
+import type {
+	KeysetCursor,
+	SessionLocator,
+	SessionRepository,
+} from "../session/repository/types";
 import {
 	claimStage1Jobs,
 	clearMemoryData as clearMemoryDataInDb,
@@ -126,12 +131,15 @@ export function startMemoryStartupTask(options: {
 	modelRegistry: ModelRegistry;
 	agentDir: string;
 	taskDepth: number;
+	/** Active repository. When present, no session JSONL path is consulted. */
+	repository?: SessionRepository;
+	currentLocator?: SessionLocator;
 }): void {
-	const { session, settings, modelRegistry, agentDir, taskDepth } = options;
+	const { session, settings, modelRegistry, agentDir, taskDepth, repository, currentLocator } = options;
 	const cfg = loadMemoryConfig(settings);
 	if (!cfg.enabled) return;
 	if (taskDepth > 0) return;
-	if (!session.sessionManager.getSessionFile()) return;
+	if (!repository && !session.sessionManager.getSessionFile()) return;
 
 	const dbPath = getAgentDbPath(agentDir);
 	try {
@@ -143,7 +151,7 @@ export function startMemoryStartupTask(options: {
 	}
 
 	const signal = session.beginLocalMemoryStartup?.() ?? new AbortController().signal;
-	void runMemoryStartup({ session, settings, modelRegistry, agentDir, config: cfg, signal })
+	void runMemoryStartup({ session, settings, modelRegistry, agentDir, config: cfg, signal, repository, currentLocator })
 		.catch(error => {
 			if (!signal.aborted) logger.warn("Memory startup failed", { error: String(error) });
 		})
@@ -325,6 +333,8 @@ interface MemoryStartupOptions {
 	agentDir: string;
 	config: MemoryRuntimeConfig;
 	signal: AbortSignal;
+	repository?: SessionRepository;
+	currentLocator?: SessionLocator;
 }
 
 function isMemoryStartupActive(options: MemoryStartupOptions): boolean {
@@ -344,7 +354,7 @@ async function runMemoryStartup(options: MemoryStartupOptions): Promise<void> {
 
 async function runPhase1(options: MemoryStartupOptions): Promise<void> {
 	if (!isMemoryStartupActive(options)) return;
-	const { session, modelRegistry, agentDir, config } = options;
+	const { session, modelRegistry, agentDir, config, repository, currentLocator } = options;
 	const db = openMemoryDb(getAgentDbPath(agentDir));
 	const nowSec = unixNow();
 	const workerId = `memory-${process.pid}`;
@@ -352,7 +362,12 @@ async function runPhase1(options: MemoryStartupOptions): Promise<void> {
 	const currentThreadId = session.sessionManager.getSessionId();
 
 	try {
-		const threads = await collectThreads(session, currentThreadId);
+		const threads = repository
+			? await collectRepositoryMemoryThreads(repository, {
+					limit: config.threadScanLimit,
+					currentLocator,
+				})
+			: await collectJsonlMemoryThreads(session, currentThreadId);
 		if (!isMemoryStartupActive(options)) return;
 		upsertThreads(db, threads);
 
@@ -385,6 +400,7 @@ async function runPhase1(options: MemoryStartupOptions): Promise<void> {
 			runningConcurrencyCap: config.stage1Concurrency,
 			workerId,
 			excludeThreadIds: currentThreadId ? [currentThreadId] : [],
+			sourceKinds: repository ? ["repository"] : ["cli", "app"],
 		});
 		if (claims.length === 0) return;
 
@@ -401,6 +417,7 @@ async function runPhase1(options: MemoryStartupOptions): Promise<void> {
 			if (!isMemoryStartupActive(options)) return;
 			const result = await runStage1Job({
 				claim,
+				repository,
 				model: phase1Model,
 				apiKey: modelRegistry.resolver(phase1Model, session.sessionId),
 				sessionId: session.sessionId,
@@ -640,7 +657,7 @@ function markPhase2FailureWithFallback(
 	}
 }
 
-async function collectThreads(session: AgentSession, currentThreadId?: string): Promise<MemoryThread[]> {
+async function collectJsonlMemoryThreads(session: AgentSession, currentThreadId?: string): Promise<MemoryThread[]> {
 	const sessionDir = session.sessionManager.getSessionDir();
 	const files = await fs.readdir(sessionDir);
 	const threads: MemoryThread[] = [];
@@ -689,6 +706,45 @@ async function collectThreads(session: AgentSession, currentThreadId?: string): 
 	return threads;
 }
 
+/**
+ * Collect bounded memory work from logical repository headers. No path is
+ * synthesized or retained, and every archive request is keyset-paginated.
+ */
+export async function collectRepositoryMemoryThreads(
+	repository: SessionRepository,
+	options: { limit: number; pageSize?: number; currentLocator?: SessionLocator },
+): Promise<MemoryThread[]> {
+	const limit = Math.max(0, Math.min(1_000, Math.floor(options.limit)));
+	if (limit === 0) return [];
+	const pageSize = Math.max(1, Math.min(500, Math.floor(options.pageSize ?? 100), limit));
+	const threads: MemoryThread[] = [];
+	let cursor: KeysetCursor | undefined;
+	do {
+		const page = await repository.listSessions({ cursor, limit: Math.min(pageSize, limit - threads.length) });
+		for (const header of page.items) {
+			if (
+				options.currentLocator?.branchId === header.branchId &&
+				(!options.currentLocator.versionId || options.currentLocator.versionId === header.versionId)
+			) {
+				continue;
+			}
+			const modifiedAt = Date.parse(header.modifiedAt);
+			threads.push({
+				id: `${header.branchId}:${header.versionId}`,
+				updatedAt: Number.isFinite(modifiedAt) ? Math.floor(modifiedAt / 1_000) : 0,
+				originId: header.originId,
+				branchId: header.branchId,
+				versionId: header.versionId,
+				cwd: header.metadata.cwd ?? "",
+				sourceKind: "repository",
+			});
+			if (threads.length >= limit) break;
+		}
+		cursor = page.nextCursor;
+	} while (cursor && threads.length < limit);
+	return threads;
+}
+
 function shouldPersistResponseItemForMemories(message: AgentMessage): boolean {
 	const role = (message as { role: string }).role;
 	if (role === "system" || role === "developer" || role === "user" || role === "assistant") {
@@ -721,8 +777,32 @@ function extractPersistableMessages(payload: string): AgentMessage[] {
 	return messages;
 }
 
+async function extractPersistableMessagesFromRepository(
+	repository: SessionRepository,
+	locator: SessionLocator,
+	maxCharacters: number,
+): Promise<AgentMessage[]> {
+	const messages: AgentMessage[] = [];
+	let characters = 2;
+	let cursor: KeysetCursor | undefined;
+	do {
+		const page = await repository.readEvents({ ...locator, cursor, limit: 100 });
+		for (const event of page.items) {
+			const entry = event.entry;
+			if (entry.type !== "message" || !shouldPersistResponseItemForMemories(entry.message)) continue;
+			const serialized = JSON.stringify(entry.message);
+			if (characters + serialized.length + 1 > maxCharacters) return messages;
+			messages.push(entry.message);
+			characters += serialized.length + 1;
+		}
+		cursor = page.nextCursor;
+	} while (cursor);
+	return messages;
+}
+
 async function runStage1Job(options: {
 	claim: Stage1Claim;
+	repository?: SessionRepository;
 	model: Model;
 	apiKey: ApiKey;
 	sessionId: string;
@@ -738,10 +818,20 @@ async function runStage1Job(options: {
 	| { kind: "no_output" }
 	| { kind: "failed"; reason: string }
 > {
-	const { claim, model, apiKey, modelMaxTokens, config } = options;
+	const { claim, model, apiKey, modelMaxTokens, config, repository } = options;
 	try {
-		const rolloutRaw = await Bun.file(claim.rolloutPath).text();
-		const persisted = extractPersistableMessages(rolloutRaw);
+		const persisted =
+			claim.sourceKind === "repository"
+				? repository && claim.branchId && claim.versionId
+					? await extractPersistableMessagesFromRepository(
+							repository,
+							{ branchId: claim.branchId, versionId: claim.versionId },
+							Math.max(4_096, config.phase1InputTokenLimit * 4),
+						)
+					: []
+				: claim.rolloutPath
+					? extractPersistableMessages(await Bun.file(claim.rolloutPath).text())
+					: [];
 		const serializedItems = JSON.stringify(persisted);
 		const budgetTokens = Math.min(
 			config.phase1InputTokenLimit,
