@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-09-15T22:57:21Z",
+  "lane": "fault-tests",
+  "branch": "experiment/turso-fault-tests",
+  "plan_sha256": "5fbb51ee6e5e22585e952a0be97df887eb4f18382bab8e9e5506c0965c20160f",
+  "scope": [
+    "packages/coding-agent/test/session/repository/turso-*.test.ts"
+  ],
+  "runs": [
+    {
+      "command": "bun test test/session/repository/turso-jsonl-baseline.test.ts",
+      "cwd": "packages/coding-agent",
+      "result": "failed",
+      "passes": 0,
+      "failures": 1,
+      "errors": 1,
+      "reason": "isolated worktree initially had no installed workspace dependency link: Cannot find module @oh-my-pi/pi-utils"
+    },
+    {
+      "command": "bun test test/session/repository/turso-normalization-faults.test.ts",
+      "cwd": "packages/coding-agent",
+      "result": "failed",
+      "passes": 1,
+      "failures": 1,
+      "reason": "initial deterministic SIGKILL fixture exceeded Bun's default 5000ms per-test timeout; explicit bounded timeout added"
+    },
+    {
+      "command": "bun test test/session/repository/turso-normalization-faults.test.ts",
+      "cwd": "packages/coding-agent",
+      "result": "passed",
+      "passes": 2,
+      "failures": 0,
+      "expect_calls": 12,
+      "duration_ms": 14550
+    },
+    {
+      "command": "bun test test/session/repository/turso-engine-faults.test.ts",
+      "cwd": "packages/coding-agent",
+      "result": "passed",
+      "passes": 7,
+      "failures": 0,
+      "expect_calls": 25,
+      "duration_ms": 11750
+    },
+    {
+      "command": "bun test test/session/repository/turso-*.test.ts",
+      "cwd": "packages/coding-agent",
+      "result": "failed",
+      "passes": 24,
+      "failures": 5,
+      "duration_ms": 1417,
+      "reason": "integration changed runtime adapter, fenced-write, and transfer verification contracts; owned harnesses were migrated to the final contract"
+    },
+    {
+      "command": "bun test test/session/repository/turso-filesystem-isolation.test.ts",
+      "cwd": "packages/coding-agent",
+      "result": "passed",
+      "passes": 3,
+      "failures": 0,
+      "expect_calls": 10,
+      "duration_ms": 941
+    },
+    {
+      "command": "bun test test/session/repository/turso-*.test.ts",
+      "cwd": "packages/coding-agent",
+      "result": "passed",
+      "passes": 29,
+      "failures": 0,
+      "expect_calls": 116,
+      "duration_ms": 1500
+    }
+  ],
+  "gate_status": {
+    "jsonl_semantic_baseline": "passed",
+    "malformed_json_accounting": "passed",
+    "normalization_interruption": "passed",
+    "transaction_interruption": "passed",
+    "export_publication_interruption": "passed",
+    "mode_fencing": "passed",
+    "indexing_checkpoint_cancellation": "passed",
+    "disk_full_short_write": "passed",
+    "busy_lock": "passed",
+    "corrupt_db_wal": "passed",
+    "unavailable_driver": "passed",
+    "interrupted_upgrade": "passed",
+    "identity_fork_payload_round_trip": "passed",
+    "bounded_pagination_no_full_materialization": "passed",
+    "cas_loser_preserved_as_deterministic_sibling": "passed",
+    "jsonl_startup_without_native_driver": "passed",
+    "database_operations_do_not_touch_jsonl": "passed",
+    "manager_memory_stats_history_title_activity_hub_rpc_do_not_touch_jsonl": "passed",
+    "jsonl_database_differential": "blocked_no_concrete_embedded_adapter"
+  },
+  "blockers": [
+    {
+      "gate": "jsonl_database_differential",
+      "reason": "The final runtime exposes a TursoRuntimeAdapter interface and the engine exposes the low-level embedded database, but no composition adapter maps that database to the domain repository transaction/read seam. A black-box JSONL-vs-embedded-repository differential would require inventing a second implementation in the test lane."
+    },
+    {
+      "gate": "database_mode_activation",
+      "reason": "Native capability evidence reports unresolved FTS ranking and prefix-query failures. Database mode remains disabled and this lane performed no cutover."
+    }
+  ],
+  "decision": "fail_closed_database_mode_disabled"
+}
