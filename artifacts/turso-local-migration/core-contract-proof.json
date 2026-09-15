@@ -4,10 +4,10 @@
   "runtime": "Bun 1.4.2",
   "command": "bun test packages/coding-agent/test/session/repository/identity.test.ts packages/coding-agent/test/session/repository/jsonl-repository.test.ts",
   "result": {
-    "passed": 10,
+    "passed": 13,
     "failed": 0,
-    "expectations": 41,
-    "duration_ms": 1530
+    "expectations": 60,
+    "duration_ms": 793
   },
   "covered": [
     "canonical object ordering and array ordering",
@@ -22,7 +22,11 @@
     "idempotent repeated import and sync",
     "expected-head CAS sibling forks without merge",
     "no absence-driven deletion",
-    "persisted mode-generation fencing",
+    "persisted mode-generation fencing under an interprocess publication lock",
+    "fsync-backed reopen and bounded payload streaming",
+    "canonical title_change event history",
+    "manifest traversal rejection and no-follow symlink refusal",
+    "bounded archive entry and payload-reference streaming",
     "JSONL module graph with @tursodatabase/database imports forbidden"
   ]
 }
