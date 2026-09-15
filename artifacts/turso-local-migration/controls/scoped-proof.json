@@ -1,0 +1,30 @@
+{
+  "lane": "controls",
+  "worktree": "/home/andual/Projects/.task-turso-controls",
+  "commands": [
+    {
+      "command": "bun test packages/coding-agent/test/cli/storage-cli.test.ts",
+      "exitCode": 0,
+      "result": "6 pass, 0 fail, 23 expect calls"
+    },
+    {
+      "command": "bun packages/coding-agent/src/cli.ts storage status --json",
+      "exitCode": 0,
+      "result": "stable omp.storage.report.v1 JSON; activeMode=jsonl; database capability disabled"
+    },
+    {
+      "command": "bun packages/coding-agent/src/cli.ts storage mode db --json",
+      "exitCode": 1,
+      "result": "rejected because no verified native capability receipt exists; activeMode remained jsonl"
+    },
+    {
+      "command": "bun packages/coding-agent/src/cli.ts storage --help",
+      "exitCode": 0,
+      "result": "registered command lists all actions and control flags"
+    }
+  ],
+  "environmentLimitation": {
+    "command": "bun test packages/coding-agent/test/cli-command-metadata.test.ts",
+    "result": "not runnable in this isolated worktree because Bun could not resolve @oh-my-pi/pi-utils/cli; actual storage help command loaded through the production registry successfully"
+  }
+}
