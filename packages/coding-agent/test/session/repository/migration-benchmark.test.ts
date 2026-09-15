@@ -198,6 +198,23 @@ describe("offline Turso migration benchmark and accounting", () => {
 		expect(report.coverage.bySourceNamespace["github:test/repo:release"]).toBe(1);
 	});
 
+	it("rejects output or ledger paths outside the explicit read-only copy boundary", async () => {
+		const corpus = await createCopiedCorpus();
+		await expect(accountCopiedCorpus({
+			...corpus.accounting,
+			outputDirectory: path.join(corpus.root, "forbidden-output"),
+			partitionCount: 4,
+		})).rejects.toThrow("outside the read-only copied corpus");
+		const outputDirectory = await mkdtemp(path.join(tmpdir(), "omp-turso-boundary-report-"));
+		temporaryRoots.push(outputDirectory);
+		await expect(accountCopiedCorpus({
+			...corpus.accounting,
+			sourceLedgerPath: path.join(fixtureRoot, "session-a.jsonl"),
+			outputDirectory,
+			partitionCount: 4,
+		})).rejects.toThrow("Path escapes explicit copied/owned root");
+	});
+
 	it("fails closed when a copied source item has no import mapping", async () => {
 		const corpus = await createCopiedCorpus(true);
 		const configuredEvidenceRoot = process.env.TURSO_PERF_EVIDENCE_DIR;

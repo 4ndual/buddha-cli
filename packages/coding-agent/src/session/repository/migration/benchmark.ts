@@ -492,7 +492,10 @@ export async function accountCopiedCorpus(input: AccountingInput): Promise<Accou
 	if (partitionCount < 4 || partitionCount > 4096) throw new Error("partitionCount must be between 4 and 4096");
 	if (maxBatchBytes < 4096) throw new Error("maxBatchBytes must be at least 4096");
 	const root = await realpath(input.copiedCorpusPath);
-	await mkdir(input.outputDirectory, { recursive: true });
+	const requestedOutputDirectory = path.resolve(input.outputDirectory);
+	const requestedOutputRelative = path.relative(root, requestedOutputDirectory);
+	if (requestedOutputRelative === "" || (!requestedOutputRelative.startsWith("..") && !path.isAbsolute(requestedOutputRelative))) throw new Error("Accounting scratch/output must be outside the read-only copied corpus");
+	await mkdir(requestedOutputDirectory, { recursive: true });
 	const outputDirectory = await realpath(input.outputDirectory);
 	const outputRelative = path.relative(root, outputDirectory);
 	if (outputRelative === "" || (!outputRelative.startsWith("..") && !path.isAbsolute(outputRelative))) throw new Error("Accounting scratch/output must be outside the read-only copied corpus");
@@ -745,7 +748,10 @@ export async function runBoundedMigrationBenchmark(input: BenchmarkInput): Promi
 	const root = await realpath(input.copiedCorpusPath);
 	const attestation = await loadAttestation(root, input.copyAttestationPath);
 	const recordsPath = await containedPath(root, input.recordsPath);
-	await mkdir(input.outputDirectory, { recursive: true });
+	const requestedOutputDirectory = path.resolve(input.outputDirectory);
+	const requestedOutputRelative = path.relative(root, requestedOutputDirectory);
+	if (requestedOutputRelative === "" || (!requestedOutputRelative.startsWith("..") && !path.isAbsolute(requestedOutputRelative))) throw new Error("Benchmark output must be outside the read-only copied corpus");
+	await mkdir(requestedOutputDirectory, { recursive: true });
 	const outputDirectory = await realpath(input.outputDirectory);
 	const outputRelative = path.relative(root, outputDirectory);
 	if (outputRelative === "" || (!outputRelative.startsWith("..") && !path.isAbsolute(outputRelative))) throw new Error("Benchmark output must be outside the read-only copied corpus");
