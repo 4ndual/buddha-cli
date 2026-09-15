@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import type { ProfileRuntimeContext } from "@oh-my-pi/pi-coding-agent/profile-runtime";
 import type { CreateAgentSessionOptions } from "@oh-my-pi/pi-coding-agent/sdk";
-import { CHAT_SYSTEM_PROMPT } from "./prompt";
-import runtime from "./runtime";
+import { CHAT_SYSTEM_PROMPT } from "../../../profiles/chat/agent/prompt";
+import runtime from "../../../profiles/chat/agent/runtime";
 
 describe("chat profile runtime", () => {
 	it("replaces the engineering prompt without restricting normal tools", async () => {
