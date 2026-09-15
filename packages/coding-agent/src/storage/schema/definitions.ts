@@ -6,19 +6,26 @@ export const WCDB_MAX_READER_SCHEMA_VERSION = 1;
 
 export interface EngineBuildPin {
 	wcdbVersion: string;
+	wcdbCommit: string;
 	sourceArchive: string;
 	sourceSha256: string;
-	bundledSqliteVersion: string | null;
-	/** False keeps DB mode capability-disabled until the bundled version is measured. */
-	verified: boolean;
+	bundledSqliteVersion: string;
+	bundledSqliteSourceId: string;
+	sourceVerified: boolean;
+	/** Runtime capability remains a separate native-lane gate. */
+	runtimeVerified: boolean;
 }
 
 export const WCDB_ENGINE_PIN: EngineBuildPin = {
 	wcdbVersion: "2.1.16",
+	wcdbCommit: "df808591b9f9a9ab42156006819c3550d5af13a3",
 	sourceArchive: "wcdb-2.1.16.zip",
 	sourceSha256: "260845053c5dedc4578570203a5ba235c3be1e74a671c2fc1aeb12c988dd5346",
-	bundledSqliteVersion: null,
-	verified: false,
+	bundledSqliteVersion: "3.27.2",
+	bundledSqliteSourceId:
+		"2019-02-25 16:06:06 bd49a8271d650fa89e446b42e513b595a717b9212c91dd384aab871fc1d0alt1",
+	sourceVerified: true,
+	runtimeVerified: false,
 };
 
 export interface SchemaMigration {
@@ -452,8 +459,11 @@ export function assertSchemaCompatible(stored: StoredSchemaHeader): void {
 			stored,
 		);
 	}
-	if (WCDB_ENGINE_PIN.bundledSqliteVersion === null || stored.sqliteVersion !== WCDB_ENGINE_PIN.bundledSqliteVersion) {
-		throw new IncompatibleSchemaError("Bundled SQLite version has not passed the native capability gate", stored);
+	if (!WCDB_ENGINE_PIN.sourceVerified || stored.sqliteVersion !== WCDB_ENGINE_PIN.bundledSqliteVersion) {
+		throw new IncompatibleSchemaError(
+			`SQLite ${stored.sqliteVersion} does not match pinned ${WCDB_ENGINE_PIN.bundledSqliteVersion}`,
+			stored,
+		);
 	}
 }
 
