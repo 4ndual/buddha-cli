@@ -10,10 +10,19 @@ export {
 	MANIFEST_FILE_NAME,
 	assertLogicalBundle,
 	canonicalJson as canonicalBundleJson,
+	consumeBoundedArchiveStream,
+	consumeSessionArchiveItemStream,
 	publishLogicalBundle,
 	sha256,
 	verifyPublishedBundle,
+	type ArchiveEntryPage,
+	type ArchivePayloadPage,
+	type ArchiveStreamConsumer,
+	type ArchiveStreamLimits,
+	type ArchiveStreamReceipt,
+	type BoundedArchiveStream,
 	type BundleManifest,
+	type EncodedArchiveEntry,
 	type JsonScalar,
 	type JsonValue,
 	type LogicalBranch,
@@ -22,6 +31,8 @@ export {
 	type LogicalVersion,
 	type ManifestFile,
 	type PublishBundleOptions,
+	type SessionArchiveStreamConsumer,
+	type VerifyPublishedBundleOptions,
 	type PublishedBundle,
 } from "./migration/bundle";
 export * from "./migration/export";
@@ -43,5 +54,18 @@ export * from "./migration/recovery";
 export * from "./migration/sync";
 export * from "./jsonl-repository";
 export * from "./provider";
-export * from "./turso";
+export type {
+	TursoAppendMutation,
+	TursoAppendMutationResult,
+	TursoCreateMutation,
+	TursoDurableFlushReceipt,
+	TursoForkMutation,
+	TursoKeysetRow,
+	TursoPageRequest,
+	TursoRepositoryHealth,
+	TursoRuntimeAdapter,
+	TursoRuntimeHealth,
+	TursoRuntimeTransaction,
+	TursoSessionRepositoryOptions,
+} from "./turso/repository";
 export type * from "./types";
