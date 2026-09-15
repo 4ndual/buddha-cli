@@ -53,10 +53,10 @@ export async function streamJsonl(
 	let line = 0;
 	let complete = true;
 	if (sourceBytes > limits.inputBytes) {
-		for await (const chunk of file.slice(0, limits.inputBytes).stream()) sourceHasher.update(chunk);
+		for await (const chunk of file.stream()) sourceHasher.update(chunk);
 		diagnostics.push({
 			code: "input-byte-limit",
-			detail: `Input is ${sourceBytes} bytes; streamed prefix limit is ${limits.inputBytes} bytes`,
+			detail: `Input is ${sourceBytes} bytes; parse limit is ${limits.inputBytes} bytes (full file streamed only for SHA-256 accounting)`,
 		});
 		return {
 			records,

@@ -118,6 +118,8 @@ describe("WCDB migration normalization", () => {
 			sourceNamespace: "fixture:oversized",
 			limits: { inputBytes: 512, recordBytes: 256, records: 10 },
 		});
+		const sourceBytes = new Uint8Array(await Bun.file(oversized).arrayBuffer());
+		const expectedSourceHash = new Bun.CryptoHasher("sha256").update(sourceBytes).digest("hex");
 		expect(bundle.manifest.disposition).toBe("quarantined");
 		expect(
 			bundle.manifest.diagnostics.some(
@@ -125,6 +127,43 @@ describe("WCDB migration normalization", () => {
 			),
 		).toBe(true);
 		expect(bundle.jsonl).toBe("");
+		expect(bundle.manifest.source_sha256).toBe(expectedSourceHash);
+	});
+
+	it("archives unmapped OMP fields and quarantines entries whose source timestamp is missing", async () => {
+		const unknown = await temporaryJsonl([
+			{ type: "session", version: 3, id: "unknown", timestamp: "2025-01-01T00:00:00.000Z", cwd: "/workspace" },
+			{
+				type: "message",
+				id: "known-message",
+				parentId: null,
+				timestamp: "2025-01-01T00:00:01.000Z",
+				message: { role: "user", content: "hello", timestamp: 1 },
+				futureControl: { enabled: true },
+			},
+		]);
+		const missingTimestamp = await temporaryJsonl([
+			{ type: "session", version: 3, id: "missing-time", timestamp: "2025-01-01T00:00:00.000Z", cwd: "/workspace" },
+			{ type: "message", id: "missing-time-message", parentId: null, message: { role: "user", content: "hello", timestamp: 1 } },
+		]);
+		const unknownBundle = await normalizeSessionFile({ inputPath: unknown, sourceNamespace: "fixture:unknown-omp" });
+		const missingBundle = await normalizeSessionFile({
+			inputPath: missingTimestamp,
+			sourceNamespace: "fixture:missing-timestamp",
+		});
+		expect(unknownBundle.manifest.disposition).toBe("archive-only");
+		expect(
+			unknownBundle.records.some(
+				record => record.type === "custom" && record.customType === "migration.unknown.omp.v1",
+			),
+		).toBe(true);
+		expect(missingBundle.manifest.disposition).toBe("quarantined");
+		expect(
+			missingBundle.manifest.diagnostics.some(
+				diagnostic =>
+					diagnostic.code === "missing-critical-payload" && diagnostic.detail.includes("lacks a timestamp"),
+			),
+		).toBe(true);
 	});
 
 	it("preserves unknown control events only as non-context custom records", async () => {
