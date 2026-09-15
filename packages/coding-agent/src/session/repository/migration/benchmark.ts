@@ -494,7 +494,8 @@ export async function accountCopiedCorpus(input: AccountingInput): Promise<Accou
 	const root = await realpath(input.copiedCorpusPath);
 	await mkdir(input.outputDirectory, { recursive: true });
 	const outputDirectory = await realpath(input.outputDirectory);
-	if (outputDirectory === root) throw new Error("Accounting scratch/output must not overwrite the copied corpus");
+	const outputRelative = path.relative(root, outputDirectory);
+	if (outputRelative === "" || (!outputRelative.startsWith("..") && !path.isAbsolute(outputRelative))) throw new Error("Accounting scratch/output must be outside the read-only copied corpus");
 	for (const sourcePath of [
 		input.sourceLedgerPath,
 		input.normalizedLedgerPath,
@@ -746,6 +747,8 @@ export async function runBoundedMigrationBenchmark(input: BenchmarkInput): Promi
 	const recordsPath = await containedPath(root, input.recordsPath);
 	await mkdir(input.outputDirectory, { recursive: true });
 	const outputDirectory = await realpath(input.outputDirectory);
+	const outputRelative = path.relative(root, outputDirectory);
+	if (outputRelative === "" || (!outputRelative.startsWith("..") && !path.isAbsolute(outputRelative))) throw new Error("Benchmark output must be outside the read-only copied corpus");
 	const reportPath = await containedPath(outputDirectory, input.reportPath, false);
 	for (const storagePath of input.storagePaths) await containedPath(outputDirectory, storagePath, false);
 	const warmSamples = input.warmSamples ?? 30;
