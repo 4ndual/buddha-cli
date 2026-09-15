@@ -93,20 +93,59 @@ async function seed(driver: WcdbMigrationTestDriver): Promise<void> {
 	});
 }
 
-async function expectCrash(driver: WcdbMigrationTestDriver, operation: string, input: JsonValue): Promise<void> {
-	const crashed = await driver.invokeRaw(operation, input);
+async function expectCrash(
+	driver: WcdbMigrationTestDriver,
+	operation: string,
+	input: Record<string, JsonValue>,
+	expectedPoint: string,
+): Promise<void> {
+	const fault = input.fault;
+	if (typeof fault !== "object" || fault === null || Array.isArray(fault)) {
+		throw new Error(`Fault input for ${operation} must be an object`);
+	}
+	const injectionId = crypto.randomUUID();
+	const crashed = await driver.invokeRaw(operation, {
+		...input,
+		fault: { ...fault, injectionId },
+	});
 	expect(crashed.exitCode).not.toBe(0);
+	const markerPrefix = "OMP_WCDB_FAULT_REACHED ";
+	const markerLine = crashed.stderr
+		.split("\n")
+		.find(line => line.startsWith(markerPrefix));
+	if (!markerLine) {
+		throw new Error(`Adapter exited without reaching ${operation}:${expectedPoint}: ${crashed.stderr}`);
+	}
+	const marker = JSON.parse(markerLine.slice(markerPrefix.length)) as {
+		protocol: string;
+		operation: string;
+		point: string;
+		injectionId: string;
+		receiptHash: string;
+	};
+	expect(marker).toEqual({
+		protocol: "omp-wcdb-fault-marker-v1",
+		operation,
+		point: expectedPoint,
+		injectionId,
+		receiptHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+	});
 }
 
 describe("WCDB fault injection and recovery", () => {
 	integrationIt("leaves killed normalization output unpublished", async () => {
 		using workspace = TempDir.createSync("@omp-wcdb-normalize-kill-");
 		const driver = new WcdbMigrationTestDriver(workspace.path());
-		await expectCrash(driver, "normalizeArchive", {
-			source: fixture,
-			destination: path.join(workspace.path(), "normalized-generation"),
-			fault: { point: "before-publication", effect: "process-exit" },
-		});
+		await expectCrash(
+			driver,
+			"normalizeArchive",
+			{
+				source: fixture,
+				destination: path.join(workspace.path(), "normalized-generation"),
+				fault: { point: "before-publication", effect: "process-exit" },
+			},
+			"before-publication",
+		);
 		const state = await driver.invoke<{ published: boolean; completionMarker: boolean } & Record<string, JsonValue>>(
 			"inspectNormalization",
 			{},
@@ -118,11 +157,16 @@ describe("WCDB fault injection and recovery", () => {
 		using workspace = TempDir.createSync("@omp-wcdb-transaction-kill-");
 		const driver = new WcdbMigrationTestDriver(workspace.path());
 		await seed(driver);
-		await expectCrash(driver, "append", {
-			expectedHead: "current",
-			event: { nativeEntryId: "uncommitted", semanticPayload: { text: "must roll back" } },
-			fault: { point: "before-commit", effect: "process-exit" },
-		});
+		await expectCrash(
+			driver,
+			"append",
+			{
+				expectedHead: "current",
+				event: { nativeEntryId: "uncommitted", semanticPayload: { text: "must roll back" } },
+				fault: { point: "before-commit", effect: "process-exit" },
+			},
+			"before-commit",
+		);
 		const state = await driver.invoke<RecoveryState>("reopenAndInspect", {});
 		expect(state.committedNativeEntryIds).not.toContain("uncommitted");
 	});
@@ -131,11 +175,16 @@ describe("WCDB fault injection and recovery", () => {
 		using workspace = TempDir.createSync("@omp-wcdb-ack-recovery-");
 		const driver = new WcdbMigrationTestDriver(workspace.path());
 		await seed(driver);
-		await expectCrash(driver, "append", {
-			expectedHead: "current",
-			event: { nativeEntryId: "committed-before-reply", semanticPayload: { text: "durable" } },
-			fault: { point: "after-commit-before-reply", effect: "process-exit" },
-		});
+		await expectCrash(
+			driver,
+			"append",
+			{
+				expectedHead: "current",
+				event: { nativeEntryId: "committed-before-reply", semanticPayload: { text: "durable" } },
+				fault: { point: "after-commit-before-reply", effect: "process-exit" },
+			},
+			"after-commit-before-reply",
+		);
 		const recovered = await driver.invoke<RecoveryState>("recoverAcknowledgedCommit", {
 			nativeEntryId: "committed-before-reply",
 		});
@@ -151,11 +200,16 @@ describe("WCDB fault injection and recovery", () => {
 		using workspace = TempDir.createSync("@omp-wcdb-export-kill-");
 		const driver = new WcdbMigrationTestDriver(workspace.path());
 		await seed(driver);
-		await expectCrash(driver, "exportArchive", {
-			destination: path.join(workspace.path(), "export"),
-			allBranches: true,
-			fault: { point: "after-publication-before-receipt", effect: "process-exit" },
-		});
+		await expectCrash(
+			driver,
+			"exportArchive",
+			{
+				destination: path.join(workspace.path(), "export"),
+				allBranches: true,
+				fault: { point: "after-publication-before-receipt", effect: "process-exit" },
+			},
+			"after-publication-before-receipt",
+		);
 		const repaired = await driver.invoke<{ manifestVerified: boolean; receiptRecorded: boolean; generations: string[] } & Record<string, JsonValue>>(
 			"repairExportPublication",
 			{},
@@ -174,11 +228,16 @@ describe("WCDB fault injection and recovery", () => {
 		using workspace = TempDir.createSync("@omp-wcdb-mode-kill-");
 		const driver = new WcdbMigrationTestDriver(workspace.path());
 		await driver.invoke("reset", { selectedMode: "jsonl", configurationGeneration: 7 });
-		await expectCrash(driver, "activateMode", {
-			targetMode: "db",
-			expectedGeneration: 7,
-			fault: { point: "before-config-commit", effect: "process-exit" },
-		});
+		await expectCrash(
+			driver,
+			"activateMode",
+			{
+				targetMode: "db",
+				expectedGeneration: 7,
+				fault: { point: "before-config-commit", effect: "process-exit" },
+			},
+			"before-config-commit",
+		);
 		const state = await driver.invoke<RecoveryState>("reopenAndInspect", {});
 		expect(state.selectedMode).toBe("jsonl");
 		expect(state.configurationGeneration).toBe(7);
@@ -188,9 +247,12 @@ describe("WCDB fault injection and recovery", () => {
 		using workspace = TempDir.createSync("@omp-wcdb-fts-");
 		const driver = new WcdbMigrationTestDriver(workspace.path());
 		await seed(driver);
-		await expectCrash(driver, "rebuildFts", {
-			fault: { point: "mid-index-batch", effect: "process-exit" },
-		});
+		await expectCrash(
+			driver,
+			"rebuildFts",
+			{ fault: { point: "mid-index-batch", effect: "process-exit" } },
+			"mid-index-batch",
+		);
 		const probe = await driver.invoke<FtsProbe>("reopenAndRebuildFts", {
 			queries: {
 				codeIdentifier: "const mañana",
@@ -217,10 +279,15 @@ describe("WCDB fault injection and recovery", () => {
 		const driver = new WcdbMigrationTestDriver(workspace.path());
 		await seed(driver);
 		const baseline = await driver.invoke<RecoveryState>("reopenAndInspect", {});
-		await expectCrash(driver, "writeContextCheckpoint", {
-			branch: "current",
-			fault: { point: "mid-checkpoint", effect: "process-exit" },
-		});
+		await expectCrash(
+			driver,
+			"writeContextCheckpoint",
+			{
+				branch: "current",
+				fault: { point: "mid-checkpoint", effect: "process-exit" },
+			},
+			"mid-checkpoint",
+		);
 		const recovered = await driver.invoke<RecoveryState>("restoreContext", { branch: "current" });
 		expect(recovered.checkpointValid).toBe(false);
 		expect(recovered.contextHash).toBe(baseline.contextHash);

@@ -96,6 +96,8 @@ const mandatoryGateIds = [
 	"roundtrip.old-v2",
 	"startup.db-without-native",
 	"startup.jsonl-without-native",
+	"worker.byte-backpressure",
+	"worker.timeout-cancel-shutdown",
 ].sort();
 
 describe("WCDB migration fixture corpus", () => {
