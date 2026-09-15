@@ -1,0 +1,3 @@
+{"type":"session","version":2,"id":"fixture-omp-v2","timestamp":"2025-02-01T00:00:00.000Z","cwd":"/workspace/sample","title":"Version two"}
+{"type":"message","id":"v2-user","parentId":null,"timestamp":"2025-02-01T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"Hello from v2"}],"timestamp":1738368001000}}
+{"type":"message","id":"v2-custom","parentId":"v2-user","timestamp":"2025-02-01T00:00:02.000Z","message":{"role":"hookMessage","customType":"fixture.control","content":"Preserved custom context","display":false,"timestamp":1738368002000}}

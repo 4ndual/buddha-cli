@@ -1,0 +1,4 @@
+{"type":"session","id":"fixture-omp-v1","timestamp":"2025-01-01T00:00:00.000Z","cwd":"/workspace/sample","title":"Legacy session"}
+{"type":"message","timestamp":"2025-01-01T00:00:01.000Z","message":{"role":"user","content":"Inspect sample.txt","timestamp":1735689601000}}
+{"type":"message","timestamp":"2025-01-01T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"call-v1","name":"read","arguments":{"path":"sample.txt"}}],"api":"anthropic-messages","provider":"anthropic","model":"fixture-model","usage":{"input":2,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":3,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse","timestamp":1735689602000}}
+{"type":"message","timestamp":"2025-01-01T00:00:03.000Z","message":{"role":"toolResult","toolCallId":"call-v1","toolName":"read","content":[{"type":"text","text":"sample contents"}],"isError":false,"timestamp":1735689603000}}

@@ -1,0 +1,8 @@
+{"type":"session_meta","timestamp":"2025-05-01T00:00:00.000Z","payload":{"id":"fixture-codex","cwd":"/workspace/sample"}}
+{"type":"turn_context","timestamp":"2025-05-01T00:00:01.000Z","payload":{"model":"gpt-fixture-codex"}}
+{"type":"response_item","timestamp":"2025-05-01T00:00:02.000Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Read sample.txt"},{"type":"input_image","image_url":"data:image/png;base64,Y29kZXgtaW1hZ2U="}]}}
+{"type":"response_item","timestamp":"2025-05-01T00:00:03.000Z","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"Inspect safely"}]}}
+{"type":"response_item","timestamp":"2025-05-01T00:00:04.000Z","payload":{"type":"function_call","call_id":"codex-call","name":"read","arguments":"{\"path\":\"sample.txt\"}"}}
+{"type":"response_item","timestamp":"2025-05-01T00:00:05.000Z","payload":{"type":"function_call_output","call_id":"codex-call","output":"sample contents"}}
+{"type":"response_item","timestamp":"2025-05-01T00:00:06.000Z","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done."}]}}
+{"type":"event_msg","timestamp":"2025-05-01T00:00:07.000Z","payload":{"type":"thread_name_updated","thread_name":"Codex fixture"}}

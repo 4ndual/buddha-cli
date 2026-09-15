@@ -1,0 +1,5 @@
+{"type":"title","v":1,"title":"Version three","source":"user","updatedAt":"2025-03-01T00:00:04.000Z","pad":""}
+{"type":"session","version":3,"id":"fixture-omp-v3","timestamp":"2025-03-01T00:00:00.000Z","cwd":"/workspace/sample","title":"Version three","titleSource":"user"}
+{"type":"message","id":"v3-user","parentId":null,"timestamp":"2025-03-01T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"Describe the image"},{"type":"image","data":"aW1hZ2UtYnl0ZXM=","mimeType":"image/png"}],"timestamp":1740787201000}}
+{"type":"message","id":"v3-assistant","parentId":"v3-user","timestamp":"2025-03-01T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"A fixture image."}],"api":"anthropic-messages","provider":"anthropic","model":"fixture-model","usage":{"input":3,"output":4,"cacheRead":1,"cacheWrite":0,"totalTokens":8,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":1740787202000}}
+{"type":"title_change","id":"v3-title","parentId":"v3-assistant","timestamp":"2025-03-01T00:00:04.000Z","title":"Version three","previousTitle":"Draft","source":"user","trigger":"fixture"}
