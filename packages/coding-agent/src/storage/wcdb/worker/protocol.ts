@@ -1,5 +1,7 @@
 /** Hidden CLI selector used to re-enter the WCDB worker host. */
 export const WCDB_WORKER_ARG = "__omp_worker_wcdb";
+export const WCDB_DEFAULT_MAX_QUEUED_BYTES = 16 * 1024 * 1024;
+export const WCDB_DEFAULT_MAX_REQUEST_BYTES = 8 * 1024 * 1024;
 
 /**
  * SQLite INTEGER values cross the worker/native boundary as validated decimal
@@ -21,6 +23,7 @@ export interface WcdbKeyset {
 
 export interface WcdbOpenOptions {
 	readonly databasePath: string;
+	readonly replicaId: string;
 	readonly readPoolSize?: number;
 	/** Absolute path to the pinned WCDB bridge; required only in explicit DB mode. */
 	readonly nativeLibraryPath: string;
@@ -78,6 +81,10 @@ export type WcdbReadOperation =
 	| { readonly kind: "health" };
 
 export type WcdbWriteOperation =
+	| {
+			readonly kind: "create-session";
+			readonly request: Uint8Array;
+	  }
 	| {
 			readonly kind: "append";
 			readonly branchId: string;
@@ -192,6 +199,7 @@ export function bigintFromInt64(value: WcdbInt64): bigint {
 
 export function isWriteOperation(operation: WcdbOperation): operation is WcdbWriteOperation {
 	switch (operation.kind) {
+		case "create-session":
 		case "append":
 		case "fork":
 		case "write-checkpoint":

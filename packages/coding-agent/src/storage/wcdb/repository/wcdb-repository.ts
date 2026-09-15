@@ -1,4 +1,5 @@
 import type {
+	AppendSessionBatchRequest,
 	AppendSessionRequest,
 	AppendSessionResult,
 	ArchiveExport,
@@ -8,6 +9,8 @@ import type {
 	BackupReceipt,
 	BackupRequest,
 	BranchId,
+	CreateSessionRequest,
+	CreateSessionResult,
 	ContextTail,
 	ContextTailRequest,
 	FlushRequest,
@@ -18,6 +21,7 @@ import type {
 	PayloadChunk,
 	PayloadStreamRequest,
 	RepositoryCapabilities,
+	RepositoryCursor,
 	RepositoryHealth,
 	ReplicaId,
 	RepositorySessionHeader,
@@ -33,10 +37,23 @@ import type {
 	WriteContextCheckpointRequest,
 } from "../../contracts";
 import { boundPageRequest, decodePageCursor, encodePageCursor } from "../../contracts";
-import { canonicalBytes } from "../../identity";
+import {
+	branchId,
+	canonicalBytes,
+	metadataRevisionId,
+	originId,
+	parsePayloadId,
+	sessionEntrySemanticPayload,
+	sourceAlias,
+	versionId,
+	type CanonicalValue,
+} from "../../identity";
 import { WcdbWorkerClient, type WcdbRequestOptions, type WcdbWorkerClientOptions } from "../worker/client";
 import {
 	bigintFromInt64,
+	estimateWireBytes,
+	WCDB_DEFAULT_MAX_QUEUED_BYTES,
+	WCDB_DEFAULT_MAX_REQUEST_BYTES,
 	type WcdbBatchResult,
 	type WcdbInt64,
 	type WcdbKeyset,
@@ -156,13 +173,13 @@ function decodeRow<T>(row: WcdbRecord | undefined, label: string): T {
 	return decodeRepositoryDocument<T>(row[DOCUMENT_COLUMN], label);
 }
 
-function cursorToKeyset(cursor: string | undefined): WcdbKeyset | undefined {
+function cursorToKeyset(cursor: RepositoryCursor | undefined): WcdbKeyset | undefined {
 	if (!cursor) return undefined;
 	const fields = decodePageCursor(cursor);
 	return { values: Object.entries(fields).sort(([left], [right]) => left.localeCompare(right)).map(([, value]) => value) };
 }
 
-function keysetToCursor(keyset: WcdbKeyset | undefined): string | undefined {
+function keysetToCursor(keyset: WcdbKeyset | undefined): RepositoryCursor | undefined {
 	if (!keyset) return undefined;
 	const fields: Record<string, string | number | boolean | null> = {};
 	for (let index = 0; index < keyset.values.length; index++) {
@@ -201,11 +218,13 @@ export class WcdbSessionRepository implements SessionRepository {
 	readonly mode = "db" as const;
 	readonly replicaId: ReplicaId;
 	readonly #client: WcdbWorkerClient;
+	readonly #maxRequestBytes: number;
 	#closed = false;
 
-	private constructor(replicaId: ReplicaId, client: WcdbWorkerClient) {
+	private constructor(replicaId: ReplicaId, client: WcdbWorkerClient, maxRequestBytes: number) {
 		this.replicaId = replicaId;
 		this.#client = client;
+		this.#maxRequestBytes = maxRequestBytes;
 	}
 
 	static async open(options: WcdbSessionRepositoryOptions): Promise<WcdbSessionRepository> {
@@ -213,6 +232,7 @@ export class WcdbSessionRepository implements SessionRepository {
 		const client = await WcdbWorkerClient.open(
 			{
 				databasePath: options.databasePath,
+				replicaId: options.replicaId,
 				readPoolSize: options.readPoolSize,
 				nativeLibraryPath: options.nativeLibraryPath,
 				busyTimeoutMs: options.busyTimeoutMs,
@@ -221,7 +241,9 @@ export class WcdbSessionRepository implements SessionRepository {
 			},
 			options.client,
 		);
-		return new WcdbSessionRepository(options.replicaId, client);
+		const maxQueuedBytes = options.maxQueuedBytes ?? WCDB_DEFAULT_MAX_QUEUED_BYTES;
+		const maxRequestBytes = options.maxRequestBytes ?? Math.min(WCDB_DEFAULT_MAX_REQUEST_BYTES, maxQueuedBytes);
+		return new WcdbSessionRepository(options.replicaId, client, maxRequestBytes);
 	}
 
 	async capabilities(): Promise<RepositoryCapabilities> {
@@ -271,24 +293,70 @@ export class WcdbSessionRepository implements SessionRepository {
 		return decodeRow<RepositorySessionHeader>(result.rows[0], "session header");
 	}
 
-	async append(request: AppendSessionRequest): Promise<AppendSessionResult> {
+	async createSession(request: CreateSessionRequest): Promise<CreateSessionResult> {
 		this.#assertOpen();
+		if (request.replicaId !== this.replicaId) throw new Error("Create-session replica does not match the open repository");
+		const aliasInput = {
+			harness: "omp",
+			installNamespace: this.replicaId,
+			nativeSessionId: request.header.id,
+		};
+		const sessionOriginId = originId(aliasInput);
+		const sessionSourceAlias = sourceAlias(aliasInput);
+		const metadataId = metadataRevisionId(request.header as unknown as CanonicalValue);
+		const sessionVersionId = versionId({
+			originId: sessionOriginId,
+			headHash: null,
+			metadataRevisionId: metadataId,
+		});
+		const sessionBranchId = branchId({
+			originId: sessionOriginId,
+			replicaId: this.replicaId,
+			branchKey: request.header.id,
+		});
+		const result = await this.#client.execute({
+			kind: "create-session",
+			request: encodeRepositoryDocument({
+				...request,
+				originId: sessionOriginId,
+				sourceAlias: sessionSourceAlias,
+				branchId: sessionBranchId,
+				versionId: sessionVersionId,
+				metadataRevisionId: metadataId,
+			}),
+		});
+		return decodeRow<CreateSessionResult>(result.rows[0], "create session");
+	}
+
+	async append(request: AppendSessionRequest): Promise<AppendSessionResult> {
+		return this.appendBatch({
+			branchId: request.branchId,
+			expectedHeadHash: request.expectedHeadHash,
+			entries: [request.entry],
+			replicaId: request.replicaId,
+			operationId: request.operationId,
+			...(request.sourceAlias === undefined ? {} : { sourceAlias: request.sourceAlias }),
+		});
+	}
+
+	async appendBatch(request: AppendSessionBatchRequest): Promise<AppendSessionResult> {
+		this.#assertOpen();
+		if (request.replicaId !== this.replicaId) throw new Error("Append replica does not match the open repository");
+		if (request.entries.length === 0) throw new RangeError("WCDB append batch must contain at least one entry");
 		const result = await this.#client.execute({
 			kind: "append",
 			branchId: request.branchId,
 			expectedHeadHash: request.expectedHeadHash,
-			events: [
-				{
-					operation_id: request.operationId,
-					replica_id: request.replicaId,
-					source_alias: request.sourceAlias ?? null,
-					entry: encodeRepositoryDocument(request.entry),
-					entry_canonical: canonicalBytes(request.entry),
-				},
-			],
+			events: request.entries.map((entry, index) => ({
+				operation_id: `${request.operationId}:${index}`,
+				replica_id: request.replicaId,
+				source_alias: request.sourceAlias ?? null,
+				entry: encodeRepositoryDocument(entry),
+				entry_canonical: canonicalBytes(sessionEntrySemanticPayload(entry)),
+			})),
 			payloads: [],
 		});
-		return decodeRow<AppendSessionResult>(result.rows[0], "append");
+		return decodeRow<AppendSessionResult>(result.rows[0], "append batch");
 	}
 
 	async fork(request: ForkSessionRequest): Promise<ForkSessionResult> {
@@ -321,14 +389,14 @@ export class WcdbSessionRepository implements SessionRepository {
 			for (const row of result.rows) {
 				const bytes = row.bytes;
 				if (!(bytes instanceof Uint8Array)) throw new Error("WCDB payload chunk is missing binary bytes");
-				const payloadId = row.payload_id;
+				const rawPayloadId = row.payload_id;
 				const contentHash = row.content_hash;
 				const codec = row.codec;
-				if (typeof payloadId !== "string" || typeof contentHash !== "string" || typeof codec !== "string") {
+				if (typeof rawPayloadId !== "string" || typeof contentHash !== "string" || typeof codec !== "string") {
 					throw new Error("WCDB payload chunk metadata is malformed");
 				}
 				yield {
-					payloadId,
+					payloadId: parsePayloadId(rawPayloadId),
 					offset: chunkOffset(row.offset),
 					bytes,
 					final: row.final === true,
@@ -461,16 +529,32 @@ export class WcdbSessionRepository implements SessionRepository {
 		);
 
 		let cursor = 0n;
-		let chunks: Uint8Array[] = [];
+		const batchCapacity = (): number => {
+			const emptyOperation = {
+				kind: "import-batch" as const,
+				jobId: request.jobId,
+				cursor: cursor.toString(),
+				chunks: [] as readonly Uint8Array[],
+				final: false,
+			};
+			const capacity = Math.min(batchBytes, this.#maxRequestBytes - estimateWireBytes(emptyOperation) - 1);
+			if (capacity < 1) {
+				throw new RangeError("WCDB maxRequestBytes leaves no room for import payload after protocol overhead");
+			}
+			return capacity;
+		};
+		let buffer = new Uint8Array(batchCapacity());
 		let bytes = 0;
 		const commitBatch = async (final: boolean): Promise<WcdbBatchResult> => {
-			const result = await this.#client.execute(
-				{ kind: "import-batch", jobId: request.jobId, cursor: cursor.toString(), chunks, final },
-				options,
-			);
-			for (const chunk of chunks) cursor += BigInt(chunk.byteLength);
-			chunks = [];
+			const chunks: readonly Uint8Array[] = bytes === 0 ? [] : [buffer.subarray(0, bytes)];
+			const operation = { kind: "import-batch" as const, jobId: request.jobId, cursor: cursor.toString(), chunks, final };
+			if (estimateWireBytes(operation) > this.#maxRequestBytes) {
+				throw new Error("WCDB import batch exceeded the configured request ceiling after protocol accounting");
+			}
+			const result = await this.#client.execute(operation, options);
+			cursor += BigInt(bytes);
 			bytes = 0;
+			if (!final) buffer = new Uint8Array(batchCapacity());
 			return result;
 		};
 
@@ -478,11 +562,11 @@ export class WcdbSessionRepository implements SessionRepository {
 			if (request.signal?.aborted) throw request.signal.reason;
 			let offset = 0;
 			while (offset < sourceChunk.byteLength) {
-				const take = Math.min(batchBytes - bytes, sourceChunk.byteLength - offset);
-				chunks.push(sourceChunk.subarray(offset, offset + take));
+				const take = Math.min(buffer.byteLength - bytes, sourceChunk.byteLength - offset);
+				buffer.set(sourceChunk.subarray(offset, offset + take), bytes);
 				bytes += take;
 				offset += take;
-				if (bytes === batchBytes) await commitBatch(false);
+				if (bytes === buffer.byteLength) await commitBatch(false);
 			}
 		}
 		const result = await commitBatch(true);

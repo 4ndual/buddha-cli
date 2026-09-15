@@ -976,46 +976,68 @@ export class SessionManager {
 		}
 	}
 
+	async #ensureRepositorySession(): Promise<void> {
+		const repository = this.#repository;
+		if (!repository || this.#repositoryBranchId) return;
+		const result = await repository.createSession({
+			header: this.#header,
+			replicaId: repository.replicaId,
+			operationId: `create:${this.#sessionId}`,
+		});
+		if (result.durability !== "power-loss") {
+			throw new Error(`Database session creation acknowledged insufficient durability: ${result.durability}`);
+		}
+		this.#repositoryBranchId = result.identity.branchId;
+		this.#repositoryHeadHash = result.identity.headHash;
+		this.#sessionFile = repositorySessionRef(result.identity.branchId);
+		this.#fileIsCurrent = true;
+		this.#rewriteRequired = false;
+	}
+
+	async #appendRepositoryEntries(entries: readonly SessionEntry[], operationId: string): Promise<void> {
+		if (entries.length === 0) return;
+		const repository = this.#repository;
+		if (!repository) throw new Error("Database repository disappeared before append.");
+		await this.#ensureRepositorySession();
+		const branchId = this.#repositoryBranchId;
+		if (!branchId) throw new Error("Database branch disappeared before append.");
+		const result = await repository.appendBatch({
+			branchId,
+			expectedHeadHash: this.#repositoryHeadHash,
+			entries,
+			replicaId: repository.replicaId,
+			operationId,
+		});
+		if (result.durability !== "power-loss") {
+			throw new Error(`Database append acknowledged insufficient durability: ${result.durability}`);
+		}
+		this.#repositoryBranchId = result.branchId;
+		this.#repositoryHeadHash = result.eventHash;
+		this.#sessionFile = repositorySessionRef(result.branchId);
+		this.#fileIsCurrent = true;
+		this.#rewriteRequired = false;
+	}
+
 	#appendToSessionFile(entry: SessionEntry): void {
+		if (this.#released || !this.#persist) return;
+		const atomicBatch = this.#atomicEntryBatch;
+		if (atomicBatch) {
+			if (!this.#repository) {
+				this.#fileIsCurrent = false;
+				this.#rewriteRequired = true;
+				this.#atomicRewriteDirty = true;
+			}
+			return;
+		}
 		if (this.#repository) {
-			if (this.#released || !this.#persist) return;
-			const branchId = this.#repositoryBranchId;
-			if (!branchId) {
-				this.#noteDiskFailure(
-					new Error(
-						"Creating a new Database session is unavailable until the repository contract supports origin creation.",
-					),
-				);
+			if (!this.#shouldHaveSessionFile()) {
+				this.#fileIsCurrent = false;
 				return;
 			}
-			void this.#scheduleDiskWork(async () => {
-				const currentBranchId = this.#repositoryBranchId;
-				if (!currentBranchId) throw new Error("Database branch disappeared before append.");
-				const result = await this.#repository!.append({
-					branchId: currentBranchId,
-					expectedHeadHash: this.#repositoryHeadHash,
-					entry,
-					replicaId: this.#repository!.replicaId,
-					operationId: entry.id,
-				});
-				if (result.durability !== "power-loss") {
-					throw new Error(`Database append acknowledged insufficient durability: ${result.durability}`);
-				}
-				this.#repositoryBranchId = result.branchId;
-				this.#repositoryHeadHash = result.eventHash;
-				this.#sessionFile = repositorySessionRef(result.branchId);
-				this.#fileIsCurrent = true;
-				this.#rewriteRequired = false;
-			}).catch(() => undefined);
+			void this.#scheduleDiskWork(() => this.#appendRepositoryEntries([entry], entry.id)).catch(() => undefined);
 			return;
 		}
-		if (this.#released || !this.#persist || !this.#sessionFile) return;
-		if (this.#atomicEntryBatch) {
-			this.#fileIsCurrent = false;
-			this.#rewriteRequired = true;
-			this.#atomicRewriteDirty = true;
-			return;
-		}
+		if (!this.#sessionFile) return;
 		if (this.#diskFailure) {
 			// The failed entry and any later entries remain in memory. A full
 			// replacement is the writability probe and restores all of them once
@@ -1175,14 +1197,11 @@ export class SessionManager {
 	}
 
 	#resetToNewSession(options?: NewSessionOptions, forcedSessionFile?: string): string | undefined {
-		if (this.#repository && this.#persist) {
-			throw new Error(
-				"Creating a new Database session is unavailable until the repository contract supports origin creation.",
-			);
-		}
 		this.#diskTail = Promise.resolve();
 		this.#clearDiskError();
 		this.#reconcileSessionDirForFallback();
+		this.#repositoryBranchId = undefined;
+		this.#repositoryHeadHash = null;
 		this.#sessionId = mintSessionId();
 		this.#sessionName = undefined;
 		this.#titleSource = undefined;
@@ -1225,7 +1244,7 @@ export class SessionManager {
 		this.#inMemoryArtifacts = null;
 		this.#inMemoryArtifactCounter = 0;
 
-		if (this.#persist) {
+		if (this.#persist && !this.#repository) {
 			this.#sessionFile =
 				forcedSessionFile ??
 				path.join(this.#sessionDir, `${fileSafeTimestamp(timestamp)}_${this.#sessionId}.jsonl`);
@@ -1579,9 +1598,9 @@ export class SessionManager {
 	 */
 	async newSession(options?: NewSessionOptions): Promise<string | undefined> {
 		await this.#drainAndCloseWriter();
-		const sessionFile = this.#resetToNewSession(options);
+		this.#resetToNewSession(options);
 		await this.ensureOnDisk();
-		return sessionFile;
+		return this.#sessionFile;
 	}
 
 	/** Delete a session file and its artifact directory. ENOENT is treated as success. */
@@ -1600,7 +1619,59 @@ export class SessionManager {
 	 */
 	async fork(): Promise<{ oldSessionFile: string; newSessionFile: string } | undefined> {
 		if (this.#repository) {
-			throw new Error("Interactive Database fork requires repository version context; export or switch to JSONL mode.");
+			if (!this.#persist) return undefined;
+			await this.ensureOnDisk();
+			await this.flush();
+			const fromBranchId = this.#repositoryBranchId;
+			const oldSessionFile = this.#sessionFile;
+			if (!fromBranchId || !oldSessionFile) throw new Error("Database branch disappeared before fork.");
+			const storedHeader = await this.#repository.getHeader(fromBranchId);
+			if (!storedHeader) throw new Error(`Database branch ${fromBranchId} was not found before fork.`);
+			const parentSessionId = this.#sessionId;
+			const timestamp = nowIso();
+			const nextSessionId = mintSessionId();
+			const nextHeader: SessionHeader = {
+				type: "session",
+				version: CURRENT_SESSION_VERSION,
+				id: nextSessionId,
+				title: this.#header.title ?? this.#sessionName,
+				titleSource: this.#header.titleSource ?? this.#titleSource,
+				timestamp,
+				cwd: this.#cwd,
+				additionalDirectories:
+					this.#additionalDirectories.length > 0 ? [...this.#additionalDirectories] : undefined,
+				parentSession: parentSessionId,
+				providerPromptCacheKey: this.#header.providerPromptCacheKey ?? parentSessionId,
+			};
+			const forked = await this.#repository.fork({
+				originId: storedHeader.identity.originId,
+				fromBranchId,
+				forkPointHash: storedHeader.identity.headHash,
+				parentVersionId: storedHeader.identity.versionId,
+				replicaId: this.#repository.replicaId,
+				header: nextHeader,
+				operationId: `fork:${nextSessionId}`,
+				branchKey: nextSessionId,
+			});
+			if (forked.durability !== "power-loss") {
+				throw new Error(`Database fork acknowledged insufficient durability: ${forked.durability}`);
+			}
+			this.#sessionId = nextSessionId;
+			this.#header = nextHeader;
+			this.#repositoryBranchId = forked.branchId;
+			this.#repositoryHeadHash = forked.headHash;
+			this.#sessionFile = repositorySessionRef(forked.branchId);
+			this.#sessionName = nextHeader.title;
+			this.#titleSource = nextHeader.titleSource;
+			this.#titleUpdatedAt = timestamp;
+			this.#hasTitleSlot = true;
+			this.#fileIsCurrent = true;
+			this.#rewriteRequired = false;
+			this.#forceFileCreation = true;
+			this.#draftOnlySessionCleanupArmed = false;
+			this.#artifactManager = null;
+			this.#artifactManagerSessionFile = null;
+			return { oldSessionFile, newSessionFile: this.#sessionFile };
 		}
 		if (!this.#persist || !this.#sessionFile) return undefined;
 
@@ -1787,8 +1858,14 @@ export class SessionManager {
 	 * session/new must create a discoverable file immediately).
 	 */
 	async ensureOnDisk(): Promise<void> {
-		if (!this.#persist || !this.#sessionFile) return;
+		if (!this.#persist) return;
 		this.#forceFileCreation = true;
+		if (this.#repository) {
+			if (this.#fileIsCurrent && this.#repositoryBranchId) return;
+			await this.#scheduleDiskWork(() => this.#ensureRepositorySession());
+			return;
+		}
+		if (!this.#sessionFile) return;
 		if (this.#fileIsCurrent && !this.#rewriteRequired) return;
 		await this.#rewriteAtomically();
 	}
@@ -1813,7 +1890,19 @@ export class SessionManager {
 		manager.#entries = structuredClone(this.#entries);
 		manager.#index.rebuild(manager.#entries);
 		manager.#forceFileCreation = true;
-		await manager.#rewriteAtomically();
+		if (manager.#repository) {
+			await manager.ensureOnDisk();
+			if (manager.#entries.length > 0) {
+				await manager.#scheduleDiskWork(() =>
+					manager.#appendRepositoryEntries(
+						manager.#entries,
+						`copy:${manager.#entries[0].id}:${manager.#entries.at(-1)!.id}`,
+					),
+				);
+			}
+		} else {
+			await manager.#rewriteAtomically();
+		}
 		return manager;
 	}
 
@@ -1830,9 +1919,7 @@ export class SessionManager {
 	}
 
 	async #appendEntriesAtomicallyLocked<T>(append: () => T): Promise<T> {
-		if (this.#repository) {
-			throw new Error("Atomic multi-entry Database persistence is not supported by the repository contract.");
-		}
+		if (this.#repository) return this.#appendRepositoryEntriesAtomicallyLocked(append);
 		if (!this.#persist || !this.#sessionFile) return append();
 		if (this.#atomicEntryBatch) throw new Error("Atomic persistence lock ownership was violated.");
 		try {
@@ -1887,6 +1974,81 @@ export class SessionManager {
 			this.#atomicEntryBatch = undefined;
 			this.#notifyDurableEntries(retainedNotifications);
 			throw error;
+		}
+	}
+
+	async #appendRepositoryEntriesAtomicallyLocked<T>(append: () => T): Promise<T> {
+		if (!this.#persist) return append();
+		if (this.#atomicEntryBatch) throw new Error("Atomic persistence lock ownership was violated.");
+		await this.ensureOnDisk();
+		await this.flush();
+		const batch: AtomicEntryBatch = {
+			collecting: true,
+			entryIds: new Set(),
+			deferredNotifications: [],
+			preBatchLeafId: this.#index.leafId(),
+			externalLeafChanged: false,
+			externalLeafId: null,
+		};
+		this.#atomicEntryBatch = batch;
+		let result!: T;
+		let stagedCommitted = false;
+		try {
+			try {
+				result = append();
+			} finally {
+				batch.collecting = false;
+			}
+			const stagedEntries = this.#entries.filter(entry => batch.entryIds.has(entry.id));
+			if (stagedEntries.length > 0) {
+				const operationId = `batch:${stagedEntries[0].id}:${stagedEntries.at(-1)!.id}`;
+				await this.#scheduleDiskWork(() => this.#appendRepositoryEntries(stagedEntries, operationId));
+			}
+			stagedCommitted = true;
+			const externalEntries = batch.deferredNotifications.filter(entry => !batch.entryIds.has(entry.id));
+			const externalCommit =
+				externalEntries.length === 0
+					? undefined
+					: this.#scheduleDiskWork(() =>
+							this.#appendRepositoryEntries(
+								externalEntries,
+								`concurrent:${externalEntries[0].id}:${externalEntries.at(-1)!.id}`,
+							),
+						);
+			this.#atomicEntryBatch = undefined;
+			if (externalCommit) await externalCommit;
+			this.#notifyDurableEntries(batch.deferredNotifications);
+			return result;
+		} catch (error) {
+			batch.collecting = false;
+			const operationError = toError(error);
+			if (stagedCommitted) {
+				const stagedNotifications = batch.deferredNotifications.filter(entry => batch.entryIds.has(entry.id));
+				const externalNotifications = batch.deferredNotifications.filter(entry => !batch.entryIds.has(entry.id));
+				this.#atomicEntryBatch = undefined;
+				this.#pendingDurabilityNotifications.push(...externalNotifications);
+				this.#notifyDurableEntries(stagedNotifications);
+				throw operationError;
+			}
+			this.#rollbackAtomicEntryBatch(batch);
+			const retainedEntries = batch.deferredNotifications.filter(entry => !batch.entryIds.has(entry.id));
+			this.#atomicEntryBatch = undefined;
+			this.#clearDiskError();
+			if (retainedEntries.length > 0) {
+				try {
+					await this.#scheduleDiskWork(() =>
+						this.#appendRepositoryEntries(
+							retainedEntries,
+							`recovery:${retainedEntries[0].id}:${retainedEntries.at(-1)!.id}`,
+						),
+					);
+				} catch (recoveryError) {
+					this.#pendingDurabilityNotifications.push(...retainedEntries);
+					throw this.#latchIndeterminate(operationError, [toError(recoveryError)]);
+				}
+			}
+			this.#notifyDurableEntries(retainedEntries);
+			throw operationError;
 		}
 	}
 

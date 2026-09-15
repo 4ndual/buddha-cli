@@ -1,4 +1,5 @@
 import type {
+	AppendSessionBatchRequest,
 	AppendSessionRequest,
 	AppendSessionResult,
 	ArchiveExport,
@@ -6,6 +7,8 @@ import type {
 	ArchiveImportRequest,
 	BackupReceipt,
 	BackupRequest,
+	CreateSessionRequest,
+	CreateSessionResult,
 	BranchId,
 	ContextTail,
 	ContextTailRequest,
@@ -18,6 +21,7 @@ import type {
 	PayloadChunk,
 	PayloadStreamRequest,
 	RepositoryCapabilities,
+	RepositoryCursor,
 	ReplicaId,
 	RepositoryHealth,
 	RepositorySessionHeader,
@@ -40,17 +44,21 @@ import {
 	metadataRevisionId,
 	originId,
 	payloadId,
+	sessionEntrySemanticPayload,
 	sourceAlias,
 	versionId,
 	type CanonicalValue,
 } from "../identity";
+import { loadSessionFile } from "../../session/session-loader";
 import { listSessions, type SessionInfo } from "../../session/session-listing";
 import { FileSessionStorage, type SessionStorage } from "../../session/session-storage";
 import type { SessionEntry, SessionHeader } from "../../session/session-entries";
 
 export type JsonlRepositoryOperations = Pick<
 	SessionRepository,
+	| "createSession"
 	| "capabilities"
+	| "appendBatch"
 	| "append"
 	| "fork"
 	| "writeContextCheckpoint"
@@ -86,14 +94,14 @@ interface IndexedJsonlSession extends JsonlHeaderIndex {
 	readonly events: readonly SessionTreeEvent[];
 }
 
-function cursorOffset(cursor: string | undefined): number {
+function cursorOffset(cursor: RepositoryCursor | undefined): number {
 	if (!cursor) return 0;
 	const value = decodePageCursor(cursor).offset;
 	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new Error("Malformed JSONL page cursor");
 	return value;
 }
 
-function offsetPage<T>(items: readonly T[], cursor: string | undefined, limit: number): Page<T> {
+function offsetPage<T>(items: readonly T[], cursor: RepositoryCursor | undefined, limit: number): Page<T> {
 	const offset = cursorOffset(cursor);
 	const pageItems = items.slice(offset, offset + limit);
 	const nextOffset = offset + pageItems.length;
@@ -104,9 +112,10 @@ function offsetPage<T>(items: readonly T[], cursor: string | undefined, limit: n
 }
 
 function eventText(entry: SessionEntry): string {
-	if (entry.type !== "message") return JSON.stringify(entry);
+	if (entry.type !== "message" || !("content" in entry.message)) return JSON.stringify(entry);
 	const content = entry.message.content;
 	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return JSON.stringify(entry.message);
 	const parts: string[] = [];
 	for (const block of content) {
 		if (block.type === "text") parts.push(block.text);
@@ -124,16 +133,14 @@ function buildEvents(origin: RepositorySessionHeader["identity"]["originId"], en
 		if (active.has(entry.id)) throw new Error(`Cannot hash cyclic JSONL entry graph at ${entry.id}`);
 		active.add(entry.id);
 		const parentHash = entry.parentId && byId.has(entry.parentId) ? visit(byId.get(entry.parentId)!) : null;
-		const semanticPayload: Record<string, unknown> = { ...entry };
-		delete semanticPayload.id;
-		delete semanticPayload.parentId;
+		const semanticPayload = sessionEntrySemanticPayload(entry);
 		const identity = eventIdentityRecord({
 			originId: origin,
 			nativeEntryId: entry.id,
 			parentHash,
 			kind: entry.type,
 			timestamp: entry.timestamp,
-			semanticPayload: semanticPayload as CanonicalValue,
+			semanticPayload,
 		});
 		active.delete(entry.id);
 		hashes.set(entry.id, identity.eventHash);
@@ -141,9 +148,7 @@ function buildEvents(origin: RepositorySessionHeader["identity"]["originId"], en
 	};
 	for (const entry of entries) visit(entry);
 	return entries.map(entry => {
-		const semanticPayload: Record<string, unknown> = { ...entry };
-		delete semanticPayload.id;
-		delete semanticPayload.parentId;
+		const semanticPayload = sessionEntrySemanticPayload(entry);
 		return {
 			eventHash: hashes.get(entry.id)!,
 			parentHash: entry.parentId ? (hashes.get(entry.parentId) ?? null) : null,
@@ -151,7 +156,7 @@ function buildEvents(origin: RepositorySessionHeader["identity"]["originId"], en
 			nativeEntryId: entry.id,
 			kind: entry.type,
 			timestamp: entry.timestamp,
-			payloadId: payloadId(semanticPayload as CanonicalValue),
+			payloadId: payloadId(semanticPayload),
 			canonicalizerVersion: CANONICALIZER_VERSION,
 			entry,
 		};
@@ -263,8 +268,16 @@ export class JsonlSessionRepository implements SessionRepository {
 		return (await this.#headers()).find(session => session.header.identity.branchId === branch)?.header;
 	}
 
+	createSession(request: CreateSessionRequest): Promise<CreateSessionResult> {
+		return this.#operations.createSession(request);
+	}
+
 	append(request: AppendSessionRequest): Promise<AppendSessionResult> {
 		return this.#operations.append(request);
+	}
+
+	appendBatch(request: AppendSessionBatchRequest): Promise<AppendSessionResult> {
+		return this.#operations.appendBatch(request);
 	}
 
 	fork(request: ForkSessionRequest): Promise<ForkSessionResult> {

@@ -13,9 +13,10 @@ import {
 	metadataRevisionId,
 	originId as makeOriginId,
 	replicaId as makeReplicaId,
+	sessionEntrySemanticPayload,
 	sourceAlias as makeSourceAlias,
 	versionId as makeVersionId,
-} from "../identity/identifiers";
+} from "../identity";
 import { adaptRecords, detectHarness } from "./adapters";
 import { canonicalJson, semanticHash, sha256Bytes } from "./canonical";
 import { DEFAULT_NORMALIZATION_LIMITS, streamJsonl, type StreamJsonlResult } from "./stream-jsonl";
@@ -68,9 +69,7 @@ function computeEventHashes(originId: OriginId, entries: readonly SessionEntry[]
 		if (active.has(entry.id)) throw new Error(`Cannot hash cyclic entry graph at ${entry.id}`);
 		active.add(entry.id);
 		const parentHash = entry.parentId ? (byId.has(entry.parentId) ? visit(byId.get(entry.parentId)!) : null) : null;
-		const payload: Record<string, unknown> = { ...entry };
-		delete payload.id;
-		delete payload.parentId;
+		const payload = sessionEntrySemanticPayload(entry);
 		const { eventHash } = eventIdentityRecord({
 			originId,
 			nativeEntryId: entry.id,

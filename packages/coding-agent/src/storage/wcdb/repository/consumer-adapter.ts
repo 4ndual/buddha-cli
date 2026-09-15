@@ -1,7 +1,9 @@
 import type {
 	BranchId,
 	ContextTail,
+	EventHash,
 	Page,
+	RepositoryCursor,
 	RepositorySessionHeader,
 	SessionListQuery,
 	SessionRepository,
@@ -61,13 +63,13 @@ export class SessionRepositoryConsumerAdapter {
 
 	resume(
 		branchId: BranchId,
-		options: { maxEntries: number; maxPayloadBytes: number; afterHash?: string | null; throughHash?: string | null },
+		options: { maxEntries: number; maxPayloadBytes: number; afterHash?: EventHash | null; throughHash?: EventHash | null },
 	): Promise<ContextTail> {
 		return this.#repository.readContextTail({ branchId, ...options });
 	}
 
 	async *history(branchId: BranchId, pageSize = 100): AsyncIterable<readonly SessionTreeEvent[]> {
-		let cursor: string | undefined;
+		let cursor: RepositoryCursor | undefined;
 		do {
 			const page = await this.#repository.listTree({ branchId, direction: "ancestors", limit: pageSize, cursor });
 			if (page.items.length > 0) yield page.items;
@@ -76,7 +78,7 @@ export class SessionRepositoryConsumerAdapter {
 	}
 
 	async stats(pageSize = 100): Promise<SessionConsumerStats> {
-		let cursor: string | undefined;
+		let cursor: RepositoryCursor | undefined;
 		const totals: SessionConsumerStats = { sessions: 0, entries: 0, messages: 0, payloadBytes: 0 };
 		do {
 			const page = await this.#repository.listSessions({ limit: pageSize, cursor });

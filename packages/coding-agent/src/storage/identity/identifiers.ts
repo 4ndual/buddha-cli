@@ -1,3 +1,4 @@
+import type { SessionEntry } from "../../session/session-entries";
 import type {
 	BranchId,
 	ContextHash,
@@ -38,6 +39,12 @@ export function originId(input: SourceAliasInput): OriginId {
 
 export function replicaId(profileNamespace: string, installationNonce: string): ReplicaId {
 	return namespacedHash("replica-v1", { profileNamespace, installationNonce }) as ReplicaId;
+}
+
+/** Removes storage-local lineage fields before semantic event/payload hashing. */
+export function sessionEntrySemanticPayload(entry: SessionEntry): CanonicalValue {
+	const { id: _id, parentId: _parentId, ...semanticPayload } = entry;
+	return semanticPayload as unknown as CanonicalValue;
 }
 
 export interface EventIdentityInput {

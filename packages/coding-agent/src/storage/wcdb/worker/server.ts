@@ -1,5 +1,7 @@
 import {
 	estimateWireBytes,
+	WCDB_DEFAULT_MAX_QUEUED_BYTES,
+	WCDB_DEFAULT_MAX_REQUEST_BYTES,
 	isWriteOperation,
 	type WcdbBatchResult,
 	type WcdbErrorPayload,
@@ -13,8 +15,6 @@ import {
 
 const DEFAULT_READ_POOL_SIZE = 2;
 const MAX_READ_POOL_SIZE = 8;
-const DEFAULT_MAX_QUEUED_BYTES = 16 * 1024 * 1024;
-const DEFAULT_MAX_REQUEST_BYTES = 8 * 1024 * 1024;
 const KNOWN_ERROR_CODES: Readonly<Record<WcdbErrorPayload["code"], true>> = {
 	ABORTED: true,
 	BACKPRESSURE: true,
@@ -95,8 +95,8 @@ export class WcdbWorkerServer {
 	#accepting = false;
 	#closing = false;
 	#readPoolSize = DEFAULT_READ_POOL_SIZE;
-	#maxQueuedBytes = DEFAULT_MAX_QUEUED_BYTES;
-	#maxRequestBytes = DEFAULT_MAX_REQUEST_BYTES;
+	#maxQueuedBytes = WCDB_DEFAULT_MAX_QUEUED_BYTES;
+	#maxRequestBytes = WCDB_DEFAULT_MAX_REQUEST_BYTES;
 	#queuedBytes = 0;
 	#activeReads = 0;
 	#writerActive = false;
@@ -138,9 +138,10 @@ export class WcdbWorkerServer {
 			return;
 		}
 		this.#opening = true;
-		this.#readPoolSize = Math.max(1, Math.min(options.readPoolSize ?? DEFAULT_READ_POOL_SIZE, MAX_READ_POOL_SIZE));
-		this.#maxQueuedBytes = options.maxQueuedBytes ?? DEFAULT_MAX_QUEUED_BYTES;
-		this.#maxRequestBytes = options.maxRequestBytes ?? Math.min(DEFAULT_MAX_REQUEST_BYTES, this.#maxQueuedBytes);
+		this.#readPoolSize = 1;
+		this.#maxQueuedBytes = options.maxQueuedBytes ?? WCDB_DEFAULT_MAX_QUEUED_BYTES;
+		this.#maxRequestBytes =
+			options.maxRequestBytes ?? Math.min(WCDB_DEFAULT_MAX_REQUEST_BYTES, this.#maxQueuedBytes);
 		try {
 			if (!Number.isSafeInteger(this.#maxQueuedBytes) || this.#maxQueuedBytes < 1) {
 				throw Object.assign(new Error("Invalid maxQueuedBytes"), { code: "INVALID" });

@@ -1,6 +1,7 @@
 import { workerHostEntry } from "@oh-my-pi/pi-utils/worker-host";
 import {
 	estimateWireBytes,
+	WCDB_DEFAULT_MAX_QUEUED_BYTES,
 	WCDB_WORKER_ARG,
 	type WcdbBatchResult,
 	type WcdbClientTransport,
@@ -15,7 +16,6 @@ import {
 const DEFAULT_OPEN_TIMEOUT_MS = 10_000;
 const DEFAULT_OPERATION_TIMEOUT_MS = 30_000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000;
-const DEFAULT_CLIENT_QUEUED_BYTES = 16 * 1024 * 1024;
 
 export class WcdbWorkerError extends Error {
 	readonly code: WcdbErrorPayload["code"];
@@ -56,7 +56,7 @@ interface ByteWaiter {
 	readonly resolve: (release: () => void) => void;
 	readonly reject: (error: Error) => void;
 	readonly signal?: AbortSignal;
-	readonly onAbort?: () => void;
+	onAbort?: () => void;
 }
 
 class ByteBudget {
@@ -190,7 +190,7 @@ export class WcdbWorkerClient {
 			return new WcdbWorkerClient(
 				transport,
 				health,
-				options.maxQueuedBytes ?? DEFAULT_CLIENT_QUEUED_BYTES,
+				options.maxQueuedBytes ?? WCDB_DEFAULT_MAX_QUEUED_BYTES,
 				clientOptions.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS,
 			);
 		} catch (error) {

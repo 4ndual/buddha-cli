@@ -36,7 +36,7 @@ interface GateCatalog {
 const fixtureDir = path.resolve(import.meta.dir, "../../fixtures/wcdb");
 
 async function sha256(bytes: Uint8Array): Promise<string> {
-	const digest = await crypto.subtle.digest("SHA-256", bytes);
+	const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer);
 	return Buffer.from(digest).toString("hex");
 }
 

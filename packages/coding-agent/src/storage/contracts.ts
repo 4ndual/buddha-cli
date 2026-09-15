@@ -230,6 +230,18 @@ export interface SessionTreeEvent {
 	entry?: SessionEntry;
 }
 
+export interface CreateSessionRequest {
+	header: SessionHeader;
+	replicaId: ReplicaId;
+	operationId: string;
+}
+
+export interface CreateSessionResult {
+	identity: SessionIdentity;
+	created: boolean;
+	durability: StorageDurability;
+}
+
 export interface AppendSessionRequest {
 	branchId: BranchId;
 	expectedHeadHash: EventHash | null;
@@ -237,6 +249,16 @@ export interface AppendSessionRequest {
 	replicaId: ReplicaId;
 	operationId: string;
 	/** Stable source identity when the append came from an imported working copy. */
+	sourceAlias?: SourceAlias;
+}
+
+export interface AppendSessionBatchRequest {
+	branchId: BranchId;
+	expectedHeadHash: EventHash | null;
+	entries: readonly SessionEntry[];
+	replicaId: ReplicaId;
+	operationId: string;
+	/** Stable source identity when the batch came from an imported working copy. */
 	sourceAlias?: SourceAlias;
 }
 
@@ -277,6 +299,7 @@ export interface ForkSessionRequest {
 	forkPointHash: EventHash | null;
 	parentVersionId: VersionId;
 	replicaId: ReplicaId;
+	header: SessionHeader;
 	operationId: string;
 	/** Caller-stable identity. Repeating the request returns the same branch. */
 	branchKey: string;
@@ -288,6 +311,7 @@ export interface ForkSessionResult {
 	headHash: EventHash | null;
 	forkPointHash: EventHash | null;
 	created: boolean;
+	durability: StorageDurability;
 }
 
 export interface ContextCheckpoint {
@@ -519,7 +543,9 @@ export interface SessionRepository {
 	searchSessions(query: SessionSearchQuery): Promise<Page<SessionSearchHit>>;
 	listTree(query: SessionTreeQuery): Promise<Page<SessionTreeEvent>>;
 	getHeader(branchId: BranchId): Promise<RepositorySessionHeader | undefined>;
+	createSession(request: CreateSessionRequest): Promise<CreateSessionResult>;
 	append(request: AppendSessionRequest): Promise<AppendSessionResult>;
+	appendBatch(request: AppendSessionBatchRequest): Promise<AppendSessionResult>;
 	fork(request: ForkSessionRequest): Promise<ForkSessionResult>;
 	writeContextCheckpoint(request: WriteContextCheckpointRequest): Promise<void>;
 	readContextTail(request: ContextTailRequest): Promise<ContextTail>;

@@ -1,4 +1,4 @@
-import { CString, dlopen, FFIType, ptr, toArrayBuffer, type DynamicLibrary } from "bun:ffi";
+import { CString, dlopen, FFIType, ptr, toArrayBuffer, type Library } from "bun:ffi";
 
 import { decodeWcdbBatch, encodeWcdbBatch, type WcdbBatchRequest, type WcdbBatchResult } from "./protocol";
 
@@ -24,7 +24,7 @@ const NATIVE_SYMBOLS = {
 	omp_wcdb_free_buffer: { args: [FFIType.ptr, FFIType.u64], returns: FFIType.void },
 } as const;
 
-type WcdbDynamicLibrary = DynamicLibrary<typeof NATIVE_SYMBOLS>;
+type WcdbDynamicLibrary = Library<typeof NATIVE_SYMBOLS>;
 
 export type WcdbNativeStatus =
 	| 0
@@ -136,10 +136,10 @@ function readBuildId(library: WcdbDynamicLibrary): string {
 }
 
 function readOwnedBuffer(library: WcdbDynamicLibrary, output: BigUint64Array): Uint8Array {
-	const address = Number(output[0]);
+	const address = output[0];
 	const length = Number(output[1]);
-	if (!Number.isSafeInteger(address) || address <= 0 || !Number.isSafeInteger(length) || length < 0 || length > MAX_NATIVE_BUFFER_BYTES) {
-		if (address > 0 && Number.isSafeInteger(address) && Number.isSafeInteger(length) && length >= 0) {
+	if (address === 0n || !Number.isSafeInteger(length) || length < 0 || length > MAX_NATIVE_BUFFER_BYTES) {
+		if (address !== 0n && Number.isSafeInteger(length) && length >= 0) {
 			library.symbols.omp_wcdb_free_buffer(address, BigInt(length));
 		}
 		throw new WcdbNativeUnavailableError("WCDB returned an invalid owned buffer");
@@ -151,17 +151,17 @@ function readOwnedBuffer(library: WcdbDynamicLibrary, output: BigUint64Array): U
 	}
 }
 
-function lastError(library: WcdbDynamicLibrary, handle: number): string | undefined {
+function lastError(library: WcdbDynamicLibrary, handle: bigint): string | undefined {
 	const output = new BigUint64Array(2);
 	const status = library.symbols.omp_wcdb_last_error(handle, ptr(output));
 	if (status !== 0 || output[0] === 0n || output[1] === 0n) return undefined;
 	return new TextDecoder("utf-8", { fatal: false }).decode(readOwnedBuffer(library, output));
 }
 
-function assertStatus(library: WcdbDynamicLibrary, handle: number, operation: string, status: number): void {
+function assertStatus(library: WcdbDynamicLibrary, handle: bigint, operation: string, status: number): void {
 	if (status === 0) return;
 	const normalized = status >= 0 && status <= 11 ? (status as WcdbNativeStatus) : 10;
-	throw new WcdbNativeError(normalized, operation, handle === 0 ? undefined : lastError(library, handle));
+	throw new WcdbNativeError(normalized, operation, handle === 0n ? undefined : lastError(library, handle));
 }
 
 function openVerifiedLibrary(libraryPath: string): { library: WcdbDynamicLibrary; abiVersion: number; buildId: string } {
@@ -220,8 +220,8 @@ export function loadWcdbNative(options: WcdbNativeLoadOptions): WcdbNativeHandle
 	const output = new BigUint64Array(1);
 	const flags = (options.readOnly ? 1 : 0) | (options.create === false ? 0 : 2);
 	const openStatus = verified.library.symbols.omp_wcdb_open(ptr(databasePath), BigInt(databasePath.byteLength), flags, ptr(output));
-	const handle = Number(output[0]);
-	if (openStatus !== 0 || !Number.isSafeInteger(handle) || handle <= 0) {
+	const handle = output[0];
+	if (openStatus !== 0 || handle === 0n) {
 		verified.library.close();
 		const status = openStatus >= 0 && openStatus <= 11 ? (openStatus as WcdbNativeStatus) : 10;
 		throw new WcdbNativeError(status, "open");
