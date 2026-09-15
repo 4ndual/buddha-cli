@@ -1,3 +1,4 @@
+import { TITLE_CHANGE_ENTRY_TYPE, type TitleChangeEntry } from "../../session-entries";
 import { canonicalSerialize } from "../canonical";
 import {
 	computeEventIdentity,
@@ -499,7 +500,9 @@ class EmbeddedTransaction implements TursoRuntimeTransaction {
 
 	async updateTitle(request: UpdateSessionTitleRequest): Promise<RepositorySessionHeader> {
 		const current = await this.getHeader(request.branchId);
-		if (!current || current.headEventHash !== request.expectedHeadHash) throw new Error("Turso title update lost expected-head CAS");
+		if (!current || current.headEventHash !== request.expectedHeadHash) {
+			throw new Error("Turso title update lost expected-head CAS");
+		}
 		const metadata = {
 			...current.metadata,
 			extensions: { ...current.metadata.extensions, titleUpdatedAt: request.updatedAt },
@@ -508,17 +511,37 @@ class EmbeddedTransaction implements TursoRuntimeTransaction {
 		else metadata.title = request.title;
 		if (request.source === undefined) delete metadata.titleSource;
 		else metadata.titleSource = request.source;
-		const tree = await ancestry(this.transaction, current.headEventHash);
-		const revision = await putMetadata(this.transaction, current.originId, metadata);
-		const version = computeVersionIdentity({ originId: current.originId, headEventHash: current.headEventHash, treeEventHashes: tree.map(row => row.event_hash as EventHash), metadata });
-		await this.transaction.run(
-			"INSERT OR IGNORE INTO versions(version_id, origin_id, branch_id, parent_version_id, head_hash, metadata_revision_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-			version.id, current.originId, current.branchId, current.versionId, current.headEventHash, revision, timestamp(current.modifiedAt),
-		);
-		await this.transaction.run("UPDATE branches SET head_version_id = ? WHERE branch_id = ? AND head_hash IS ?", version.id, current.branchId, current.headEventHash);
-		const header = await this.getHeader(current.branchId);
-		if (!header) throw new Error("Turso title update lost branch");
-		return header;
+		const eventSource = request.source ?? current.metadata.titleSource ?? "user";
+		const tree = await ancestry(this.transaction, request.expectedHeadHash);
+		const nativeParentId = request.expectedHeadHash === null ? null : (tree.at(-1)?.native_entry_id ?? null);
+		const digest = new Bun.CryptoHasher("sha256")
+			.update(
+				JSON.stringify([
+					current.branchId,
+					request.expectedHeadHash,
+					request.updatedAt,
+					request.title ?? null,
+					eventSource,
+				]),
+			)
+			.digest("hex");
+		const titleChange: TitleChangeEntry = {
+			type: TITLE_CHANGE_ENTRY_TYPE,
+			id: `title-change-${digest.slice(0, 32)}`,
+			parentId: nativeParentId,
+			timestamp: request.updatedAt,
+			title: request.title ?? "",
+			source: eventSource,
+			...(current.metadata.title === undefined ? {} : { previousTitle: current.metadata.title }),
+		};
+		return (
+			await this.append({
+				request: { ...request, entries: [titleChange], metadata },
+				targetBranchId: current.branchId,
+				parentBranchId: null,
+				forkPointHash: current.forkPointHash,
+			})
+		).header;
 	}
 
 	async drop(request: DropSessionRequest): Promise<boolean> {

@@ -119,7 +119,10 @@ describe("concrete embedded Turso runtime adapter", () => {
 		expect(embedded).toEqual(jsonl);
 		const payloadBytes = new Uint8Array([0, 1, 2, 3, 254, 255]);
 		const descriptor = await embeddedRepository.writePayload({
+			expectedModeGeneration: modeGeneration,
 			bytes: [payloadBytes.subarray(0, 2), payloadBytes.subarray(2)],
+			maxBytes: payloadBytes.byteLength,
+			maxChunkBytes: payloadBytes.byteLength,
 			mediaType: "application/octet-stream",
 		});
 		const observedPayload: number[] = [];
@@ -145,9 +148,17 @@ describe("concrete embedded Turso runtime adapter", () => {
 		const reopened = createTursoSessionRepository({ adapter: reopenedAdapter, defaultPageSize: 2, maxPageSize: 2 });
 		const page = await reopened.listSessions({ limit: 2 });
 		expect(page.items).toHaveLength(1);
-		expect((await reopened.readEvents({ branchId: page.items[0]!.branchId, limit: 2 })).items.map(item => item.entry)).toEqual([
-			entry,
-		]);
+		const reopenedEntries = (await reopened.readEvents({ branchId: page.items[0]!.branchId, limit: 2 })).items.map(
+			item => item.entry,
+		);
+		expect(reopenedEntries[0]).toEqual(entry);
+		expect(reopenedEntries[1]).toMatchObject({
+			type: "title_change",
+			parentId: entry.id,
+			title: "Renamed differential",
+			previousTitle: header.title,
+			source: "user",
+		});
 		expect(await reopened.health()).toMatchObject({ mode: "db", status: "ok", writable: true });
 		await reopened.close();
 	});

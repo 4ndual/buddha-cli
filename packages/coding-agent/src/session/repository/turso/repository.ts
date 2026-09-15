@@ -95,10 +95,7 @@ export interface TursoRuntimeTransaction {
 	createSession(mutation: TursoCreateMutation): Promise<RepositorySessionHeader>;
 	append(mutation: TursoAppendMutation): Promise<TursoAppendMutationResult>;
 	fork(mutation: TursoForkMutation): Promise<RepositorySessionHeader>;
-	/**
-	 * Applies a metadata-only version at expectedHeadHash. A lost CAS is retained
-	 * as a sibling version from that head rather than merged with current metadata.
-	 */
+	/** Applies an append-only title-change event at expectedHeadHash. */
 	updateTitle(request: UpdateSessionTitleRequest): Promise<RepositorySessionHeader>;
 	drop(request: DropSessionRequest): Promise<boolean>;
 	relocate(request: RelocateSessionRequest): Promise<SessionLocator>;
