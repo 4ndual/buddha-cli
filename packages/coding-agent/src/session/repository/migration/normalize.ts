@@ -1057,12 +1057,11 @@ async function normalizeItem(
 			throw error;
 		}
 		const digest = outputHasher.digest("hex");
-		await publishExistingFileNoClobber(temporary, jsonlPath, options.destinationRoot);
 		let first = true;
 		let malformed = 0;
 		let validatedRecords = 0;
 		await visitEntriesFromFileStream(
-			jsonlPath,
+			temporary,
 			entry => {
 				if (first) {
 					first = false;
@@ -1081,6 +1080,7 @@ async function normalizeItem(
 				`actual=${validatedRecords}`,
 			]);
 		}
+		await publishExistingFileNoClobber(temporary, jsonlPath, options.destinationRoot);
 		const output: NormalizedOutput = {
 			jsonlPath,
 			manifestPath,
