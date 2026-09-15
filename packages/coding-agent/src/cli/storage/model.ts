@@ -74,6 +74,16 @@ export interface StorageControlModel {
 	activeMode: StorageMode;
 	/** Persisted fencing generation required by every repository mutation. */
 	configurationGeneration: number;
+	generationToken?: {
+		generation: number;
+		nonce: string;
+	};
+	preparedTransition?: {
+		state: "preparing" | "verified" | "aborted";
+		targetMode: StorageMode;
+		transitionId: string;
+		verificationReceipt?: string;
+	};
 	modes: readonly StorageModeOption[];
 	lastVerifiedTransfer?: VerifiedTransferSummary;
 	databaseCapability: DatabaseCapabilityStatus;
