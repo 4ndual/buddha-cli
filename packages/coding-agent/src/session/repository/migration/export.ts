@@ -92,7 +92,7 @@ export async function exportLogicalBundle(
 		},
 	});
 	if (!publication) {
-		const verified = await verifyPublishedBundle(options.destination);
+		const verified = await verifyPublishedBundle(options.destination, { allowedRoot: options.allowedRoot });
 		publication = verified;
 	}
 	job = await recordPublicationReceipt(options.journalPath, {
@@ -143,7 +143,7 @@ async function publishOrRecover(bundle: LogicalBundle, options: ExportLogicalBun
 		});
 	} catch (error) {
 		if (!(error instanceof Error) || !error.message.startsWith("Refusing to replace existing path:")) throw error;
-		const verified = await verifyPublishedBundle(options.destination);
+		const verified = await verifyPublishedBundle(options.destination, { allowedRoot: options.allowedRoot });
 		if (verified.manifest.generation_id !== options.generationId) {
 			throw new Error("Existing publication belongs to a different generation");
 		}

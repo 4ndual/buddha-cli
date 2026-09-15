@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
 	LOGICAL_BUNDLE_FORMAT,
 	canonicalJson,
+	consumeBoundedArchiveStream,
+	consumeSessionArchiveItemStream,
 	publishLogicalBundle,
 	sha256,
 	verifyPublishedBundle,
@@ -184,6 +186,66 @@ describe("resumable byte-bounded jobs", () => {
 	});
 });
 
+describe("bounded archive streaming", () => {
+	test("consumes a giant session page-by-page without exceeding record or page limits", async () => {
+		const pageWidths: number[] = [];
+		const stream = {
+			entryCount: 128,
+			entryBytes: 128 * 1024,
+			payloadRefCount: 0,
+			async *openEntryPages() {
+				for (let page = 0; page < 32; page += 1) {
+					yield {
+						items: Array.from({ length: 4 }, () => ({ encodedByteLength: 1024, value: "x".repeat(1024) })),
+						byteLength: 4 * 1024,
+					};
+				}
+			},
+			async *openPayloadPages() {},
+		};
+		const receipt = await consumeSessionArchiveItemStream(stream, {
+			maxEntryBytes: 1024,
+			maxTotalEntries: 128,
+			maxTotalEntryBytes: 128 * 1024,
+			maxEntriesPerPage: 4,
+			maxPayloadRefsPerPage: 4,
+			maxTotalPayloadRefs: 4,
+		}, {
+			consumeEntryPage: async (page) => { pageWidths.push(page.items.length); },
+			consumePayloadPage: async () => {},
+		});
+		expect(receipt).toEqual({ entryCount: 128, entryBytes: 128 * 1024, payloadRefs: 0 });
+		expect(Math.max(...pageWidths)).toBe(4);
+		expect(pageWidths).toHaveLength(32);
+	});
+
+	test("rejects an oversized record before handing its page to the consumer", async () => {
+		let consumed = false;
+		const stream = {
+			entryCount: 1,
+			entryBytes: 2048,
+			payloadRefCount: 0,
+			async *openEntryPages() {
+				yield { items: ["x".repeat(2048)], byteLength: 2048 };
+			},
+			async *openPayloadPages() {},
+		};
+		await expect(consumeBoundedArchiveStream(stream, {
+			maxEntryBytes: 1024,
+			maxTotalEntries: 1,
+			maxTotalEntryBytes: 4096,
+			maxEntriesPerPage: 4,
+			maxPayloadRefsPerPage: 4,
+			maxTotalPayloadRefs: 4,
+		}, {
+			measureEntry: (entry) => Buffer.byteLength(entry),
+			consumeEntryPage: async () => { consumed = true; },
+			consumePayloadPage: async () => {},
+		})).rejects.toThrow("record byte limit");
+		expect(consumed).toBe(false);
+	});
+});
+
 describe("logical bundle publication and recovery", () => {
 	test("publishes only complete verified manifests and leaves faulted output unpublished", async () => {
 		const root = await temporaryRoot();
@@ -207,11 +269,55 @@ describe("logical bundle publication and recovery", () => {
 			destination,
 			generationId: "complete",
 		});
-		const verified = await verifyPublishedBundle(destination);
+		const verified = await verifyPublishedBundle(destination, { allowedRoot: root });
 		expect(verified.manifestSha256).toBe(publication.manifestSha256);
 		expect(verified.manifest.bundle_sha256).toBe(sha256(canonicalJson(bundle)));
 		await writeFile(join(destination, "bundle.json"), "{}", "utf8");
-		await expect(verifyPublishedBundle(destination)).rejects.toThrow("Manifest verification failed");
+		await expect(verifyPublishedBundle(destination, { allowedRoot: root })).rejects.toThrow("Manifest verification failed");
+	});
+
+	test("rejects a bundle path swapped after its directory descriptor is retained", async () => {
+		const root = await temporaryRoot();
+		const destination = join(root, "race-bundle");
+		const moved = join(root, "retained-inode");
+		const outside = join(root, "replacement");
+		await mkdir(outside);
+		await publishLogicalBundle(fixture("race", "C"), {
+			allowedRoot: root,
+			destination,
+			generationId: "race",
+		});
+		await expect(
+			verifyPublishedBundle(destination, {
+				allowedRoot: root,
+				afterDirectoryOpen: async () => {
+					await rename(destination, moved);
+					await symlink(outside, destination, "dir");
+				},
+			}),
+		).rejects.toThrow();
+	});
+
+	test("rejects a manifest member swapped to a symlink after retaining the bundle descriptor", async () => {
+		const root = await temporaryRoot();
+		const destination = join(root, "leaf-race-bundle");
+		const outside = join(root, "outside-bundle.json");
+		const retained = join(destination, "bundle.retained");
+		await writeFile(outside, canonicalJson(fixture("outside", "D")));
+		await publishLogicalBundle(fixture("leaf-race", "C"), {
+			allowedRoot: root,
+			destination,
+			generationId: "leaf-race",
+		});
+		await expect(
+			verifyPublishedBundle(destination, {
+				allowedRoot: root,
+				afterDirectoryOpen: async () => {
+					await rename(join(destination, "bundle.json"), retained);
+					await symlink(outside, join(destination, "bundle.json"));
+				},
+			}),
+		).rejects.toThrow();
 	});
 
 	test("recovers publication that became durable before its job receipt", async () => {
