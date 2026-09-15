@@ -245,6 +245,61 @@ describe("JsonlSessionRepository", () => {
 		).rejects.toBeInstanceOf(StaleModeGenerationError);
 	});
 
+	test("creates fresh branches idempotently and enumerates related resources by keyset", async () => {
+		const repo = repository(temporaryRoot(), "create-related");
+		const create = async (nativeId: string, callerKey: string) =>
+			repo.createSession({
+				source: { sourceNamespace: "omp", installationNamespace: "profile", nativeId },
+				header: {
+					type: "session",
+					version: 3,
+					id: nativeId,
+					timestamp: "2026-09-15T00:00:00.000Z",
+					cwd: "/workspace",
+				},
+				callerKey,
+				expectedModeGeneration: generation,
+			});
+		const parent = await create("new-parent", "parent-key");
+		expect((await create("new-parent", "parent-key")).branchId).toBe(parent.branchId);
+		const appended = await repo.appendWithExpectedHead({
+			branchId: parent.branchId,
+			expectedHeadHash: null,
+			expectedModeGeneration: generation,
+			entries: [customEntry("first", null, "fresh")],
+		});
+		expect(appended.status).toBe("appended");
+		const childA = await create("new-child-a", "child-a-key");
+		const childB = await create("new-child-b", "child-b-key");
+		for (const [key, target] of [
+			["child-a", childA],
+			["child-b", childB],
+		] as const) {
+			await repo.registerRelatedResource({
+				locator: {
+					owner: { branchId: appended.header.branchId, versionId: appended.header.versionId },
+					kind: "child-session",
+					key,
+				},
+				target: { branchId: target.branchId, versionId: target.versionId },
+				expectedModeGeneration: generation,
+			});
+		}
+		const first = await repo.listRelatedResources({
+			owner: { branchId: appended.header.branchId, versionId: appended.header.versionId },
+			kind: "child-session",
+			limit: 1,
+		});
+		expect(first.items.map(binding => binding.locator.key)).toEqual(["child-a"]);
+		const second = await repo.listRelatedResources({
+			owner: { branchId: appended.header.branchId, versionId: appended.header.versionId },
+			kind: "child-session",
+			limit: 1,
+			cursor: first.nextCursor,
+		});
+		expect(second.items.map(binding => binding.locator.key)).toEqual(["child-b"]);
+	});
+
 	test("module graph remains valid when a DB driver import is forbidden", async () => {
 		const entrypoint = path.resolve(import.meta.dir, "../../../src/session/repository/jsonl-repository.ts");
 		const result = await Bun.build({
