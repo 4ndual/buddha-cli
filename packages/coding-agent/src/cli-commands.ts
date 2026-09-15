@@ -188,6 +188,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.statsHelp,
 	},
 	{
+		name: "storage",
+		load: () => import("./commands/storage").then(m => m.default),
+		help: commandHelp.storageHelp,
+	},
+	{
 		name: "update",
 		load: () => import("./commands/update").then(m => m.default),
 		help: commandHelp.updateHelp,

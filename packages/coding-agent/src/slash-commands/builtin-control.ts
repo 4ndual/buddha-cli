@@ -1,4 +1,5 @@
 import { runPauseScreen } from "../modes/components/pause-screen";
+import { openStoragePanel } from "../storage/control/storage-panel-controller";
 import { shutdownHandlerTui } from "./builtin-lifecycle";
 import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import type { SlashCommandSpec } from "./types";
@@ -70,6 +71,15 @@ export const BUILTIN_CONTROL_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		handleTui: async (_command, runtime) => {
 			runtime.ctx.editor.setText("");
 			await runPauseScreen(runtime.ctx);
+		},
+	},
+	{
+		name: "storage",
+		icon: "action",
+		description: "Inspect and control local session storage",
+		handleTui: async (_command, runtime) => {
+			runtime.ctx.editor.setText("");
+			await openStoragePanel(runtime.ctx);
 		},
 	},
 	{
