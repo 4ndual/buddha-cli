@@ -68,6 +68,14 @@ describe("repository-backed SessionManager", () => {
 
 		const resolved = await resolveRepositorySession(repo, original!.branchId.slice(0, 12), { pageSize: 1 });
 		expect(resolved?.locator.branchId).toBe(original!.branchId);
+
+		const live = await SessionManager.createInRepository(repo, "/workspace/live");
+		await live.setRepositorySession(repo, original!, { maxEntries: 10, pageSize: 1 });
+		expect(live.getSessionLocator()).toEqual(original);
+		expect(live.buildSessionContext().messages[0]).toMatchObject({
+			role: "user",
+			content: "repository context",
+		});
 		expect(resolved?.path).toBeUndefined();
 
 		const fork = await manager.fork();

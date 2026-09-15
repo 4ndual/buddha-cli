@@ -1557,6 +1557,34 @@ export class SessionManager {
 		await this.#setSessionFile(sessionFile);
 	}
 
+	/**
+	 * Retarget this live manager to a logical repository branch without replacing
+	 * the manager object captured by AgentSession coordinators.
+	 */
+	async setRepositorySession(
+		repository: SessionRepository,
+		locator: SessionLocator,
+		options: { maxEntries?: number; pageSize?: number } = {},
+	): Promise<void> {
+		await this.flush();
+		const opened = await SessionManager.openRepository(repository, locator, {
+			initialCwd: this.#cwd,
+			...options,
+		});
+		this.restoreState(opened.captureState());
+		this.#repository = repository;
+		this.#repositoryHeader = opened.#repositoryHeader;
+		this.#repositoryModeGeneration = opened.#repositoryModeGeneration;
+		this.#repositoryHead = opened.#repositoryHead;
+		this.#repositoryTail = Promise.resolve();
+		this.#repositoryDraftRevision = undefined;
+		this.#sessionFile = undefined;
+		this.#sessionDir = "";
+		this.#suppressBreadcrumb = true;
+		this.#fallbackRuntimeOnly = false;
+		this.#fileIsCurrent = true;
+	}
+
 	async #setSessionFile(sessionFile: string, loadedSession?: SessionLoadResult): Promise<void> {
 		await this.#drainAndCloseWriter();
 		this.#clearDiskError();
