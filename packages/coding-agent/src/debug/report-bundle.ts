@@ -10,6 +10,12 @@ import * as path from "node:path";
 import type { WorkProfile } from "@oh-my-pi/pi-natives";
 import { APP_NAME, getLogPath, getLogsDir, getReportsDir, isEnoent } from "@oh-my-pi/pi-utils";
 import { writeArchive } from "@oh-my-pi/pi-utils/ar";
+import {
+	exportRepositorySessionItem,
+	RepositoryArtifactManager,
+	type ExplicitRepositoryExportSource,
+} from "../session/repository-consumers";
+import type { KeysetCursor } from "../session/repository/types";
 import type { CpuProfile, HeapSnapshot } from "./profiler";
 import { collectSystemInfo, sanitizeEnv } from "./system-info";
 
@@ -40,6 +46,8 @@ async function readLastLines(filePath: string, n: number, maxBytes = MAX_LOG_BYT
 export interface ReportBundleOptions {
 	/** Session file path */
 	sessionFile: string | undefined;
+	/** Explicit DB export source. Mutually exclusive with sessionFile. */
+	repositorySession?: ExplicitRepositoryExportSource;
 	/** Settings to include */
 	settings?: Record<string, unknown>;
 	/** CPU profile (for performance reports) */
@@ -139,6 +147,9 @@ export async function createReportBundle(options: ReportBundleOptions): Promise<
 		const artifactsDir = options.sessionFile.slice(0, -6);
 		await addDirectoryToArchive(data, files, artifactsDir, "artifacts");
 	}
+	if (options.repositorySession) {
+		await addRepositorySessionToArchive(data, files, options.repositorySession, "", new Set());
+	}
 
 	// CPU profile
 	if (options.cpuProfile) {
@@ -170,6 +181,68 @@ export async function createReportBundle(options: ReportBundleOptions): Promise<
 	await writeArchive(outputPath, "tar.gz", Object.entries(data));
 
 	return { path: outputPath, files };
+}
+
+async function addRepositorySessionToArchive(
+	data: Record<string, string>,
+	files: string[],
+	source: ExplicitRepositoryExportSource,
+	prefix: string,
+	visited: Set<string>,
+): Promise<void> {
+	const identity = `${source.locator.branchId}:${source.locator.versionId ?? ""}`;
+	if (visited.has(identity)) return;
+	visited.add(identity);
+	const item = await exportRepositorySessionItem(source);
+	const sessionPath = prefix ? `${prefix}/session.jsonl` : "session.jsonl";
+	data[sessionPath] = `${[JSON.stringify(item.header), ...item.entries.map(entry => JSON.stringify(entry))].join("\n")}\n`;
+	files.push(sessionPath);
+
+	const health = await source.repository.health();
+	const artifacts = new RepositoryArtifactManager(source.repository, source.locator, health.modeGeneration);
+	let cursor: KeysetCursor | undefined;
+	do {
+		const page = await source.repository.listRelatedResources({
+			owner: source.locator,
+			kind: "artifact",
+			cursor,
+			limit: 200,
+		});
+		for (const binding of page.items) {
+			const bytes = await artifacts.read(binding.locator.key);
+			if (!bytes) continue;
+			const artifactPath = `${prefix ? `${prefix}/` : ""}artifacts/${binding.locator.key}.log`;
+			data[artifactPath] = new TextDecoder().decode(bytes);
+			files.push(artifactPath);
+		}
+		cursor = page.nextCursor;
+	} while (cursor !== undefined);
+
+	for (const kind of ["child-session", "advisor-session"] as const) {
+		cursor = undefined;
+		do {
+			const page = await source.repository.listRelatedResources({
+				owner: source.locator,
+				kind,
+				cursor,
+				limit: 200,
+			});
+			for (const binding of page.items) {
+				await addRepositorySessionToArchive(
+					data,
+					files,
+					{
+						repository: source.repository,
+						transferService: source.transferService,
+						locator: binding.target,
+					},
+					`${prefix ? `${prefix}/` : ""}artifacts/${binding.locator.key}`,
+					visited,
+				);
+			}
+			cursor = page.nextCursor;
+		} while (cursor !== undefined);
+	}
 }
 
 /** Recursively add every file under a directory to the archive. */

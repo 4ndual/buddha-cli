@@ -5,8 +5,14 @@ import { logger } from "@oh-my-pi/pi-utils";
 import { ADVISOR_TRANSCRIPT_FILENAME, isAdvisorTranscriptName } from "../advisor/transcript-recorder";
 import { resolveExplicitModelRole } from "../config/model-resolver";
 import { assistantTurnProducedOutput } from "../session/messages";
-import { EPHEMERAL_MODEL_CHANGE_ROLE } from "../session/session-entries";
+import { EPHEMERAL_MODEL_CHANGE_ROLE, type SessionEntry } from "../session/session-entries";
 import { visitEntriesFromFileStream } from "../session/session-loader";
+import {
+	MAX_MATERIALIZED_TRANSCRIPT_ENTRIES,
+	readRepositoryTranscript,
+	type RepositorySessionSource,
+} from "../session/repository-consumers";
+import type { KeysetCursor, RelatedResourceBinding } from "../session/repository/types";
 import { loadBundledAgents } from "../task/agents";
 import { isReadOnlyAgent } from "../task/read-only-policy";
 import { persistedVibeChildIds } from "../vibe/lifecycle";
@@ -42,6 +48,12 @@ interface PersistedTranscript {
 	sessionFile: string;
 	createdAt?: number;
 	lastActivity?: number;
+}
+
+export type PersistedRosterSource = string | RepositorySessionSource;
+
+function isRepositoryRosterSource(source: PersistedRosterSource | null | undefined): source is RepositorySessionSource {
+	return typeof source === "object" && source !== null && "repository" in source && "locator" in source;
 }
 
 function recordOf(value: unknown): Record<string, unknown> | undefined {
@@ -270,6 +282,131 @@ async function readPersistedAgentHistory(
 	};
 }
 
+async function readRepositoryAgentMetadata(
+	source: RepositorySessionSource,
+	shouldContinue: () => boolean,
+): Promise<PersistedAgentMetadata> {
+	const header = await source.repository.getHeader({ branchId: source.locator.branchId });
+	if (!header) return { incomplete: true };
+	const entries = await readRepositoryTranscript(source, {
+		maxEntries: MAX_MATERIALIZED_TRANSCRIPT_ENTRIES,
+		shouldContinue,
+	});
+	if (!shouldContinue()) return { incomplete: true };
+
+	const parents = new Map<string, string | undefined>();
+	const assistantById = new Map<string, AssistantMetrics>();
+	const modelChangeById = new Map<string, { model: string; role?: string; resolvedModelIsFallback: boolean }>();
+	let leafId: string | undefined;
+	let leafTimestamp: number | undefined;
+	let createdAt = Date.parse(header.metadata.createdAt);
+	let activity: string | undefined;
+	let hasSessionInit = false;
+	let hasConversation = false;
+	let inferredHistory: AgentHistorySummary = {};
+	for (const entry of entries) {
+		const record = recordOf(entry);
+		if (!record) continue;
+		const id = typeof record.id === "string" ? record.id : undefined;
+		if (id) {
+			parents.set(id, typeof record.parentId === "string" ? record.parentId : undefined);
+			leafId = id;
+		}
+		const parsedTimestamp = timestampOf(record.timestamp);
+		if (parsedTimestamp !== undefined) {
+			leafTimestamp = parsedTimestamp;
+			if (!Number.isFinite(createdAt)) createdAt = parsedTimestamp;
+		}
+		if (record.type === "session_init") {
+			hasSessionInit = true;
+			if (typeof record.task === "string") activity = summarizePersistedTask(record.task);
+			const inferred = typeof record.systemPrompt === "string" ? inferBundledAgent(record.systemPrompt) : {};
+			inferredHistory = {
+				...inferredHistory,
+				...inferred,
+				agent: typeof record.agent === "string" ? record.agent : inferred.agent,
+				modelRole:
+					typeof record.modelRole === "string"
+						? record.modelRole
+						: (inferredHistory.modelRole ?? inferred.modelRole),
+				resolvedModel:
+					typeof record.resolvedModel === "string" ? record.resolvedModel : inferredHistory.resolvedModel,
+				readOnly: typeof record.readOnly === "boolean" ? record.readOnly : inferred.readOnly,
+			};
+		} else if (record.type === "model_change" && id && typeof record.model === "string") {
+			modelChangeById.set(id, {
+				model: record.model,
+				role: typeof record.role === "string" ? record.role : undefined,
+				resolvedModelIsFallback: record.resolvedModelIsFallback === true,
+			});
+		} else if (record.type === "message" && id) {
+			hasConversation = true;
+			const message = recordOf(record.message);
+			if (message?.role === "assistant") assistantById.set(id, assistantMetrics(message));
+		} else if (record.type === "custom_message") {
+			hasConversation = true;
+		}
+	}
+
+	const metrics: AgentMetricsSummary = {
+		tokens: 0,
+		requests: 0,
+		tools: 0,
+		cost: 0,
+		durationMs: Math.max(0, (leafTimestamp ?? Date.parse(header.modifiedAt)) - (createdAt || leafTimestamp || 0)),
+		durationKind: "span",
+	};
+	let resolvedModel: string | undefined;
+	let resolvedModelIsFallback: boolean | undefined;
+	let modelRole = inferredHistory.modelRole;
+	let contextTokens: number | undefined;
+	let servedModel: string | undefined;
+	let latestModelChange: { model: string; resolvedModelIsFallback: boolean } | undefined;
+	const visited = new Set<string>();
+	for (let id = leafId; id && !visited.has(id); id = parents.get(id)) {
+		visited.add(id);
+		const modelChange = modelChangeById.get(id);
+		if (modelChange) {
+			latestModelChange ??= modelChange;
+			if (modelChange.role && modelChange.role !== EPHEMERAL_MODEL_CHANGE_ROLE) modelRole ??= modelChange.role;
+			if (
+				servedModel !== undefined &&
+				resolvedModel === undefined &&
+				(modelChange.model === servedModel || modelChange.model.startsWith(`${servedModel}@`))
+			) {
+				resolvedModel = modelChange.model;
+				resolvedModelIsFallback = modelChange.resolvedModelIsFallback;
+			}
+		}
+		const assistant = assistantById.get(id);
+		if (!assistant) continue;
+		if (servedModel === undefined && assistant.served && assistant.resolvedModel) servedModel = assistant.resolvedModel;
+		metrics.requests++;
+		metrics.tokens += assistant.tokens;
+		metrics.tools += assistant.tools;
+		metrics.cost += assistant.cost;
+		contextTokens ??= assistant.contextTokens;
+	}
+	if (resolvedModel === undefined) {
+		resolvedModel = servedModel ?? latestModelChange?.model ?? inferredHistory.resolvedModel;
+		resolvedModelIsFallback =
+			servedModel !== undefined ? false : (latestModelChange?.resolvedModelIsFallback ?? inferredHistory.resolvedModelIsFallback);
+	}
+	if (contextTokens !== undefined) metrics.contextTokens = contextTokens;
+	return {
+		activity,
+		createdAt: Number.isFinite(createdAt) ? createdAt : undefined,
+		lastActivity: Date.parse(header.modifiedAt),
+		incomplete: !hasSessionInit && !hasConversation,
+		history: {
+			...inferredHistory,
+			...(metrics.requests > 0 ? { metrics } : {}),
+			...(resolvedModel ? { resolvedModel, resolvedModelIsFallback } : {}),
+			...(modelRole ? { modelRole } : {}),
+		},
+	};
+}
+
 /**
  * Read only the small session prefix needed by the Hub. A subagent's first
  * `session_init` is written before its conversation, so this never walks a
@@ -475,35 +612,169 @@ function sessionFileBelongsToRoot(sessionFile: string, rootSessionFile: string):
 
 /** Keep old parked trees out of a new/current session's model-facing roster. */
 export function isCurrentSessionRosterRef(
-	ref: { status: string; sessionFile: string | null },
-	rootSessionFile: string | undefined,
+	ref: {
+		status: string;
+		sessionFile: string | null;
+		sessionRepository?: RepositorySessionSource["repository"] | null;
+		rosterRootLocator?: RepositorySessionSource["locator"] | null;
+	},
+	root: PersistedRosterSource | undefined,
 ): boolean {
-	if (ref.status !== "parked" || !rootSessionFile || !ref.sessionFile) return true;
-	return sessionFileBelongsToRoot(ref.sessionFile, rootSessionFile);
+	if (ref.status !== "parked" || !root) return true;
+	if (isRepositoryRosterSource(root)) {
+		return (
+			ref.sessionRepository === root.repository &&
+			ref.rosterRootLocator?.branchId === root.locator.branchId &&
+			(ref.rosterRootLocator.versionId ?? null) === (root.locator.versionId ?? null)
+		);
+	}
+	if (!ref.sessionFile) return true;
+	return sessionFileBelongsToRoot(ref.sessionFile, root);
+}
+
+const kRepositoryRosterLatches = Symbol("repositoryRosterLatches");
+
+interface RegistryWithRepositoryRosterLatches extends AgentRegistry {
+	[kRepositoryRosterLatches]?: Map<string, Promise<void>>;
+}
+
+function repositoryRosterKey(source: RepositorySessionSource): string {
+	return `${source.repository.replicaId}:${source.locator.branchId}:${source.locator.versionId ?? ""}`;
+}
+
+async function listRepositoryRelations(
+	source: RepositorySessionSource,
+	kind: "child-session" | "advisor-session",
+	shouldContinue: () => boolean,
+): Promise<RelatedResourceBinding[]> {
+	const bindings: RelatedResourceBinding[] = [];
+	let cursor: KeysetCursor | undefined;
+	do {
+		if (!shouldContinue()) break;
+		const page = await source.repository.listRelatedResources({
+			owner: source.locator,
+			kind,
+			cursor,
+			limit: 200,
+		});
+		bindings.push(...page.items);
+		cursor = page.nextCursor;
+	} while (cursor !== undefined);
+	return bindings;
+}
+
+async function registerPersistedRepositorySubagents(
+	registry: AgentRegistry,
+	source: RepositorySessionSource,
+	options: {
+		shouldContinue?: () => boolean;
+		hydrateHistory?: boolean;
+	} = {},
+): Promise<void> {
+	const shouldContinue = options.shouldContinue ?? (() => true);
+	const hydrateHistory = options.hydrateHistory ?? true;
+	const visited = new Set<string>();
+
+	const visit = async (owner: RepositorySessionSource, parentId: string | undefined): Promise<void> => {
+		if (!shouldContinue()) return;
+		const ownerKey = `${owner.locator.branchId}:${owner.locator.versionId ?? ""}`;
+		if (visited.has(ownerKey)) return;
+		visited.add(ownerKey);
+		const [children, advisors] = await Promise.all([
+			listRepositoryRelations(owner, "child-session", shouldContinue),
+			listRepositoryRelations(owner, "advisor-session", shouldContinue),
+		]);
+		for (const binding of [...children, ...advisors]) {
+			if (!shouldContinue()) return;
+			const target: RepositorySessionSource = { repository: owner.repository, locator: binding.target };
+			const header = await owner.repository.getHeader({ branchId: binding.target.branchId });
+			// A missing target is not a tombstone. Preserve the relation and simply
+			// omit an unreadable roster row until the target becomes available.
+			if (!header) continue;
+			const kind = binding.locator.kind === "advisor-session" ? "advisor" : "sub";
+			const id = binding.locator.key;
+			const metadata = await readRepositoryAgentMetadata(target, shouldContinue);
+			if (!shouldContinue()) return;
+			const existing = registry.get(id);
+			const replaceable =
+				existing?.status === "parked" && existing.session === null && existing.sessionRepository === owner.repository;
+			if (!existing || replaceable) {
+				if (replaceable) registry.unregister(id, existing);
+				registry.registerIfAvailable(
+					{
+						id,
+						displayName: kind === "advisor" ? id.split("/").at(-1) ?? id : id,
+						kind,
+						parentId: parentId ?? MAIN_AGENT_ID,
+						session: null,
+						sessionLocator: { branchId: header.branchId, versionId: header.versionId },
+						sessionRepository: owner.repository,
+						rosterRootLocator: source.locator,
+						activity: metadata.activity,
+						createdAt: metadata.createdAt,
+						lastActivity: metadata.lastActivity,
+						history: { ...metadata.history, ...(kind === "advisor" ? { readOnly: true } : {}) },
+						status: "parked",
+					},
+					null,
+				);
+			} else if (existing.sessionRepository === owner.repository && existing.sessionLocator?.branchId === header.branchId) {
+				if (hydrateHistory && metadata.history) registry.setHistory(id, metadata.history);
+			}
+			if (kind === "sub") await visit(target, id);
+		}
+	};
+
+	await visit(source, undefined);
+}
+
+async function ensurePersistedRepositoryRoster(
+	registry: AgentRegistry,
+	source: RepositorySessionSource,
+): Promise<RepositorySessionSource> {
+	const tagged = registry as RegistryWithRepositoryRosterLatches;
+	const latches = (tagged[kRepositoryRosterLatches] ??= new Map());
+	const key = repositoryRosterKey(source);
+	let pending = latches.get(key);
+	if (!pending) {
+		pending = registerPersistedRepositorySubagents(registry, source, { hydrateHistory: false }).catch(error => {
+			latches.delete(key);
+			logger.warn("Persisted repository agent roster hydration failed; using in-memory peers", {
+				branchId: source.locator.branchId,
+				error: rosterScanError(error),
+			});
+		});
+		latches.set(key, pending);
+	}
+	await pending;
+	return source;
 }
 
 /**
- * Restore parked sibling transcripts once per current root session. Scans are
- * latched per root: concurrent calls for the same root share one in-flight
- * scan, while distinct roots stay latched independently but serialize their
- * scan bodies behind a failure-tolerant tail (a child basename shared across
- * roots must be observed as already-registered, never raced unseen). A settled
- * latch is reusable only while every parked ref its scan restored still matches
- * registry identity/session: a shared id another root's scan replaced (or a
- * released ref) invalidates the latch, so returning to this root re-scans
- * through the tail and restores its own transcripts instead of leaving the
- * other root's refs in this roster. The latch
- * cache is bounded by forgetting settled roots oldest-first, so a switch back
- * to an old root re-scans only once its latch was pruned. IO failure degrades
- * roster counts, never task startup, and remains retryable.
+ * Restore parked sibling transcripts once per current root session. JSONL scans
+ * remain isolated to JSONL mode; repository mode hydrates explicit related-resource
+ * bindings and never derives identity from stems or recursive directories.
  */
+export function ensurePersistedRoster(
+	registry: AgentRegistry,
+	source?: string | null,
+): Promise<string | undefined>;
+export function ensurePersistedRoster(
+	registry: AgentRegistry,
+	source: RepositorySessionSource,
+): Promise<RepositorySessionSource>;
+export function ensurePersistedRoster(
+	registry: AgentRegistry,
+	source?: PersistedRosterSource | null,
+): Promise<PersistedRosterSource | undefined>;
 export async function ensurePersistedRoster(
 	registry: AgentRegistry,
-	sessionFileHint?: string | null,
-): Promise<string | undefined> {
+	source?: PersistedRosterSource | null,
+): Promise<PersistedRosterSource | undefined> {
+	if (isRepositoryRosterSource(source)) return ensurePersistedRepositoryRoster(registry, source);
 	let root: string | undefined;
 	try {
-		root = await resolveRootSessionFile(registry, sessionFileHint);
+		root = await resolveRootSessionFile(registry, source);
 	} catch (error) {
 		logger.warn("Persisted agent roster root resolution failed; using in-memory peers", {
 			error: rosterScanError(error),
@@ -594,7 +865,7 @@ export async function ensurePersistedRoster(
 /** Register persisted subagent and advisor transcripts as parked registry refs. */
 export async function registerPersistedSubagents(
 	registry: AgentRegistry,
-	sessionFile: string | null | undefined,
+	source: PersistedRosterSource | null | undefined,
 	options: {
 		shouldContinue?: () => boolean;
 		hydrateHistory?: boolean;
@@ -607,6 +878,11 @@ export async function registerPersistedSubagents(
 		owned?: Map<string, string>;
 	} = {},
 ): Promise<void> {
+	if (isRepositoryRosterSource(source)) {
+		await registerPersistedRepositorySubagents(registry, source, options);
+		return;
+	}
+	const sessionFile = source;
 	if (!sessionFile?.endsWith(".jsonl")) return;
 	const shouldContinue = options.shouldContinue ?? (() => true);
 	const hydrateHistory = options.hydrateHistory ?? true;

@@ -21,6 +21,7 @@ import { AgentRegistry } from "../registry/agent-registry";
 import { ensurePersistedRoster } from "../registry/persisted-agents";
 import { formatSessionHistoryMarkdown } from "../session/session-history-format";
 import { loadSessionMessagesReadOnly } from "../session/session-loader";
+import { readRepositoryMessages, type RepositorySessionSource } from "../session/repository-consumers";
 import { sessionFilesFromDisk } from "./registry-helpers";
 import type { InternalResource, InternalUrl, ProtocolHandler, ResolveContext, UrlCompletion } from "./types";
 
@@ -59,24 +60,19 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 	async resolve(url: InternalUrl, context?: ResolveContext): Promise<InternalResource> {
 		const agentId = url.rawHost || url.hostname;
 		const registry = AgentRegistry.global();
-		// A caller resolving a possibly-parked id refreshes its own root's
-		// persisted roster first: a same-named parked ref restored by another
-		// root's scan must not be served (or listed as known) in its place.
-		// The refresh is latched per root, so a settled roster never re-scans.
-		let rootSessionFile: string | undefined;
-		if (agentId && context?.sessionFile) {
-			rootSessionFile = await ensurePersistedRoster(registry, context.sessionFile);
-		}
-		// On-disk fallbacks below scan the caller root's artifact directory
-		// first, so a same-named transcript restored by another root's scan
-		// never shadows this caller's own on-disk transcript.
-		const preferredArtifactDir = rootSessionFile?.slice(0, -".jsonl".length);
+		const repositoryRoot: RepositorySessionSource | undefined =
+			context?.sessionRepository && context.sessionLocator
+				? { repository: context.sessionRepository, locator: context.sessionLocator }
+				: undefined;
+		const rosterSource = repositoryRoot ?? context?.sessionFile;
+		const root = rosterSource ? await ensurePersistedRoster(registry, rosterSource) : undefined;
+		const preferredArtifactDir = typeof root === "string" ? root.slice(0, -".jsonl".length) : undefined;
 		// Advisor transcripts are observability-only — surfaced in the Agent Hub, never
 		// in the agent-facing roster. Hide them from the index, lookup, and completions.
 		const visible = registry.list().filter(ref => ref.kind !== "advisor");
 
 		if (!agentId) {
-			const content = await this.#renderIndex(visible);
+			const content = await this.#renderIndex(visible, !repositoryRoot);
 			return {
 				url: url.href,
 				content,
@@ -94,9 +90,7 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 		}
 
 		if (!ref) {
-			// Registry miss — the agent may have been unregistered or lost on resume.
-			// Serve its transcript straight from disk if the session file persists.
-			const disk = await this.#resolveFromDisk(agentId, preferredArtifactDir);
+			const disk = repositoryRoot ? undefined : await this.#resolveFromDisk(agentId, preferredArtifactDir);
 			if (disk) return { ...disk, url: url.href };
 
 			const known = visible.map(candidate => candidate.id);
@@ -109,13 +103,19 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 		if (ref.session) {
 			messages = ref.session.messages;
 			notes.push("Source: live session");
+		} else if (ref.sessionRepository && ref.sessionLocator) {
+			messages = await readRepositoryMessages({
+				repository: ref.sessionRepository,
+				locator: ref.sessionLocator,
+			});
+			notes.push(`Source: repository (${ref.status})`);
 		} else if (ref.sessionFile) {
 			messages = await loadSessionMessagesReadOnly(ref.sessionFile);
 			notes.push(`Source: session file (read-only, ${ref.status})`);
 		} else {
 			// No live session and no retained sessionFile — try the disk scan before
 			// giving up, in case the transcript lingers under an artifacts dir.
-			const disk = await this.#resolveFromDisk(ref.id, preferredArtifactDir);
+			const disk = repositoryRoot ? undefined : await this.#resolveFromDisk(ref.id, preferredArtifactDir);
 			if (disk) return { ...disk, url: url.href };
 			throw new Error(`Agent ${ref.id} has no transcript: session is gone and no session file was retained`);
 		}
@@ -162,8 +162,7 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 			notes: ["Source: session file (read-only, unregistered)"],
 		};
 	}
-
-	async #renderIndex(refs: AgentRef[]): Promise<string> {
+	async #renderIndex(refs: AgentRef[], includeDisk: boolean): Promise<string> {
 		const entries: IndexEntry[] = refs.map(ref => ({
 			id: ref.id,
 			status: ref.status,
@@ -171,12 +170,13 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 			parent: ref.parentId ?? "—",
 			lastActivity: formatAgo(ref.lastActivity),
 		}));
-		// Merge on-disk transcripts for agents absent from the registry.
-		const registered = new Set(refs.map(ref => ref.id));
-		const disk = await sessionFilesFromDisk();
-		for (const id of disk.keys()) {
-			if (registered.has(id)) continue;
-			entries.push({ id, status: "on disk", kind: "—", parent: "—", lastActivity: "—" });
+		if (includeDisk) {
+			const registered = new Set(refs.map(ref => ref.id));
+			const disk = await sessionFilesFromDisk();
+			for (const id of disk.keys()) {
+				if (registered.has(id)) continue;
+				entries.push({ id, status: "on disk", kind: "—", parent: "—", lastActivity: "—" });
+			}
 		}
 
 		const lines: string[] = ["# Agents", ""];
@@ -195,7 +195,8 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 	async complete(): Promise<UrlCompletion[]> {
 		const completions: UrlCompletion[] = [];
 		const seen = new Set<string>();
-		for (const ref of AgentRegistry.global().list()) {
+		const refs = AgentRegistry.global().list();
+		for (const ref of refs) {
 			if (ref.kind === "advisor") continue;
 			seen.add(ref.id);
 			completions.push({
@@ -203,11 +204,13 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 				description: `${ref.status} · ${ref.kind}${ref.parentId ? ` · parent ${ref.parentId}` : ""}`,
 			});
 		}
-		const disk = await sessionFilesFromDisk();
-		for (const id of disk.keys()) {
-			if (seen.has(id)) continue;
-			seen.add(id);
-			completions.push({ value: id, description: "on disk" });
+		if (!refs.some(ref => ref.sessionRepository !== null)) {
+			const disk = await sessionFilesFromDisk();
+			for (const id of disk.keys()) {
+				if (seen.has(id)) continue;
+				seen.add(id);
+				completions.push({ value: id, description: "on disk" });
+			}
 		}
 		return completions;
 	}
