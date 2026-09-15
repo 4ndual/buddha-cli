@@ -18,11 +18,18 @@ import type { AssistantRetryRecovery, ImageContent, TextContent, ToolResultMessa
 import type { Rule } from "../capability/rule";
 import type { Goal, GoalModeState } from "../goals/state";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry } from "../session/session-entries";
+import type { SessionLocator } from "../session/repository/types";
 import type { TodoItem } from "../tools/todo";
 
 // ============================================================================
 // Session Events
 // ============================================================================
+
+/** Logical session identity with an optional JSONL compatibility path. */
+export interface SessionEventReference {
+	locator?: SessionLocator;
+	path?: string;
+}
 
 /** Fired on initial session load */
 export interface SessionStartEvent {
@@ -34,8 +41,8 @@ export interface SessionBeforeSwitchEvent {
 	type: "session_before_switch";
 	/** Reason for the switch */
 	reason: "new" | "resume" | "fork";
-	/** Session file we're switching to (only for "resume") */
-	targetSessionFile?: string;
+	/** Logical session selected for resume. A path is present only in JSONL mode. */
+	targetSession?: SessionEventReference;
 }
 
 /** Fired after switching to another session */
@@ -43,8 +50,8 @@ export interface SessionSwitchEvent {
 	type: "session_switch";
 	/** Reason for the switch */
 	reason: "new" | "resume" | "fork";
-	/** Session file we came from */
-	previousSessionFile: string | undefined;
+	/** Session we came from. */
+	previousSession?: SessionEventReference;
 }
 
 /** Fired before branching a session (can be cancelled) */
@@ -57,7 +64,7 @@ export interface SessionBeforeBranchEvent {
 /** Fired after branching a session */
 export interface SessionBranchEvent {
 	type: "session_branch";
-	previousSessionFile: string | undefined;
+	previousSession?: SessionEventReference;
 }
 
 /** Fired before context compaction (can be cancelled or customized) */

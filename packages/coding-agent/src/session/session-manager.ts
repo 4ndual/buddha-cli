@@ -60,7 +60,14 @@ import {
 	type TtsrInjectionEntry,
 	type UsageStatistics,
 } from "./session-entries";
-import { findMostRecentSession, listAllSessions, listSessions, type SessionInfo } from "./session-listing";
+import {
+	findMostRecentSession,
+	listAllSessions,
+	listRepositorySessionsPage,
+	listSessions,
+	type LogicalSessionPage,
+	type SessionInfo,
+} from "./session-listing";
 import {
 	loadEntriesFromFile,
 	loadSessionFile,
@@ -90,6 +97,32 @@ import {
 	normalizeWorkspaceDirectory,
 } from "./session-workspace";
 import { recordSessionTitle } from "./title-index";
+import type {
+	EventHash,
+	KeysetCursor,
+	ListSessionsQuery,
+	ModeGeneration,
+	RepositorySessionHeader,
+	SessionLocator,
+	SessionRepository,
+	SourceIdentity,
+	SessionSemanticMetadata,
+} from "./repository/types";
+
+export interface SessionReference {
+	/** Canonical for repository-backed sessions. */
+	locator?: SessionLocator;
+	/** Present only for legacy JSONL sessions. DB sessions never synthesize a path. */
+	path?: string;
+}
+
+export interface SessionForkResult {
+	previous: SessionReference;
+	current: SessionReference;
+	/** JSONL compatibility fields. Absent in DB mode. */
+	oldSessionFile?: string;
+	newSessionFile?: string;
+}
 
 const JSONL_SUFFIX_LENGTH = ".jsonl".length;
 const DRAFT_ONLY_SESSION_MARKER = ".draft-only-session";
@@ -380,6 +413,8 @@ export type ReadonlySessionManager = Pick<
 	| "getSessionDir"
 	| "getSessionId"
 	| "getSessionFile"
+	| "getSessionLocator"
+	| "getSessionReference"
 	| "getSessionName"
 	| "getArtifactsDir"
 	| "getArtifactManager"
@@ -494,6 +529,14 @@ export class SessionManager {
 	#entries: SessionEntry[] = [];
 	#index = new SessionEntryIndex();
 
+	/** Present only for repository-backed runtime sessions. */
+	#repository: SessionRepository | undefined;
+	#repositoryHeader: RepositorySessionHeader | undefined;
+	#repositoryDraftRevision: string | null = null;
+	#repositoryModeGeneration: ModeGeneration | undefined;
+	#repositoryHead: EventHash | null = null;
+	#repositoryTail: Promise<void> = Promise.resolve();
+
 	/** File reflects all current entries; appends can go incrementally. */
 	#fileIsCurrent = false;
 	/** In-memory entries diverged from disk (load-migration/sanitize) → next persist must full-rewrite. */
@@ -578,6 +621,43 @@ export class SessionManager {
 		this.#blobs = new BlobStore(getBlobsDir());
 
 		if (persist && sessionDir) this.#storage.ensureDirSync(sessionDir);
+	}
+
+	#semanticMetadata() {
+		return {
+			title: this.#sessionName,
+			titleSource: this.#titleSource,
+			createdAt: this.#header.timestamp,
+			cwd: this.#cwd,
+			additionalDirectories:
+				this.#additionalDirectories.length > 0 ? [...this.#additionalDirectories] : undefined,
+			providerPromptCacheKey: this.#header.providerPromptCacheKey,
+		};
+	}
+
+	#queueRepositoryAppend(entries: readonly SessionEntry[], includeMetadata = false): Promise<void> {
+		const repository = this.#repository;
+		const generation = this.#repositoryModeGeneration;
+		const repositoryHeader = this.#repositoryHeader;
+		if (!repository || !generation || !repositoryHeader || entries.length + Number(includeMetadata) === 0) {
+			return Promise.resolve();
+		}
+		const scheduled = this.#repositoryTail.then(async () => {
+			if (this.#released) return;
+			const result = await repository.appendWithExpectedHead({
+				branchId: this.#repositoryHeader?.branchId ?? repositoryHeader.branchId,
+				expectedHeadHash: this.#repositoryHead,
+				expectedModeGeneration: generation,
+				entries,
+				metadata: includeMetadata ? this.#semanticMetadata() : undefined,
+			});
+			this.#repositoryHeader = result.header;
+			this.#repositoryHead = result.header.headEventHash;
+		});
+		this.#repositoryTail = scheduled.catch(error => {
+			this.#noteDiskFailure(error);
+		});
+		return scheduled;
 	}
 
 	#rememberBreadcrumb(cwd: string, sessionFile: string, fresh = false): void {
@@ -1038,6 +1118,10 @@ export class SessionManager {
 	}
 
 	async #persistTitleChangeEntry(entry: TitleChangeEntry, update: SessionTitleUpdate): Promise<void> {
+		if (this.#repository) {
+			await this.#queueRepositoryAppend([entry], true);
+			return;
+		}
 		if (!this.#persist || !this.#sessionFile) return;
 		if (this.#diskFailure) {
 			this.#fileIsCurrent = false;
@@ -1163,6 +1247,63 @@ export class SessionManager {
 		return this.#sessionFile;
 	}
 
+	async #resetToNewRepositorySession(options?: NewSessionOptions): Promise<void> {
+		const repository = this.#repository;
+		const generation = this.#repositoryModeGeneration;
+		if (!repository || !generation) throw new Error("Repository session manager is not initialized");
+
+		const id = mintSessionId();
+		const timestamp = nowIso();
+		const workspace = normalizeSessionWorkspace({
+			cwd: this.#cwd,
+			directories: options?.additionalDirectories ?? [],
+		});
+		const additionalDirectories = additionalWorkspaceDirectories(workspace);
+		const header: SessionHeader = {
+			type: "session",
+			version: CURRENT_SESSION_VERSION,
+			id,
+			timestamp,
+			cwd: this.#cwd,
+			parentSession: options?.parentSession,
+			providerPromptCacheKey: options?.providerPromptCacheKey,
+			additionalDirectories: additionalDirectories.length > 0 ? additionalDirectories : undefined,
+		};
+		const source: SourceIdentity = {
+			sourceNamespace: "omp",
+			installationNamespace: repository.replicaId,
+			nativeId: id,
+		};
+		const metadata: SessionSemanticMetadata = {
+			createdAt: timestamp,
+			cwd: this.#cwd,
+			additionalDirectories: header.additionalDirectories,
+			providerPromptCacheKey: header.providerPromptCacheKey,
+			extensions: { sessionId: id },
+		};
+		const repositoryHeader = await repository.createSession({
+			source,
+			header,
+			metadata,
+			callerKey: id,
+			expectedModeGeneration: generation,
+		});
+
+		this.#repositoryHeader = repositoryHeader;
+		this.#repositoryHead = repositoryHeader.headEventHash;
+		this.#sessionFile = undefined;
+		this.#additionalDirectories = additionalDirectories;
+		this.#applyEntries(header, []);
+		this.#titleUpdatedAt = timestamp;
+		this.#hasTitleSlot = true;
+		this.#fileIsCurrent = true;
+		this.#rewriteRequired = false;
+		this.#forceFileCreation = true;
+		this.#draftOnlySessionCleanupArmed = false;
+		this.#artifactManager = null;
+		this.#artifactManagerSessionFile = null;
+	}
+
 	#applyEntries(header: SessionHeader, entries: SessionEntry[]): void {
 		this.#header = header;
 		this.#entries = entries;
@@ -1203,7 +1344,8 @@ export class SessionManager {
 			batch.externalLeafChanged = true;
 			batch.externalLeafId = entry.id;
 		}
-		this.#appendToSessionFile(entry);
+		if (this.#repository) void this.#queueRepositoryAppend([entry]).catch(() => undefined);
+		else this.#appendToSessionFile(entry);
 		if (batch) batch.deferredNotifications.push(entry);
 		else this.#notifyEntryAppended(entry);
 	}
@@ -1333,12 +1475,20 @@ export class SessionManager {
 		const persist = options?.persist ?? this.#persist;
 		const clone = new SessionManager(this.#cwd, this.#sessionDir, persist, this.#storage);
 		clone.#suppressBreadcrumb = true;
+		clone.#repository = this.#repository;
+		clone.#repositoryHeader = this.#repositoryHeader;
+		clone.#repositoryModeGeneration = this.#repositoryModeGeneration;
+		clone.#repositoryHead = this.#repositoryHead;
 		clone.restoreState(this.captureState());
 		if (!persist) {
 			clone.#sessionFile = undefined;
 			clone.#fileIsCurrent = false;
 			clone.#rewriteRequired = false;
 			clone.#forceFileCreation = false;
+			clone.#repository = undefined;
+			clone.#repositoryHeader = undefined;
+			clone.#repositoryModeGeneration = undefined;
+			clone.#repositoryHead = null;
 		}
 		return clone;
 	}
@@ -1482,6 +1632,11 @@ export class SessionManager {
 	 * from selecting the previous conversation as the most recent session.
 	 */
 	async newSession(options?: NewSessionOptions): Promise<string | undefined> {
+		if (this.#repository) {
+			await this.flush();
+			await this.#resetToNewRepositorySession(options);
+			return undefined;
+		}
 		await this.#drainAndCloseWriter();
 		const sessionFile = this.#resetToNewSession(options);
 		await this.ensureOnDisk();
@@ -1489,10 +1644,22 @@ export class SessionManager {
 	}
 
 	/** Delete a session file and its artifact directory. ENOENT is treated as success. */
-	async dropSession(sessionPath: string): Promise<void> {
+	async dropSession(session: string | SessionLocator): Promise<void> {
+		if (this.#repository && this.#repositoryModeGeneration) {
+			const locator = typeof session === "string" ? this.getSessionLocator() : session;
+			if (!locator) throw new Error("Repository session drop requires a logical locator");
+			await this.flush();
+			await this.#repository.drop({
+				locator,
+				explicit: true,
+				expectedModeGeneration: this.#repositoryModeGeneration,
+			});
+			return;
+		}
+		if (typeof session !== "string") throw new Error("JSONL session drop requires a file path");
 		await this.#drainAndCloseWriter();
 		try {
-			await this.#storage.deleteSessionWithArtifacts(sessionPath);
+			await this.#storage.deleteSessionWithArtifacts(session);
 		} catch (err) {
 			if (!isEnoent(err)) throw err;
 		}
@@ -1502,7 +1669,34 @@ export class SessionManager {
 	 * Fork the current session into a new file with the same entries.
 	 * @returns the old and new session file paths, or undefined when not persisting.
 	 */
-	async fork(): Promise<{ oldSessionFile: string; newSessionFile: string } | undefined> {
+	async fork(): Promise<SessionForkResult | undefined> {
+		if (this.#repository && this.#repositoryHeader && this.#repositoryModeGeneration) {
+			await this.flush();
+			const previousHeader = this.#repositoryHeader;
+			const previous: SessionReference = {
+				locator: { branchId: previousHeader.branchId, versionId: previousHeader.versionId },
+			};
+			const next = await this.#repository.fork({
+				branchId: previousHeader.branchId,
+				atEventHash: previousHeader.headEventHash,
+				forkKey: Bun.randomUUIDv7(),
+				metadata: this.#semanticMetadata(),
+				expectedModeGeneration: this.#repositoryModeGeneration,
+			});
+			this.#repositoryHeader = next;
+			this.#repositoryHead = next.headEventHash;
+			this.#sessionId = next.branchId;
+			this.#header = {
+				...this.#header,
+				id: next.branchId,
+				parentSession: previousHeader.branchId,
+				timestamp: next.metadata.createdAt,
+			};
+			const current: SessionReference = {
+				locator: { branchId: next.branchId, versionId: next.versionId },
+			};
+			return { previous, current };
+		}
 		if (!this.#persist || !this.#sessionFile) return undefined;
 
 		const oldSessionFile = this.#sessionFile;
@@ -1539,11 +1733,35 @@ export class SessionManager {
 		this.#rememberBreadcrumb(this.#cwd, this.#sessionFile);
 
 		await this.#rewriteAtomically();
-		return { oldSessionFile, newSessionFile: this.#sessionFile };
+		return {
+			previous: { path: oldSessionFile },
+			current: { path: this.#sessionFile },
+			oldSessionFile,
+			newSessionFile: this.#sessionFile,
+		};
 	}
 
 	/** Move the session to a new working directory. */
 	async moveTo(newCwd: string, targetSessionDir?: string): Promise<void> {
+		if (this.#repository && this.#repositoryHeader && this.#repositoryModeGeneration) {
+			const resolvedCwd = path.resolve(newCwd);
+			await this.flush();
+			await this.#repository.relocate({
+				locator: {
+					branchId: this.#repositoryHeader.branchId,
+					versionId: this.#repositoryHeader.versionId,
+				},
+				logicalLocation: resolvedCwd,
+				expectedModeGeneration: this.#repositoryModeGeneration,
+			});
+			this.#cwd = resolvedCwd;
+			this.#header.cwd = resolvedCwd;
+			this.#additionalDirectories = this.#additionalDirectories.filter(directory => directory !== resolvedCwd);
+			this.#header.additionalDirectories =
+				this.#additionalDirectories.length > 0 ? [...this.#additionalDirectories] : undefined;
+			await this.#queueRepositoryAppend([], true);
+			return;
+		}
 		const resolvedCwd = path.resolve(newCwd);
 		const resolvedTargetDir = targetSessionDir ? path.resolve(targetSessionDir) : undefined;
 		const managedRoot = resolveManagedSessionRoot(this.#sessionDir, this.#cwd);
@@ -1685,6 +1903,10 @@ export class SessionManager {
 	 * session/new must create a discoverable file immediately).
 	 */
 	async ensureOnDisk(): Promise<void> {
+		if (this.#repository) {
+			await this.flush();
+			return;
+		}
 		if (!this.#persist || !this.#sessionFile) return;
 		this.#forceFileCreation = true;
 		if (this.#fileIsCurrent && !this.#rewriteRequired) return;
@@ -1803,6 +2025,12 @@ export class SessionManager {
 
 	/** Flush pending writes. Call before switching sessions or on shutdown. */
 	async flush(): Promise<void> {
+		if (this.#repository && this.#repositoryModeGeneration) {
+			await this.#repositoryTail;
+			if (this.#diskFailure) throw this.#diskFailure;
+			await this.#repository.flush({ expectedModeGeneration: this.#repositoryModeGeneration });
+			return;
+		}
 		if (!this.#persist || !this.#sessionFile) return;
 		await this.#scheduleDiskWork(async () => {
 			if (this.#writer?.isOpen()) await this.#writer.flush();
@@ -1820,6 +2048,9 @@ export class SessionManager {
 	 * history, and Ctrl+C must not rebuild the whole JSONL string just to flush.
 	 */
 	flushSync(): void {
+		if (this.#repository) {
+			throw new Error("Repository-backed sessions require async flush()");
+		}
 		if (!this.#persist || !this.#sessionFile) return;
 		if (this.#atomicEntryBatch) throw new Error("Cannot synchronously flush during an atomic session batch.");
 		if (this.#diskFailure) throw this.#diskFailure;
@@ -1867,6 +2098,10 @@ export class SessionManager {
 
 	/** Flush, then close the append writer. */
 	async close(): Promise<void> {
+		if (this.#repository) {
+			await this.flush();
+			return;
+		}
 		if (!this.#persist) return;
 		await this.#scheduleDiskWork(async () => {
 			const hadWriter = this.#writer !== undefined;
@@ -1981,6 +2216,10 @@ export class SessionManager {
 	 * roots at launch never materializes an empty resumable session file.
 	 */
 	async #persistWorkspaceDirectoriesChange(): Promise<void> {
+		if (this.#repository) {
+			await this.#queueRepositoryAppend([], true);
+			return;
+		}
 		if (!this.#persist || !this.#sessionFile || !this.#shouldHaveSessionFile()) return;
 		this.#rewriteRequired = true;
 		await this.#rewriteAtomically();
@@ -2080,16 +2319,32 @@ export class SessionManager {
 		return { total: this.#turnBudgetTotal, spent: mainOutput + this.#turnEvalOutput, hard: this.#turnBudgetHard };
 	}
 
-	getSessionDir(): string {
-		return this.#sessionDir;
+	getSessionDir(): string | undefined {
+		return this.#repository ? undefined : this.#sessionDir;
 	}
 
 	getSessionId(): string {
 		return this.#sessionId;
 	}
 
+	/** Physical JSONL path. Deliberately absent for repository-backed DB sessions. */
 	getSessionFile(): string | undefined {
 		return this.#sessionFile;
+	}
+
+	getSessionLocator(): SessionLocator | undefined {
+		const header = this.#repositoryHeader;
+		return header ? { branchId: header.branchId, versionId: header.versionId } : undefined;
+	}
+
+	getSessionReference(): SessionReference | undefined {
+		const locator = this.getSessionLocator();
+		if (!locator) return undefined;
+		return this.#sessionFile ? { locator, path: this.#sessionFile } : { locator };
+	}
+
+	getRepository(): SessionRepository | undefined {
+		return this.#repository;
 	}
 
 	/**
@@ -2104,6 +2359,7 @@ export class SessionManager {
 	 * (issue #8860).
 	 */
 	isSessionOnDisk(): boolean {
+		if (this.#repositoryHeader) return true;
 		return !!this.#sessionFile && this.#storage.existsSync(this.#sessionFile);
 	}
 
@@ -2140,6 +2396,36 @@ export class SessionManager {
 	}
 
 	async saveDraft(text: string): Promise<void> {
+		if (this.#repository && this.#repositoryHeader && this.#repositoryModeGeneration) {
+			if (text.length === 0) {
+				if (this.#repositoryDraftRevision) {
+					await this.#repository.consumeDraft({
+						branchId: this.#repositoryHeader.branchId,
+						expectedRevision: this.#repositoryDraftRevision,
+						expectedModeGeneration: this.#repositoryModeGeneration,
+					});
+					this.#repositoryDraftRevision = null;
+				}
+				return;
+			}
+			const descriptor = await this.#repository.writePayload({
+				bytes: [new TextEncoder().encode(text)],
+				mediaType: "text/plain;charset=utf-8",
+			});
+			const revision = Bun.randomUUIDv7();
+			await this.#repository.saveDraft({
+				draft: {
+					branchId: this.#repositoryHeader.branchId,
+					revision,
+					payloadHash: descriptor.payloadHash,
+					updatedAt: nowIso(),
+				},
+				expectedRevision: this.#repositoryDraftRevision,
+				expectedModeGeneration: this.#repositoryModeGeneration,
+			});
+			this.#repositoryDraftRevision = revision;
+			return;
+		}
 		const draftPath = this.#draftPath();
 		if (!draftPath || !this.#persist) return;
 
@@ -2167,6 +2453,30 @@ export class SessionManager {
 	}
 
 	async consumeDraft(): Promise<string | null> {
+		if (this.#repository && this.#repositoryHeader && this.#repositoryModeGeneration) {
+			if (!this.#repositoryDraftRevision) return null;
+			const draft = await this.#repository.consumeDraft({
+				branchId: this.#repositoryHeader.branchId,
+				expectedRevision: this.#repositoryDraftRevision,
+				expectedModeGeneration: this.#repositoryModeGeneration,
+			});
+			this.#repositoryDraftRevision = null;
+			if (!draft) return null;
+			const chunks: Uint8Array[] = [];
+			let byteLength = 0;
+			for await (const chunk of this.#repository.readPayload({ payloadHash: draft.payloadHash })) {
+				byteLength += chunk.byteLength;
+				if (byteLength > 4 * 1024 * 1024) throw new RangeError("Session draft exceeds the 4 MiB read limit");
+				chunks.push(chunk);
+			}
+			const bytes = new Uint8Array(byteLength);
+			let offset = 0;
+			for (const chunk of chunks) {
+				bytes.set(chunk, offset);
+				offset += chunk.byteLength;
+			}
+			return new TextDecoder().decode(bytes);
+		}
 		const draftPath = this.#draftPath();
 		if (!draftPath) return null;
 
@@ -2795,6 +3105,108 @@ export class SessionManager {
 		storage: SessionStorage = new FileSessionStorage(),
 	): string {
 		return computeDefaultSessionDir(cwd, storage, getSessionsDir(agentDir));
+	}
+
+	/**
+	 * Create a repository-backed session. The repository supplies logical
+	 * identity and fencing; no JSONL directory or path is allocated.
+	 */
+	static async createInRepository(
+		repository: SessionRepository,
+		cwd: string,
+		options?: NewSessionOptions,
+	): Promise<SessionManager> {
+		const health = await repository.health();
+		if (!health.writable) throw new Error(`Session repository is not writable (${health.status})`);
+		const manager = new SessionManager(path.resolve(cwd), "", true, new MemorySessionStorage());
+		manager.#repository = repository;
+		manager.#repositoryModeGeneration = health.modeGeneration;
+		manager.#suppressBreadcrumb = true;
+		await manager.#resetToNewRepositorySession(options);
+		return manager;
+	}
+
+	/**
+	 * Resume one logical repository branch using bounded keyset reads. At most
+	 * `maxEntries` are materialized, and no other branch is read.
+	 */
+	static async openRepository(
+		repository: SessionRepository,
+		locator: SessionLocator,
+		options: { initialCwd?: string; maxEntries?: number; pageSize?: number } = {},
+	): Promise<SessionManager> {
+		const maxEntries = options.maxEntries ?? 100_000;
+		const pageSize = Math.min(options.pageSize ?? 250, 1_000);
+		if (!Number.isSafeInteger(maxEntries) || maxEntries < 1) {
+			throw new RangeError("maxEntries must be a positive integer");
+		}
+		if (!Number.isSafeInteger(pageSize) || pageSize < 1) {
+			throw new RangeError("pageSize must be a positive integer");
+		}
+
+		const [health, repositoryHeader] = await Promise.all([
+			repository.health(),
+			repository.getHeader({ branchId: locator.branchId }),
+		]);
+		if (!repositoryHeader) throw new Error(`Unknown session branch ${locator.branchId}`);
+		if (locator.versionId && locator.versionId !== repositoryHeader.versionId) {
+			throw new Error(`Session version ${locator.versionId} is no longer the selected branch version`);
+		}
+
+		const entries: SessionEntry[] = [];
+		let cursor: KeysetCursor | undefined;
+		do {
+			const remaining = maxEntries - entries.length;
+			const page = await repository.readEvents({
+				...locator,
+				cursor,
+				limit: Math.min(pageSize, remaining + 1),
+			});
+			if (page.items.length > remaining) {
+				throw new RangeError(`Session exceeds the bounded ${maxEntries}-entry resume limit`);
+			}
+			entries.push(...page.items.map(event => event.entry));
+			cursor = page.nextCursor;
+		} while (cursor);
+
+		const extensions = repositoryHeader.metadata.extensions;
+		const storedId =
+			extensions && typeof extensions.sessionId === "string" ? extensions.sessionId : repositoryHeader.branchId;
+		const cwd = path.resolve(repositoryHeader.metadata.cwd ?? options.initialCwd ?? getProjectDir());
+		const header: SessionHeader = {
+			type: "session",
+			version: CURRENT_SESSION_VERSION,
+			id: storedId,
+			timestamp: repositoryHeader.metadata.createdAt,
+			cwd,
+			title: repositoryHeader.metadata.title,
+			titleSource: repositoryHeader.metadata.titleSource,
+			additionalDirectories: repositoryHeader.metadata.additionalDirectories
+				? [...repositoryHeader.metadata.additionalDirectories]
+				: undefined,
+			providerPromptCacheKey: repositoryHeader.metadata.providerPromptCacheKey,
+		};
+		const manager = new SessionManager(cwd, "", true, new MemorySessionStorage());
+		manager.#repository = repository;
+		manager.#repositoryModeGeneration = health.modeGeneration;
+		manager.#repositoryHeader = repositoryHeader;
+		manager.#repositoryHead = repositoryHeader.headEventHash;
+		manager.#suppressBreadcrumb = true;
+		manager.#sessionFile = undefined;
+		manager.#additionalDirectories = header.additionalDirectories ?? [];
+		manager.#applyEntries(header, entries);
+		manager.#titleUpdatedAt = repositoryHeader.modifiedAt;
+		manager.#hasTitleSlot = true;
+		manager.#fileIsCurrent = true;
+		manager.#forceFileCreation = true;
+		return manager;
+	}
+
+	static listRepositoryPage(
+		repository: SessionRepository,
+		query: ListSessionsQuery = {},
+	): Promise<LogicalSessionPage> {
+		return listRepositorySessionsPage(repository, query);
 	}
 
 	/**

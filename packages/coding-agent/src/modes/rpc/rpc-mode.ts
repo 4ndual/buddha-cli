@@ -552,7 +552,10 @@ export async function handleRpcSessionChange(
 		}
 
 		case "switch_session": {
-			const cancelled = !(await session.switchSession(command.sessionPath));
+			if (!command.session.path) {
+				throw new Error("Logical session switching requires a repository-aware AgentSession");
+			}
+			const cancelled = !(await session.switchSession(command.session.path));
 			if (!cancelled) subagentRegistry?.clear();
 			return { type: "switch_session", data: { cancelled } };
 		}
@@ -1190,6 +1193,7 @@ export async function runRpcMode(
 			// =================================================================
 
 			case "get_state": {
+				const reference = session.sessionManager.getSessionReference();
 				const state: RpcSessionState = {
 					model: session.model,
 					thinkingLevel: session.thinkingLevel,
@@ -1198,7 +1202,13 @@ export async function runRpcMode(
 					steeringMode: session.steeringMode,
 					followUpMode: session.followUpMode,
 					interruptMode: session.interruptMode,
-					sessionFile: session.sessionFile,
+					session: reference?.locator
+						? { locator: reference.locator }
+						: reference?.path
+							? { path: reference.path }
+							: session.sessionFile
+								? { path: session.sessionFile }
+								: undefined,
 					sessionId: session.sessionId,
 					sessionName: session.sessionName,
 					autoCompactionEnabled: session.autoCompactionEnabled,
