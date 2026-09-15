@@ -23,8 +23,8 @@
       "evidence": "All 1,458 authoritative shared files rehashed after deletion; the two unmatched objects survive with manifest SHA-256 7ffa4b4356d0cff63eaa84b471d78163ea3c8dbf1a00c10d4fbfe3a591c4e011"
     },
     {
-      "gate": "post-reclaim-capacity",
-      "status": "pass",
+      "gate": "post-reclaim-capacity-accounting",
+      "status": "blocked-capacity",
       "evidence": "105,220,235,264 available bytes at revised strategy dry-run; legacy 114,005,397,093-byte peak remains short by 8,785,161,829 bytes"
     },
     {
