@@ -1,11 +1,15 @@
 import { Database } from "bun:sqlite";
+import type { BranchId, OriginId, VersionId } from "../session/repository/types";
 
 export interface MemoryThread {
 	id: string;
 	updatedAt: number;
-	rolloutPath: string;
+	rolloutPath?: string;
+	originId?: OriginId;
+	branchId?: BranchId;
+	versionId?: VersionId;
 	cwd: string;
-	sourceKind: string;
+	sourceKind: "cli" | "app" | "repository";
 }
 
 export interface Stage1OutputRow {
@@ -23,8 +27,12 @@ export interface Stage1Claim {
 	ownershipToken: string;
 	inputWatermark: number;
 	sourceUpdatedAt: number;
-	rolloutPath: string;
+	rolloutPath?: string;
+	originId?: OriginId;
+	branchId?: BranchId;
+	versionId?: VersionId;
 	cwd: string;
+	sourceKind: MemoryThread["sourceKind"];
 }
 
 export interface GlobalClaim {
@@ -56,6 +64,9 @@ CREATE TABLE IF NOT EXISTS threads (
 	id TEXT PRIMARY KEY,
 	updated_at INTEGER NOT NULL,
 	rollout_path TEXT NOT NULL,
+	origin_id TEXT,
+	branch_id TEXT,
+	version_id TEXT,
 	cwd TEXT NOT NULL,
 	source_kind TEXT NOT NULL
 );
@@ -86,6 +97,11 @@ CREATE TABLE IF NOT EXISTS jobs (
 	PRIMARY KEY (kind, job_key)
 );
 `);
+	const threadColumns = db.prepare("PRAGMA table_info(threads)").all() as Array<{ name: string }>;
+	const names = new Set(threadColumns.map(column => column.name));
+	if (!names.has("origin_id")) db.exec("ALTER TABLE threads ADD COLUMN origin_id TEXT");
+	if (!names.has("branch_id")) db.exec("ALTER TABLE threads ADD COLUMN branch_id TEXT");
+	if (!names.has("version_id")) db.exec("ALTER TABLE threads ADD COLUMN version_id TEXT");
 	return db;
 }
 
@@ -104,17 +120,29 @@ DELETE FROM jobs WHERE kind IN ('memory_stage1', 'memory_consolidate_global');
 export function upsertThreads(db: Database, threads: MemoryThread[]): void {
 	if (threads.length === 0) return;
 	const stmt = db.prepare(`
-INSERT INTO threads (id, updated_at, rollout_path, cwd, source_kind)
-VALUES (?, ?, ?, ?, ?)
+INSERT INTO threads (id, updated_at, rollout_path, origin_id, branch_id, version_id, cwd, source_kind)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
 	updated_at = excluded.updated_at,
 	rollout_path = excluded.rollout_path,
+	origin_id = excluded.origin_id,
+	branch_id = excluded.branch_id,
+	version_id = excluded.version_id,
 	cwd = excluded.cwd,
 	source_kind = excluded.source_kind
 `);
 	const tx = db.transaction((rows: MemoryThread[]) => {
 		for (const row of rows) {
-			stmt.run(row.id, row.updatedAt, row.rolloutPath, row.cwd, row.sourceKind);
+			stmt.run(
+				row.id,
+				row.updatedAt,
+				row.rolloutPath ?? "",
+				row.originId ?? null,
+				row.branchId ?? null,
+				row.versionId ?? null,
+				row.cwd,
+				row.sourceKind,
+			);
 		}
 	});
 	tx(threads);
@@ -146,6 +174,7 @@ export function claimStage1Jobs(
 		runningConcurrencyCap: number;
 		workerId: string;
 		excludeThreadIds?: string[];
+		sourceKinds?: readonly MemoryThread["sourceKind"][];
 	},
 ): Stage1Claim[] {
 	const {
@@ -158,6 +187,7 @@ export function claimStage1Jobs(
 		runningConcurrencyCap,
 		workerId,
 		excludeThreadIds = [],
+		sourceKinds = ["cli", "app"],
 	} = params;
 	const maxAgeSec = maxRolloutAgeDays * 24 * 60 * 60;
 	const minIdleSec = minRolloutIdleHours * 60 * 60;
@@ -168,21 +198,29 @@ export function claimStage1Jobs(
 		.get(STAGE1_KIND, nowSec) as { count?: number } | undefined;
 	let runningCount = runningCountRow?.count ?? 0;
 	if (runningCount >= runningConcurrencyCap) return [];
+	const sourceKindA = sourceKinds[0] ?? "cli";
+	const sourceKindB = sourceKinds[1] ?? sourceKindA;
 	const candidateRows = db
-		.prepare("SELECT id, updated_at, rollout_path, cwd, source_kind FROM threads ORDER BY updated_at DESC LIMIT ?")
-		.all(threadScanLimit) as Array<{
+		.prepare(
+			"SELECT id, updated_at, rollout_path, origin_id, branch_id, version_id, cwd, source_kind FROM threads WHERE source_kind = ? OR source_kind = ? ORDER BY updated_at DESC LIMIT ?",
+		)
+		.all(sourceKindA, sourceKindB, threadScanLimit) as Array<{
 		id: string;
 		updated_at: number;
 		rollout_path: string;
+		origin_id: string | null;
+		branch_id: string | null;
+		version_id: string | null;
 		cwd: string;
-		source_kind: string;
+		source_kind: MemoryThread["sourceKind"];
 	}>;
 	const claims: Stage1Claim[] = [];
 	const excluded = new Set(excludeThreadIds);
+	const allowedSourceKinds = new Set(sourceKinds);
 	for (const row of candidateRows) {
 		if (claims.length >= maxRolloutsPerStartup) break;
 		if (excluded.has(row.id)) continue;
-		if (row.source_kind !== "cli" && row.source_kind !== "app") continue;
+		if (!allowedSourceKinds.has(row.source_kind)) continue;
 		if (nowSec - row.updated_at > maxAgeSec) continue;
 		if (nowSec - row.updated_at < minIdleSec) continue;
 		if (runningCount >= runningConcurrencyCap) break;
@@ -237,8 +275,13 @@ WHERE kind = ? AND job_key = ?
 			ownershipToken,
 			inputWatermark: row.updated_at,
 			sourceUpdatedAt: row.updated_at,
-			rolloutPath: row.rollout_path,
+			rolloutPath: row.rollout_path || undefined,
+			// SQLite is the serialization boundary for these already-validated opaque ids.
+			originId: row.origin_id ? (row.origin_id as OriginId) : undefined,
+			branchId: row.branch_id ? (row.branch_id as BranchId) : undefined,
+			versionId: row.version_id ? (row.version_id as VersionId) : undefined,
 			cwd: row.cwd,
+			sourceKind: row.source_kind,
 		});
 		runningCount += 1;
 	}

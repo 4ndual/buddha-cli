@@ -1,6 +1,7 @@
 import type { Stats } from "node:fs";
 import * as fs from "node:fs/promises";
 import type { AgentProgress } from "../task/types";
+import type { KeysetCursor, SessionLocator, SessionRepository } from "../session/repository/types";
 
 export type AgentActivityKind = "response" | "tool" | "irc" | "lifecycle";
 export type AgentActivityStatus = "pending" | "success" | "error" | "aborted";
@@ -40,6 +41,12 @@ export interface AgentActivityRemote {
 	readTranscript(agentId: string, fromByte: number): Promise<AgentActivityTranscript | null>;
 }
 
+export interface AgentActivityRepositoryOptions {
+	repository: SessionRepository;
+	locateAgent(agentId: string): SessionLocator | undefined;
+	pageSize?: number;
+}
+
 interface TranscriptState {
 	path?: string;
 	offset: number;
@@ -49,16 +56,6 @@ interface TranscriptState {
 	toolRows: Map<string, AgentActivityRow>;
 }
 
-interface ActivityMessage {
-	role?: string;
-	timestamp?: number;
-	content?: unknown;
-	toolCallId?: string;
-	toolName?: string;
-	isError?: boolean;
-	customType?: string;
-	details?: unknown;
-}
 
 const INITIAL_TAIL_BYTES = 256 * 1024;
 const MAX_ROWS_PER_AGENT = 256;
@@ -240,10 +237,17 @@ export class AgentActivityIndex {
 	#states = new Map<string, TranscriptState>();
 	#liveRows = new Map<string, AgentActivityRow[]>();
 	#listeners = new Set<() => void>();
+	#repository: SessionRepository | undefined;
+	#locateAgent: ((agentId: string) => SessionLocator | undefined) | undefined;
+	#repositoryPageSize: number;
 	#remote: AgentActivityRemote | undefined;
 
-	constructor(options?: { remote?: AgentActivityRemote }) {
-		this.#remote = options?.remote;
+	constructor(options?: { remote?: AgentActivityRemote } | AgentActivityRepositoryOptions) {
+		this.#remote = options && "remote" in options ? options.remote : undefined;
+		this.#repository = options && "repository" in options ? options.repository : undefined;
+		this.#locateAgent = options && "repository" in options ? options.locateAgent : undefined;
+		this.#repositoryPageSize =
+			options && "repository" in options ? Math.max(1, Math.min(500, Math.floor(options.pageSize ?? 100))) : 100;
 	}
 
 	onChange(listener: () => void): () => void {
@@ -261,12 +265,45 @@ export class AgentActivityIndex {
 	}
 
 	async sync(agentId: string, sessionFile?: string | null): Promise<void> {
+		if (this.#repository) {
+			const locator = this.#locateAgent?.(agentId);
+			if (locator) await this.syncRepository(agentId, locator);
+			return;
+		}
 		if (this.#remote) {
 			await this.#syncRemote(agentId);
 			return;
 		}
 		if (!sessionFile) return;
 		await this.#syncLocal(agentId, sessionFile);
+	}
+
+	/**
+	 * Refresh one agent from repository event pages. This path never inspects
+	 * the optional JSONL path accepted by {@link sync}.
+	 */
+	async syncRepository(agentId: string, locator: SessionLocator): Promise<void> {
+		const repository = this.#repository;
+		if (!repository) throw new Error("AgentActivityIndex requires an injected repository");
+		let state = this.#states.get(agentId);
+		const logicalPath = `${String(locator.branchId)}\u0000${String(locator.versionId ?? "")}`;
+		if (!state || state.path !== logicalPath) {
+			state = { path: logicalPath, offset: 0, mtimeMs: 0, pending: "", rows: [], toolRows: new Map() };
+			this.#states.set(agentId, state);
+		}
+		let cursor: KeysetCursor | undefined;
+		do {
+			const page = await repository.readEvents({
+				...locator,
+				limit: this.#repositoryPageSize,
+				cursor,
+			});
+			for (const event of page.items) {
+				const entry = recordOf(event.entry);
+				if (entry) this.#consumeEntry(agentId, state, entry);
+			}
+			cursor = page.nextCursor;
+		} while (cursor);
 	}
 
 	/** Test/diag helper: number of toolCallId mappings retained for an agent. */
@@ -405,7 +442,6 @@ export class AgentActivityIndex {
 		const complete = text.endsWith("\n");
 		const lines = text.split("\n");
 		state.pending = complete ? "" : (lines.pop() ?? "");
-		let changed = false;
 		for (const line of lines) {
 			if (!line.trim()) continue;
 			let entry: Record<string, unknown> | undefined;
@@ -414,58 +450,61 @@ export class AgentActivityIndex {
 			} catch {
 				continue;
 			}
-			if (entry?.type !== "message" || typeof entry.id !== "string") continue;
-			const message = recordOf(entry.message) as ActivityMessage | undefined;
-			if (!message) continue;
-			const timestamp = timestampOf(message.timestamp, timestampOf(entry.timestamp, Date.now()));
-			if (message.role === "assistant") {
-				const response = textContent(message.content);
-				if (response) {
-					pruneToolRows(
-						state,
-						boundedPush(state.rows, {
-							id: `${agentId}:response:${entry.id}`,
-							agentId,
-							timestamp,
-							kind: "response",
-							title: "Response",
-							summary: response,
-							status: message.isError ? "error" : "success",
-							entryId: entry.id,
-							source: "transcript",
-						}),
-					);
-					changed = true;
-				}
-				for (const call of toolBlocks(message.content)) {
-					const row: AgentActivityRow = {
-						id: `${agentId}:tool:${call.id}`,
+			if (entry) this.#consumeEntry(agentId, state, entry);
+		}
+	}
+
+	#consumeEntry(agentId: string, state: TranscriptState, entry: Record<string, unknown>): void {
+		if (entry.type !== "message" || typeof entry.id !== "string") return;
+		const message = recordOf(entry.message);
+		if (!message) return;
+		const timestamp = timestampOf(message.timestamp, timestampOf(entry.timestamp, Date.now()));
+		let changed = false;
+		if (message.role === "assistant") {
+			const response = textContent(message.content);
+			if (response) {
+				pruneToolRows(
+					state,
+					boundedPush(state.rows, {
+						id: `${agentId}:response:${entry.id}`,
 						agentId,
 						timestamp,
-						kind: "tool",
-						title: call.name,
-						summary: argumentsSummary(call.name, call.args),
-						status: "pending",
+						kind: "response",
+						title: "Response",
+						summary: response,
+						status: message.isError === true ? "error" : "success",
 						entryId: entry.id,
-						toolCallId: call.id,
-						toolName: call.name,
 						source: "transcript",
-					};
-					state.toolRows.set(call.id, row);
-					pruneToolRows(state, boundedPush(state.rows, row));
-					changed = true;
-				}
-				continue;
-			}
-			if (message.role === "toolResult" && typeof message.toolCallId === "string") {
-				const row = state.toolRows.get(message.toolCallId);
-				if (!row) continue;
-				row.status = message.isError ? "error" : "success";
-				row.timestamp = Math.max(row.timestamp, timestamp);
-				if (!state.rows.includes(row)) pruneToolRows(state, boundedPush(state.rows, row));
-				state.toolRows.delete(message.toolCallId);
+					}),
+				);
 				changed = true;
 			}
+			for (const call of toolBlocks(message.content)) {
+				const row: AgentActivityRow = {
+					id: `${agentId}:tool:${call.id}`,
+					agentId,
+					timestamp,
+					kind: "tool",
+					title: call.name,
+					summary: argumentsSummary(call.name, call.args),
+					status: "pending",
+					entryId: entry.id,
+					toolCallId: call.id,
+					toolName: call.name,
+					source: "transcript",
+				};
+				state.toolRows.set(call.id, row);
+				pruneToolRows(state, boundedPush(state.rows, row));
+				changed = true;
+			}
+		} else if (message.role === "toolResult" && typeof message.toolCallId === "string") {
+			const row = state.toolRows.get(message.toolCallId);
+			if (!row) return;
+			row.status = message.isError === true ? "error" : "success";
+			row.timestamp = Math.max(row.timestamp, timestamp);
+			if (!state.rows.includes(row)) pruneToolRows(state, boundedPush(state.rows, row));
+			state.toolRows.delete(message.toolCallId);
+			changed = true;
 		}
 		if (changed) this.#notify();
 	}
