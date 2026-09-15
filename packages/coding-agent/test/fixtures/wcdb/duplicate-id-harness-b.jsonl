@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"duplicate-native-id","timestamp":"2026-02-04T00:00:00.000Z","cwd":"/fixtures/harness-b"}
+{"type":"message","id":"same-entry-id","parentId":null,"timestamp":"2026-02-04T00:00:01.000Z","message":{"role":"user","content":"from harness B","timestamp":1770163201000}}

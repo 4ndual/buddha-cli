@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"missing-parent","timestamp":"2026-02-03T00:00:00.000Z","cwd":"/fixtures/missing-parent"}
+{"type":"message","id":"orphan","parentId":"never-present","timestamp":"2026-02-03T00:00:01.000Z","message":{"role":"user","content":"orphan","timestamp":1770076801000}}

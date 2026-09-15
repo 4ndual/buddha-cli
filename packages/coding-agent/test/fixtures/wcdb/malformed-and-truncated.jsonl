@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"malformed","timestamp":"2026-02-01T00:00:00.000Z","cwd":"/fixtures/malformed"}
+{"type":"message","id":"good-before","parentId":null,"timestamp":"2026-02-01T00:00:01.000Z","message":{"role":"user","content":"before malformed","timestamp":1769904001000}}
+{"type":"message","id":"broken",
+{"type":"message","id":"good-after","parentId":"good-before","timestamp":"2026-02-01T00:00:03.000Z","message":{"role":"user","content":"after malformed","timestamp":1769904003000}}
+{"type":"message","id":"truncated","parentId":"good-after"
