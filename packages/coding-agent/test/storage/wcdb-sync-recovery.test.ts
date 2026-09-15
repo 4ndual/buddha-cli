@@ -2,7 +2,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { ExperimentalModeTransition, assertWriteFence } from "../../src/storage/fencing/mode-transition";
+import {
+	ExperimentalModeTransition,
+	ModeTransitionInterruptedError,
+	assertWriteFence,
+} from "../../src/storage/fencing/mode-transition";
 import { checksumJobJson, sha256Bytes } from "../../src/storage/jobs/checksum";
 import type { DurableIo } from "../../src/storage/jobs/durable-fs";
 import { durableIo } from "../../src/storage/jobs/durable-fs";
@@ -348,6 +352,21 @@ describe("same-origin no-merge synchronization", () => {
 		expect(attach.actions[0]?.kind).toBe("attach-branch");
 	});
 
+	test("does not invent a parent between disjoint same-origin histories", () => {
+		const target = syncVersion({ origin: "S", version: "v-a", branch: "target", events: ["A"] });
+		const source = syncVersion({ origin: "S", version: "v-x", branch: "source", events: ["X"] });
+		const plan = reconcileSameOrigin({
+			targetReplicaId: "target" as ReplicaIdForTest,
+			sourceReplicaId: "source" as ReplicaIdForTest,
+			target: [target],
+			source: [source],
+			mappings: [],
+		});
+		expect(plan.actions[0]?.kind).toBe("sibling-fork");
+		expect(plan.actions[0]?.parentVersionId).toBeNull();
+		expect(plan.actions[0]?.forkPointHash).toBeNull();
+	});
+
 	test("persists per-replica branch mappings before applying a sync plan", async () => {
 		const root = await temporaryRoot("replica-mapping");
 		const storePath = path.join(root, "mappings.json");
@@ -457,6 +476,7 @@ describe("recovery and experimental fencing", () => {
 			targetMode: "db",
 		});
 		const steps: string[] = [];
+		let transferJobId = "";
 		const state = await transition.execute({
 			async prepare() {
 				steps.push("prepare");
@@ -465,9 +485,10 @@ describe("recovery and experimental fencing", () => {
 			async drain() {
 				steps.push("drain");
 			},
-			async transfer() {
+			async transfer(_token, recoverableJobId) {
 				steps.push("transfer");
-				return { recoverableJobId: "sync-1" };
+				transferJobId = recoverableJobId;
+				return { recoverableJobId };
 			},
 			async verify() {
 				steps.push("verify");
@@ -479,11 +500,74 @@ describe("recovery and experimental fencing", () => {
 		expect(steps).toEqual(["prepare", "drain", "transfer", "verify"]);
 		expect(state.phase).toBe("failed");
 		expect(state.activeMode).toBe("jsonl");
-		expect(state.recoverableJobId).toBe("sync-1");
+		expect(state.recoverableJobId).toBe(transferJobId);
 		expect(state.error).toContain("config commit is prohibited");
 		expect(() =>
 			assertWriteFence({ processGeneration: 4, activeGeneration: 4, transition: transition.state.token }),
 		).toThrow("draining writers");
 		expect(() => assertWriteFence({ processGeneration: 3, activeGeneration: 4 })).toThrow("Stale storage writer");
+	});
+
+	test("reopens at the durable phase and reuses the reserved transfer job", async () => {
+		const root = await temporaryRoot("fencing-resume");
+		const transition = await ExperimentalModeTransition.create({
+			directory: root,
+			transitionId: "switch-resume",
+			profileId: "profile",
+			activeMode: "jsonl",
+			activeGeneration: 8,
+			targetMode: "db",
+		});
+		const steps: string[] = [];
+		const transferJobs: string[] = [];
+		await expect(
+			transition.execute({
+				async prepare() {
+					steps.push("prepare");
+					return { allProcessesAcknowledgedOrStopped: true };
+				},
+				async drain() {
+					steps.push("drain");
+				},
+				async transfer(_token, recoverableJobId) {
+					steps.push("transfer");
+					transferJobs.push(recoverableJobId);
+					throw new ModeTransitionInterruptedError("simulated process death");
+				},
+				async verify() {
+					throw new Error("verify must not run before transfer recovery");
+				},
+				async reopen() {
+					throw new Error("reopen is capability-disabled");
+				},
+			}),
+		).rejects.toThrow("simulated process death");
+		expect(transition.state.phase).toBe("transferring");
+
+		const reopened = await ExperimentalModeTransition.open(root);
+		const state = await reopened.execute({
+			async prepare() {
+				steps.push("replayed-prepare");
+				return { allProcessesAcknowledgedOrStopped: true };
+			},
+			async drain() {
+				steps.push("replayed-drain");
+			},
+			async transfer(_token, recoverableJobId) {
+				steps.push("transfer");
+				transferJobs.push(recoverableJobId);
+				return { recoverableJobId };
+			},
+			async verify() {
+				steps.push("verify");
+			},
+			async reopen() {
+				steps.push("reopen");
+			},
+		});
+		expect(steps).toEqual(["prepare", "drain", "transfer", "transfer", "verify"]);
+		expect(transferJobs[1]).toBe(transferJobs[0]);
+		expect(state.phase).toBe("failed");
+		expect(state.activeMode).toBe("jsonl");
 	});
 });
