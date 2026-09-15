@@ -17,6 +17,7 @@ import {
 	sourceAlias,
 	versionId,
 	type ReconciliationObservation,
+	type ReconciliationAction,
 } from "../src/storage/identity";
 
 const source = { harness: "omp", installNamespace: "profile-main", nativeSessionId: "native-42" };
@@ -127,7 +128,7 @@ describe("no-merge lineage", () => {
 		identityResolved: true,
 		oneSideAbsent: false,
 	};
-	const matrix: Array<[Partial<ReconciliationObservation>, string]> = [
+	const matrix: Array<[Partial<ReconciliationObservation>, ReconciliationAction]> = [
 		[{ sameVersion: true }, "no-op"],
 		[{ currentIsVerifiedAncestor: true }, "import-suffix-cas"],
 		[{ bothExtendSameBaseDifferently: true }, "preserve-sibling-branches"],
@@ -146,7 +147,9 @@ describe("no-merge lineage", () => {
 		const records = ["A", "B", "C", "D"].map(value => canonicalIdentityRecord({ value }));
 		const events = records.map((identity, index) => ({ hash: `event-v1:${index}` as never, identity }));
 		const comparison = compareImmutablePrefixes([events[0], events[1], events[2]], [events[0], events[1], events[3]]);
-		expect(comparison).toEqual({ sharedLength: 2, relationship: "diverged", forkPointHash: "event-v1:1" });
+		expect(comparison.sharedLength).toBe(2);
+		expect(comparison.relationship).toBe("diverged");
+		expect(comparison.forkPointHash).toBe(events[1].hash);
 	});
 
 	it("keeps a CAS loser's append on a stable sibling at its original expected head", () => {
