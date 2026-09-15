@@ -78,7 +78,7 @@
       "name": "@oh-my-pi/pi-coding-agent",
       "version": "18.1.13",
       "bin": {
-        "omp": "src/cli.ts",
+        "buddha": "src/cli.ts",
       },
       "dependencies": {
         "@babel/parser": "catalog:",
@@ -104,6 +104,7 @@
         "@opentelemetry/sdk-metrics": "catalog:",
         "@opentelemetry/sdk-trace-base": "catalog:",
         "@opentelemetry/sdk-trace-node": "catalog:",
+        "@tursodatabase/database": "0.7.2",
         "puppeteer-core": "catalog:",
       },
       "devDependencies": {
@@ -216,6 +217,21 @@
         "@types/bun": "catalog:",
         "arkregex": "0.0.8",
         "arktype": "2.2.3",
+      },
+    },
+    "packages/prompt-analyzer": {
+      "name": "@oh-my-pi/prompt-analyzer",
+      "version": "0.0.1",
+      "bin": {
+        "prompt-analyzer": "src/main.ts",
+      },
+      "dependencies": {
+        "@oh-my-pi/pi-coding-agent": "catalog:",
+        "@oh-my-pi/pi-utils": "catalog:",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "puppeteer-core": "catalog:",
       },
     },
     "packages/snapcompact": {
@@ -725,6 +741,8 @@
 
     "@oh-my-pi/pi-wire": ["@oh-my-pi/pi-wire@workspace:packages/wire"],
 
+    "@oh-my-pi/prompt-analyzer": ["@oh-my-pi/prompt-analyzer@workspace:packages/prompt-analyzer"],
+
     "@oh-my-pi/snapcompact": ["@oh-my-pi/snapcompact@workspace:packages/snapcompact"],
 
     "@oh-my-pi/typescript-edit-benchmark": ["@oh-my-pi/typescript-edit-benchmark@workspace:packages/typescript-edit-benchmark"],
@@ -930,6 +948,18 @@
     "@tailwindcss/vite": ["@tailwindcss/vite@4.3.3", "", { "dependencies": { "@tailwindcss/node": "4.3.3", "@tailwindcss/oxide": "4.3.3", "tailwindcss": "4.3.3" }, "peerDependencies": { "vite": "^5.2.0 || ^6 || ^7 || ^8" } }, "sha512-yYU8cogLeSh/ms2jh8Fj7jaba/EWa7Ja6GoUqYZaraEuCI5YS6ms6ObZgjjedm+jm6XZjdNRWBpPP6Z86oOxcw=="],
 
     "@ts-morph/common": ["@ts-morph/common@0.29.0", "", { "dependencies": { "minimatch": "^10.0.1", "path-browserify": "^1.0.1", "tinyglobby": "^0.2.14" } }, "sha512-35oUmphHbJvQ/+UTwFNme/t2p3FoKiGJ5auTjjpNTop2dyREspirjMy82PLSC1pnDJ8ah1GU98hwpVt64YXQsg=="],
+
+    "@tursodatabase/database": ["@tursodatabase/database@0.7.2", "", { "dependencies": { "@tursodatabase/database-common": "^0.7.2" }, "optionalDependencies": { "@tursodatabase/database-darwin-arm64": "0.7.2", "@tursodatabase/database-linux-arm64-gnu": "0.7.2", "@tursodatabase/database-linux-x64-gnu": "0.7.2", "@tursodatabase/database-win32-x64-msvc": "0.7.2" } }, "sha512-B84QicyDYnKt97qxgb7861cQQC26kuv/LkUlCnpxGs4tuGT9zgS2z/Mt+BkG/wOo1fB4rsSycOgGCbi0xU0YOQ=="],
+
+    "@tursodatabase/database-common": ["@tursodatabase/database-common@0.7.2", "", {}, "sha512-c4uWaA5m7nyDemUrjvX6lQQ89cBxv1jCv7nmwq5JoagyXgbMxDeBfLcY7N5kn0oEcnD0Y+cf09S0wKEXKFKbfg=="],
+
+    "@tursodatabase/database-darwin-arm64": ["@tursodatabase/database-darwin-arm64@0.7.2", "", { "os": "darwin", "cpu": "arm64" }, "sha512-pDYbrPnmsqzWsf21bQXXGKmGhcLdfQQVjx+yrpC/IboCue5o/h9fDZ1QFzQEP6CHRXXoc+pwQCyF8KBntI8fdA=="],
+
+    "@tursodatabase/database-linux-arm64-gnu": ["@tursodatabase/database-linux-arm64-gnu@0.7.2", "", { "os": "linux", "cpu": "arm64" }, "sha512-/Blz7cRssWh7dk8vGs7Cq3kupHOnI0GROAg+u9J4MD5U5ABAabJGN7iW5YQ16jZW35Bv2AkmJAyjvsCWdTyfTg=="],
+
+    "@tursodatabase/database-linux-x64-gnu": ["@tursodatabase/database-linux-x64-gnu@0.7.2", "", { "os": "linux", "cpu": "x64" }, "sha512-rXxInfTxKRPG3XeOAZvzJuX4wF+m9t9BjLbFnKU83Ad8ob2z88r1x+EV7IBzEFhz2FbvrRgriH7PhIEZ7Lx5ug=="],
+
+    "@tursodatabase/database-win32-x64-msvc": ["@tursodatabase/database-win32-x64-msvc@0.7.2", "", { "os": "win32", "cpu": "x64" }, "sha512-AUvN3KO1bZOpsXVofRIMM2+MJ6OghUhgK62t8/3Bsb0Zzt6PztaMvJrtaWI6u5Olx0WCfGdhaVKyegcjYPNAeA=="],
 
     "@tybys/wasm-util": ["@tybys/wasm-util@0.10.3", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-F3fo1MYrRJYL3zER0OUOmkutjr1Vp23m7OsSgp7nq4SP6OqX6C/56XFIPAl5bt3zaBRjmW7SGz3u/6LwFpYcOg=="],
 
