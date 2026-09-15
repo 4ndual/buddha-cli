@@ -15,11 +15,16 @@
     "partial_output_unpublished": "pass",
     "stale_generation_rejected": "pass",
     "export_manifest_verifies": "pass",
+    "descriptor_relative_nofollow_verification": "pass",
+    "bundle_path_and_leaf_swap_races_rejected": "pass",
+    "authoritative_archive_pages_bounded": "pass",
+    "giant_session_streamed_with_backpressure": "pass",
+    "oversized_archive_record_rejected": "pass",
     "scoped_typecheck": "pass"
   },
   "proof": {
     "test_command": "bun test packages/coding-agent/test/session/repository/migration/transfer.test.ts",
-    "test_result": "8 pass, 0 fail, 35 expectations",
+    "test_result": "12 pass, 0 fail, 42 expectations",
     "typecheck_command": "/home/andual/Projects/buddha-cli/node_modules/.bin/tsgo --ignoreConfig --noEmit --target esnext --module esnext --moduleResolution bundler --typeRoots /home/andual/Projects/buddha-cli/node_modules/@types --types bun,node packages/coding-agent/src/session/repository/migration/*.ts packages/coding-agent/test/session/repository/migration/transfer.test.ts",
     "typecheck_result": "exit 0"
   },

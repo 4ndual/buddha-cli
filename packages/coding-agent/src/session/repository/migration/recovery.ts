@@ -29,7 +29,7 @@ export async function recoverPublishedExport(options: RecoverPublishedExportOpti
 	const root = resolve(options.allowedRoot);
 	const publishedPath = await assertNoSymlinkComponents(root, options.publishedPath);
 	const journalPath = await assertNoSymlinkComponents(root, options.journalPath);
-	const verified = await verifyPublishedBundle(publishedPath);
+	const verified = await verifyPublishedBundle(publishedPath, { allowedRoot: root });
 	let job = await readMigrationJob(journalPath);
 	if (job.kind !== "export") throw new Error(`Recovery expected an export job, got ${job.kind}`);
 	if (job.items.length !== 1 || job.items[0].key !== verified.manifest.bundle_sha256) {

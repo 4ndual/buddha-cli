@@ -1,15 +1,15 @@
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
+import { constants, type BigIntStats } from "node:fs";
 import {
 	access,
 	lstat,
 	mkdir,
 	open,
 	readdir,
-	readFile,
 	realpath,
 	rename,
 	rm,
+	type FileHandle,
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -94,6 +94,60 @@ export interface PublishBundleOptions {
 	beforePublish?: (stagingPath: string, manifest: BundleManifest) => void | Promise<void>;
 }
 
+export interface VerifyPublishedBundleOptions {
+	/** Existing real directory that authorizes the bundle path. */
+	allowedRoot: string;
+	/** Fault hook used by scoped path-swap tests after the bundle descriptor is retained. */
+	afterDirectoryOpen?: () => void | Promise<void>;
+}
+
+export interface ArchiveStreamLimits {
+	maxEntryBytes: number;
+	maxEntriesPerPage: number;
+	maxTotalEntries: number;
+	maxTotalEntryBytes: number;
+	maxPayloadRefsPerPage: number;
+	maxTotalPayloadRefs: number;
+}
+
+export interface ArchiveEntryPage<T> {
+	items: readonly T[];
+	byteLength: number;
+}
+
+export interface ArchivePayloadPage<T> {
+	items: readonly T[];
+}
+
+export interface BoundedArchiveStream<E, P> {
+	entryCount: number;
+	entryBytes: number;
+	payloadRefCount: number;
+	openEntryPages(): AsyncIterable<ArchiveEntryPage<E>>;
+	openPayloadPages(): AsyncIterable<ArchivePayloadPage<P>>;
+}
+
+export interface ArchiveStreamConsumer<E, P> {
+	measureEntry(entry: E): number;
+	consumeEntryPage(page: ArchiveEntryPage<E>): Promise<void>;
+	consumePayloadPage(page: ArchivePayloadPage<P>): Promise<void>;
+}
+
+export interface EncodedArchiveEntry {
+	encodedByteLength: number;
+}
+
+export interface SessionArchiveStreamConsumer<E extends EncodedArchiveEntry, P> {
+	consumeEntryPage(page: ArchiveEntryPage<E>): Promise<void>;
+	consumePayloadPage(page: ArchivePayloadPage<P>): Promise<void>;
+}
+
+export interface ArchiveStreamReceipt {
+	entryCount: number;
+	entryBytes: number;
+	payloadRefs: number;
+}
+
 export function sha256(bytes: string | Uint8Array): string {
 	return createHash("sha256").update(bytes).digest("hex");
 }
@@ -173,6 +227,79 @@ export function assertLogicalBundle(bundle: LogicalBundle): void {
 	}
 }
 
+export async function consumeBoundedArchiveStream<E, P>(
+	stream: BoundedArchiveStream<E, P>,
+	limits: ArchiveStreamLimits,
+	consumer: ArchiveStreamConsumer<E, P>,
+): Promise<ArchiveStreamReceipt> {
+	assertArchiveLimits(limits);
+	let entryCount = 0;
+	let entryBytes = 0;
+	for await (const page of stream.openEntryPages()) {
+		if (page.items.length === 0 || page.items.length > limits.maxEntriesPerPage) {
+			throw new Error("Archive entry page violates its item bound");
+		}
+		let measuredPageBytes = 0;
+		for (const entry of page.items) {
+			const bytes = consumer.measureEntry(entry);
+			assertMeasuredRecord(bytes, limits.maxEntryBytes, "entry");
+			measuredPageBytes += bytes;
+		}
+		if (page.byteLength !== measuredPageBytes) throw new Error("Archive entry page byteLength is not exact");
+		entryBytes += measuredPageBytes;
+		entryCount += page.items.length;
+		if (entryCount > limits.maxTotalEntries) throw new Error("Archive item exceeds its total entry count limit");
+		if (entryBytes > limits.maxTotalEntryBytes) throw new Error("Archive item exceeds its total entry byte limit");
+		if (entryCount > stream.entryCount) throw new Error("Archive stream exceeds its declared entry count");
+		await consumer.consumeEntryPage(page);
+	}
+	if (entryCount !== stream.entryCount || entryBytes !== stream.entryBytes) {
+		throw new Error("Archive stream totals do not match its declared count and bytes");
+	}
+	let payloadRefs = 0;
+	for await (const page of stream.openPayloadPages()) {
+		if (page.items.length === 0 || page.items.length > limits.maxPayloadRefsPerPage) {
+			throw new Error("Archive payload page violates its item bound");
+		}
+		payloadRefs += page.items.length;
+		if (payloadRefs > limits.maxTotalPayloadRefs || payloadRefs > stream.payloadRefCount) {
+			throw new Error("Archive item exceeds its total payload reference limit");
+		}
+		await consumer.consumePayloadPage(page);
+	}
+	if (payloadRefs !== stream.payloadRefCount) {
+		throw new Error("Archive stream payload count does not match its declaration");
+	}
+	return { entryCount, entryBytes, payloadRefs };
+}
+
+/**
+ * Direct adapter for the authoritative SessionArchiveItem page shape. Pages
+ * remain reusable and are consumed sequentially with byte backpressure.
+ */
+export function consumeSessionArchiveItemStream<E extends EncodedArchiveEntry, P>(
+	stream: BoundedArchiveStream<E, P>,
+	limits: ArchiveStreamLimits,
+	consumer: SessionArchiveStreamConsumer<E, P>,
+): Promise<ArchiveStreamReceipt> {
+	return consumeBoundedArchiveStream(stream, limits, {
+		measureEntry: (record) => record.encodedByteLength,
+		consumeEntryPage: consumer.consumeEntryPage,
+		consumePayloadPage: consumer.consumePayloadPage,
+	});
+}
+
+function assertArchiveLimits(limits: ArchiveStreamLimits): void {
+	for (const [name, value] of Object.entries(limits)) {
+		if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`Invalid archive stream limit ${name}`);
+	}
+}
+
+function assertMeasuredRecord(bytes: number, limit: number, kind: string): void {
+	if (!Number.isSafeInteger(bytes) || bytes < 0) throw new Error(`Invalid ${kind} byte length`);
+	if (bytes > limit) throw new Error(`Archive ${kind} exceeds its record byte limit`);
+}
+
 export async function publishLogicalBundle(bundle: LogicalBundle, options: PublishBundleOptions): Promise<PublishedBundle> {
 	assertLogicalBundle(bundle);
 	await options.validate?.(bundle);
@@ -207,57 +334,132 @@ export async function publishLogicalBundle(bundle: LogicalBundle, options: Publi
 	}
 }
 
-export async function verifyPublishedBundle(path: string): Promise<PublishedBundle & { bundle: LogicalBundle }> {
+export async function verifyPublishedBundle(
+	path: string,
+	options: VerifyPublishedBundleOptions,
+): Promise<PublishedBundle & { bundle: LogicalBundle }> {
 	const root = resolve(path);
-	const stat = await lstat(root);
-	if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`Bundle path is not a real directory: ${root}`);
-	const manifestBytes = await readFile(join(root, MANIFEST_FILE_NAME), "utf8");
-	const manifest = JSON.parse(manifestBytes) as BundleManifest;
-	if (manifest.format !== BUNDLE_MANIFEST_FORMAT) throw new Error(`Unsupported manifest format: ${manifest.format}`);
-	const manifestSha256 = sha256(manifestBytes);
-	const marker = await readFile(join(root, COMPLETION_MARKER_NAME), "utf8");
-	if (marker !== `${manifestSha256}\n`) throw new Error("Completion marker does not match manifest");
-	const allowed = new Set([MANIFEST_FILE_NAME, COMPLETION_MARKER_NAME]);
-	for (const file of manifest.files) {
-		assertSafeRelativePath(file.path);
-		if (allowed.has(file.path)) throw new Error(`Manifest reserves path ${file.path}`);
-		allowed.add(file.path);
-		const fullPath = join(root, file.path);
-		const entryStat = await lstat(fullPath);
-		if (!entryStat.isFile() || entryStat.isSymbolicLink()) throw new Error(`Manifest entry is not a regular file: ${file.path}`);
-		const bytes = await readFile(fullPath);
-		if (bytes.byteLength !== file.bytes || sha256(bytes) !== file.sha256) {
-			throw new Error(`Manifest verification failed for ${file.path}`);
+	const directory = await openDirectoryBeneath(options.allowedRoot, root);
+	try {
+		const directoryBefore = await directory.stat({ bigint: true });
+		await options.afterDirectoryOpen?.();
+		const manifestBytes = await readStableRegularFileAt(directory, MANIFEST_FILE_NAME);
+		const manifestText = manifestBytes.toString("utf8");
+		const manifest = JSON.parse(manifestText) as BundleManifest;
+		if (manifest.format !== BUNDLE_MANIFEST_FORMAT) throw new Error(`Unsupported manifest format: ${manifest.format}`);
+		const manifestSha256 = sha256(manifestBytes);
+		const marker = await readStableRegularFileAt(directory, COMPLETION_MARKER_NAME);
+		if (marker.toString("utf8") !== `${manifestSha256}\n`) throw new Error("Completion marker does not match manifest");
+		const allowed = new Set([MANIFEST_FILE_NAME, COMPLETION_MARKER_NAME]);
+		let bundleBytes: Buffer | undefined;
+		for (const file of manifest.files) {
+			assertSafeRelativePath(file.path);
+			if (!Number.isSafeInteger(file.bytes) || file.bytes < 0) throw new Error(`Invalid manifest byte count: ${file.path}`);
+			if (allowed.has(file.path)) throw new Error(`Duplicate or reserved manifest path ${file.path}`);
+			allowed.add(file.path);
+			const bytes = await readStableRegularFileAt(directory, file.path);
+			if (bytes.byteLength !== file.bytes || sha256(bytes) !== file.sha256) {
+				throw new Error(`Manifest verification failed for ${file.path}`);
+			}
+			if (file.path === BUNDLE_FILE_NAME) bundleBytes = bytes;
 		}
+		const entries = await readdir(descriptorPath(directory), { withFileTypes: true });
+		for (const entry of entries) {
+			if (!entry.isFile() || !allowed.has(entry.name)) {
+				throw new Error(`Unsupported or unmanifested entry in bundle: ${entry.name}`);
+			}
+		}
+		if (!bundleBytes) throw new Error("Manifest omits logical bundle");
+		const reopened = await openDirectoryBeneath(options.allowedRoot, root);
+		try {
+			const reopenedStat = await reopened.stat({ bigint: true });
+			if (directoryBefore.dev !== reopenedStat.dev || directoryBefore.ino !== reopenedStat.ino) {
+				throw new Error("Bundle path was replaced during verification");
+			}
+		} finally {
+			await reopened.close();
+		}
+		if (sha256(bundleBytes) !== manifest.bundle_sha256) throw new Error("Logical bundle checksum mismatch");
+		const directoryAfter = await directory.stat({ bigint: true });
+		if (!sameStableInode(directoryBefore, directoryAfter)) throw new Error("Bundle directory changed during verification");
+		const bundle = JSON.parse(bundleBytes.toString("utf8")) as LogicalBundle;
+		assertLogicalBundle(bundle);
+		return { path: root, manifest, manifestSha256, bundle };
+	} finally {
+		await directory.close();
 	}
-	const actualFiles = await listFiles(root);
-	for (const file of actualFiles) {
-		if (!allowed.has(file)) throw new Error(`Unmanifested file in bundle: ${file}`);
-	}
-	if (!allowed.has(BUNDLE_FILE_NAME)) throw new Error("Manifest omits logical bundle");
-	const bundleBytes = await readFile(join(root, BUNDLE_FILE_NAME), "utf8");
-	if (sha256(bundleBytes) !== manifest.bundle_sha256) throw new Error("Logical bundle checksum mismatch");
-	const bundle = JSON.parse(bundleBytes) as LogicalBundle;
-	assertLogicalBundle(bundle);
-	return { path: root, manifest, manifestSha256, bundle };
 }
 
 function assertSafeRelativePath(path: string): void {
-	if (!path || path.startsWith("/") || path.includes("\\") || path.split("/").some((part) => part === "" || part === "." || part === "..")) {
+	if (!path || path.includes("/") || path.includes("\\") || path.includes("\0") || path === "." || path === "..") {
 		throw new Error(`Unsafe manifest path: ${path}`);
 	}
 }
 
-async function listFiles(root: string, current = root): Promise<string[]> {
-	const result: string[] = [];
-	for (const entry of await readdir(current, { withFileTypes: true })) {
-		if (entry.isSymbolicLink()) throw new Error(`Symlink is forbidden in bundle: ${entry.name}`);
-		const fullPath = join(current, entry.name);
-		if (entry.isDirectory()) result.push(...(await listFiles(root, fullPath)));
-		else if (entry.isFile()) result.push(relative(root, fullPath).split(sep).join("/"));
-		else throw new Error(`Unsupported filesystem entry in bundle: ${entry.name}`);
+async function openDirectoryBeneath(root: string, candidate: string): Promise<FileHandle> {
+	const absoluteRoot = resolve(root);
+	const absoluteCandidate = resolve(candidate);
+	const rel = relative(absoluteRoot, absoluteCandidate);
+	if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+		throw new Error("Bundle path escapes or equals its allowed root");
 	}
-	return result;
+	let current = await open(
+		absoluteRoot,
+		constants.O_RDONLY | constants.O_DIRECTORY | (constants.O_NOFOLLOW ?? 0),
+	);
+	try {
+		const rootStat = await current.stat();
+		if (!rootStat.isDirectory()) throw new Error("Bundle root descriptor is not a directory");
+		for (const component of rel.split(sep)) {
+			assertSafeRelativePath(component);
+			const next = await open(
+				`${descriptorPath(current)}/${component}`,
+				constants.O_RDONLY | constants.O_DIRECTORY | (constants.O_NOFOLLOW ?? 0),
+			);
+			const nextStat = await next.stat();
+			if (!nextStat.isDirectory()) {
+				await next.close();
+				throw new Error(`Bundle path component is not a directory: ${component}`);
+			}
+			await current.close();
+			current = next;
+		}
+		return current;
+	} catch (error) {
+		await current.close().catch(() => undefined);
+		throw error;
+	}
+}
+
+async function readStableRegularFileAt(directory: FileHandle, name: string): Promise<Buffer> {
+	assertSafeRelativePath(name);
+	const file = await open(`${descriptorPath(directory)}/${name}`, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+	try {
+		const before = await file.stat({ bigint: true });
+		if (!before.isFile()) throw new Error(`Bundle entry is not a regular file: ${name}`);
+		const bytes = await file.readFile();
+		const after = await file.stat({ bigint: true });
+		if (!sameStableInode(before, after) || after.size !== BigInt(bytes.byteLength)) {
+			throw new Error(`Bundle entry changed during verification: ${name}`);
+		}
+		return bytes;
+	} finally {
+		await file.close();
+	}
+}
+
+function sameStableInode(left: BigIntStats, right: BigIntStats): boolean {
+	return (
+		left.dev === right.dev &&
+		left.ino === right.ino &&
+		left.size === right.size &&
+		left.mtimeNs === right.mtimeNs &&
+		left.ctimeNs === right.ctimeNs
+	);
+}
+
+function descriptorPath(handle: FileHandle): string {
+	return `/proc/self/fd/${handle.fd}`;
 }
 
 async function durableWrite(path: string, bytes: string | Uint8Array): Promise<void> {
