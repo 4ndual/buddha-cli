@@ -108,6 +108,9 @@ export const shellHelp = { description: "Interactive shell console" } satisfies 
 export const sshHelp = { description: "Manage SSH host configurations" } satisfies CommandMetadata;
 
 export const statsHelp = { description: "View usage statistics" } satisfies CommandMetadata;
+export const storageHelp = {
+	description: "Inventory, transfer, verify, back up, recover, and select local session storage",
+} satisfies CommandMetadata;
 
 export const tinyModelsHelp = {
 	description: "Download tiny local models (session titles + memory)",

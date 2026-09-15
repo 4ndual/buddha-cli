@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added experimental `omp storage` migration reports and a terminal Storage panel with explicit JSONL/Database capability and verification gates.
+
 ## [18.1.12] - 2026-09-06
 
 - Fixed edit and write results to report the formatted bytes actually committed by LSP writethrough.

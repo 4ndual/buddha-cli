@@ -141,6 +141,7 @@ const JS_EVAL_PROCESS_ARG = "__omp_worker_js_eval_process";
 const STT_WORKER_ARG = "__omp_worker_stt";
 const TTS_WORKER_ARG = "__omp_worker_tts";
 const MNEMOPI_EMBED_WORKER_ARG = "__omp_worker_mnemopi_embed";
+const WCDB_WORKER_ARG = "__omp_worker_wcdb";
 
 async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	if (arg === TINY_WORKER_ARG) {
@@ -215,6 +216,12 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	if (arg === MNEMOPI_EMBED_WORKER_ARG) {
 		const { startMnemopiEmbedWorker } = await import("./mnemopi/embed-worker");
 		await runIpcSubprocessWorker(startMnemopiEmbedWorker);
+		return true;
+	}
+	// Kept behind the selector boundary so JSONL startup never evaluates the native WCDB graph.
+	if (arg === WCDB_WORKER_ARG) {
+		const { runWcdbWorker } = await import("./storage/wcdb/worker/entry");
+		await runWcdbWorker();
 		return true;
 	}
 	if (arg === STATS_ACTIVITY_WORKER_ARG) {
