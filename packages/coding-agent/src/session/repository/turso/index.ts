@@ -42,4 +42,11 @@ export {
 	type SchemaTransaction,
 	type TursoSchemaMigration,
 } from "./schema";
+export {
+	EmbeddedTursoRuntimeAdapter,
+	createEmbeddedTursoRuntimeAdapter,
+	openEmbeddedTursoRuntimeAdapter,
+	type EmbeddedTursoRuntimeAdapterOptions,
+	type OpenEmbeddedTursoRuntimeAdapterOptions,
+} from "./embedded-adapter";
 export * from "./repository";
