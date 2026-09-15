@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "measured": true,
+  "approaches": [
+    {
+      "id": "system-local-discovery",
+      "distinctBasis": "existing loader cache/pkg-config, no source build",
+      "status": "blocked",
+      "commands": [
+        "pkg-config --modversion wcdb",
+        "ldconfig -p | sed -n '/[Ww][Cc][Dd][Bb]/p'"
+      ],
+      "exitEvidence": [
+        "exit 1: Package wcdb was not found in the pkg-config search path; Package 'wcdb', required by 'virtual:world', not found",
+        "exit 0 with no matching dynamic loader entries"
+      ]
+    },
+    {
+      "id": "pinned-release-shared-cmake-bun-ffi",
+      "distinctBasis": "official v2.1.16 release archive, upstream Linux shared-library mode, Bun dlopen",
+      "status": "blocked",
+      "commands": [
+        "cmake -S src -B build-cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DSKIP_WCONAN=ON -DWCDB_CPP=ON -DWCDB_ZSTD=ON",
+        "cmake --build build-cmake --parallel 1",
+        "bun -e <load libomp_wcdb_bridge.so and open copied staging DB>"
+      ],
+      "exitEvidence": [
+        "upstream libWCDB.so built successfully",
+        "Bun process exit 127: symbol lookup error: libomp_wcdb_bridge.so: undefined symbol: WCDBCoreCreateDatabase",
+        "root cause measured: upstream Linux default WCDB_BRIDGE=OFF; WCDB_BRIDGE=ON bridge compile is not GCC-compatible without nullability compatibility definitions"
+      ]
+    },
+    {
+      "id": "pinned-release-static-bridge-bun-ffi",
+      "distinctBasis": "official v2.1.16 release built PIC/static with C bridge sources linked into one self-contained Bun FFI library",
+      "status": "passed-build-and-load",
+      "commands": [
+        "cmake -S src -B build-static -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON '-DCMAKE_C_FLAGS=-D_Nullable= -D_Nonnull=' '-DCMAKE_CXX_FLAGS=-D_Nullable= -D_Nonnull= -include climits' -DBUILD_SHARED_LIBS=OFF -DSKIP_WCONAN=ON -DWCDB_CPP=ON -DWCDB_BRIDGE=ON -DWCDB_ZSTD=ON",
+        "cmake --build build-static --parallel 1",
+        "cmake -S native/wcdb -B bridge-build-static -G Ninja -DWCDB_ROOT=<verified-source> -DWCDB_BUILD=<verified-static-build>",
+        "cmake --build bridge-build-static --parallel 1",
+        "bun -e <load self-contained bridge and round-trip int64/blob against team staging DB>"
+      ],
+      "exitEvidence": [
+        "libWCDB.a and libzstd.a linked successfully after measured GCC compatibility fixes: define nullability annotations and force-include climits for upstream ErrorBridge.cpp",
+        "libomp_wcdb_bridge.so loaded under Bun 1.4.2 and exactly round-tripped 9223372036854775806 plus bytes 00 ff 01"
+      ],
+      "capabilityReceipt": "/home/andual/Projects/.omp-wcdb-team/artifacts/native/capability-receipt.json"
+    }
+  ],
+  "substitutions": {
+    "bunSqlite": false,
+    "systemSqlite": false,
+    "networkStorage": false,
+    "globalInstall": false
+  },
+  "measurementCaveat": "Build ran at --parallel 1 due coordinator-observed high IO PSI. Build timing is not performance acceptance data."
+}
