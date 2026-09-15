@@ -52,6 +52,10 @@ import { type ArtifactManager, writeArtifact } from "../session/artifacts";
 import { ASYNC_RESULT_MESSAGE_TYPE } from "../session/async-job-delivery";
 import type { AuthStorage } from "../session/auth-storage";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
+import {
+	registerRepositoryRelatedSession,
+	type RepositorySessionSource,
+} from "../session/repository-consumers";
 import { SessionManager } from "../session/session-manager";
 import { truncateTail } from "../session/streaming-output";
 import { type ConfiguredThinkingLevel, prewalkWouldBeNoop, resolveTaskEffortLevel, type TaskEffort } from "../thinking";
@@ -478,6 +482,7 @@ export interface ExecutorOptions {
 	invokedAt?: number;
 	acquiredAt?: number;
 	sessionFile?: string | null;
+	parentRepositorySource?: RepositorySessionSource;
 	persistArtifacts?: boolean;
 	artifactsDir?: string;
 	eventBus?: EventBus;
@@ -2956,7 +2961,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 
 	// Set up artifact paths and write input file upfront if artifacts dir provided
 	let subtaskSessionFile: string | undefined;
-	if (options.artifactsDir) {
+	if (options.artifactsDir && !options.parentRepositorySource) {
 		subtaskSessionFile = path.join(options.artifactsDir, `${id}.jsonl`);
 	}
 
@@ -3232,12 +3237,19 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				effortLevel ?? (explicitThinkingLevel ? resolvedThinkingLevel : (thinkingLevel ?? resolvedThinkingLevel));
 			resolvedAt = performance.now();
 			const effectiveCwd = worktree ?? cwd;
-			const sessionManagerPromise = sessionFile
-				? SessionManager.open(sessionFile, undefined, undefined, {
-						initialCwd: effectiveCwd,
-						suppressBreadcrumb: true,
+			const sessionManagerPromise = options.parentRepositorySource
+				? SessionManager.createInRepository(options.parentRepositorySource.repository, effectiveCwd).then(async manager => {
+						const locator = manager.getSessionLocator();
+						if (!locator) throw new Error("Repository child session did not receive a logical locator");
+						await registerRepositoryRelatedSession(options.parentRepositorySource!, "child", id, locator);
+						return manager;
 					})
-				: Promise.resolve(SessionManager.inMemory(effectiveCwd));
+				: sessionFile
+					? SessionManager.open(sessionFile, undefined, undefined, {
+							initialCwd: effectiveCwd,
+							suppressBreadcrumb: true,
+						})
+					: Promise.resolve(SessionManager.inMemory(effectiveCwd));
 			// Setup below can fail before this promise's consumption boundary.
 			// Observe rejection immediately while preserving it for the later await.
 			sessionManagerPromise.catch(() => {});

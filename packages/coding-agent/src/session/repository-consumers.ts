@@ -95,6 +95,21 @@ export async function resolveRepositoryResource(
 	const locator = await source.repository.resolveRelatedResource({ owner: source.locator, kind, key });
 	return locator ? { repository: source.repository, locator } : undefined;
 }
+/** Publish a logical child/advisor relation with the repository's current mode fence. */
+export async function registerRepositoryRelatedSession(
+	source: RepositorySessionSource,
+	kind: RelatedResourceKind,
+	key: string,
+	target: SessionLocator,
+): Promise<void> {
+	const { modeGeneration } = await source.repository.health();
+	await source.repository.registerRelatedResource({
+		expectedModeGeneration: modeGeneration,
+		locator: { owner: source.locator, kind, key },
+		target,
+	});
+}
+
 
 /** Read one exact branch snapshot through the explicit transfer boundary. */
 export async function exportRepositorySessionItem(source: ExplicitRepositoryExportSource): Promise<SessionArchiveItem> {
