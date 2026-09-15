@@ -4,10 +4,10 @@
   "runtime": "Bun 1.4.2",
   "command": "bun test packages/coding-agent/test/session/repository/identity.test.ts packages/coding-agent/test/session/repository/jsonl-repository.test.ts",
   "result": {
-    "passed": 9,
+    "passed": 10,
     "failed": 0,
-    "expectations": 37,
-    "duration_ms": 935
+    "expectations": 41,
+    "duration_ms": 1530
   },
   "covered": [
     "canonical object ordering and array ordering",
@@ -17,6 +17,8 @@
     "title-sensitive versions",
     "identity collision rejection",
     "keyset pagination",
+    "idempotent fenced fresh-session creation",
+    "bounded keyset enumeration of child/advisor/artifact locators",
     "idempotent repeated import and sync",
     "expected-head CAS sibling forks without merge",
     "no absence-driven deletion",
