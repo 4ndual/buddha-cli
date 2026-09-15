@@ -284,8 +284,9 @@ export function detectHarness(records: readonly AdapterInputRecord[]): HarnessFo
 function adaptOmp(records: readonly AdapterInputRecord[], format: "omp-v1" | "omp-v2" | "omp-v3"): AdapterOutput {
 	const dataRecords = records[0]?.value.type === "title" ? records.slice(1) : records;
 	const slot = records[0]?.value.type === "title" ? (records[0].value as unknown as SessionTitleSlotEntry) : undefined;
-	const rawHeader = dataRecords[0]?.value;
-	if (!rawHeader || rawHeader.type !== "session") throw new Error("OMP session header is missing");
+	const headerRecord = dataRecords[0];
+	const rawHeader = headerRecord?.value;
+	if (!headerRecord || !rawHeader || rawHeader.type !== "session") throw new Error("OMP session header is missing");
 	const nativeSessionId = stringField(rawHeader, "id");
 	const timestamp = stringField(rawHeader, "timestamp");
 	const cwd = stringField(rawHeader, "cwd");
@@ -307,11 +308,60 @@ function adaptOmp(records: readonly AdapterInputRecord[], format: "omp-v1" | "om
 		header.previousSessionFiles = rawHeader.previousSessionFiles;
 	}
 	if (typeof rawHeader.providerPromptCacheKey === "string") header.providerPromptCacheKey = rawHeader.providerPromptCacheKey;
+	if (!header.parentSession && typeof rawHeader.branchedFrom === "string") header.parentSession = rawHeader.branchedFrom;
 
 	const used = new Set<string>();
 	const entries: SessionEntry[] = [];
+	const sourceEntryIds = new Map<number, string>();
 	const unknowns: Array<{ record: AdapterInputRecord; fields: string[] }> = [];
+	const knownHeaderKeys = [
+		"type",
+		"version",
+		"id",
+		"title",
+		"titleSource",
+		"timestamp",
+		"cwd",
+		"additionalDirectories",
+		"parentSession",
+		"previousSessionFiles",
+		"providerPromptCacheKey",
+		"provider",
+		"modelId",
+		"thinkingLevel",
+		"branchedFrom",
+	];
+	const unknownHeaderFields = Object.keys(rawHeader).filter(key => !knownHeaderKeys.includes(key));
+	if (unknownHeaderFields.length > 0) unknowns.push({ record: headerRecord, fields: unknownHeaderFields });
 	let previous: string | null = null;
+	if (format === "omp-v1") {
+		const provider = stringField(rawHeader, "provider");
+		const modelId = stringField(rawHeader, "modelId");
+		if (provider && modelId) {
+			const id = uniqueId(stableId("omp", headerRecord.line, "legacy-model"), used);
+			entries.push({
+				type: "model_change",
+				id,
+				parentId: previous,
+				timestamp: header.timestamp,
+				model: `${provider}/${modelId}`,
+			});
+			previous = id;
+		} else if (provider || modelId) {
+			unknowns.push({ record: headerRecord, fields: ["provider", "modelId"] });
+		}
+		if (typeof rawHeader.thinkingLevel === "string" || rawHeader.thinkingLevel === null) {
+			const id = uniqueId(stableId("omp", headerRecord.line, "legacy-thinking"), used);
+			entries.push({
+				type: "thinking_level_change",
+				id,
+				parentId: previous,
+				timestamp: header.timestamp,
+				thinkingLevel: rawHeader.thinkingLevel,
+			});
+			previous = id;
+		}
+	}
 	for (let index = 1; index < dataRecords.length; index++) {
 		const record = dataRecords[index];
 		const value = { ...record.value };
@@ -326,7 +376,9 @@ function adaptOmp(records: readonly AdapterInputRecord[], format: "omp-v1" | "om
 		if (format !== "omp-v1") used.add(id);
 		value.id = id;
 		value.parentId = format === "omp-v1" ? previous : value.parentId === null ? null : stringField(value, "parentId") ?? null;
-		value.timestamp = stringField(value, "timestamp") ?? new Date(record.line).toISOString();
+		const entryTimestamp = stringField(value, "timestamp");
+		if (!entryTimestamp) throw new Error(`OMP ${type} record at line ${record.line} lacks a timestamp`);
+		value.timestamp = entryTimestamp;
 		if (type === "message" && isRecord(value.message) && value.message.role === "hookMessage") value.message.role = "custom";
 		if (type === "model_change" && typeof value.model !== "string") {
 			const provider = stringField(value, "provider");
@@ -334,12 +386,14 @@ function adaptOmp(records: readonly AdapterInputRecord[], format: "omp-v1" | "om
 			if (provider && modelId) value.model = `${provider}/${modelId}`;
 		}
 		if (type === "compaction" && format === "omp-v1" && typeof value.firstKeptEntryIndex === "number") {
-			const target = entries[value.firstKeptEntryIndex - 1];
-			if (target) value.firstKeptEntryId = target.id;
+			const targetId = sourceEntryIds.get(value.firstKeptEntryIndex);
+			if (!targetId) throw new Error(`OMP compaction ${id} has invalid firstKeptEntryIndex`);
+			value.firstKeptEntryId = targetId;
 			delete value.firstKeptEntryIndex;
 		}
 		if (type === "message" && !isRecord(value.message)) throw new Error(`OMP message ${id} lacks message payload`);
 		entries.push(value as unknown as SessionEntry);
+		sourceEntryIds.set(index, id);
 		previous = id;
 		const unknownFields = Object.keys(record.value).filter(key => !knownKeys.includes(key));
 		if (unknownFields.length > 0) unknowns.push({ record, fields: unknownFields });
@@ -359,9 +413,16 @@ function adaptOmp(records: readonly AdapterInputRecord[], format: "omp-v1" | "om
 		title: slot
 			? { title: slot.title, source: slot.source, updatedAt: slot.updatedAt }
 			: { title: header.title ?? "", source: header.titleSource, updatedAt: header.timestamp },
-		disposition: "resumable",
-		reasons: [format === "omp-v3" ? "Native OMP v3 semantics validated" : `${format} deterministically migrated to OMP v3`],
-		diagnostics: [],
+		disposition: unknowns.length > 0 ? "archive-only" : "resumable",
+		reasons:
+			unknowns.length > 0
+				? ["Unmapped OMP records or fields are preserved outside model context"]
+				: [format === "omp-v3" ? "Native OMP v3 semantics validated" : `${format} deterministically migrated to OMP v3`],
+		diagnostics: unknowns.map(unknown => ({
+			code: "unknown-control-event",
+			line: unknown.record.line,
+			detail: `Preserved unmapped OMP fields outside context: ${unknown.fields.join(", ")}`,
+		})),
 		attachments: [],
 		objects: [],
 	};
