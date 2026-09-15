@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-09-15T22:20:12.404Z",
+  "corpus": {
+    "root": "/home/andual/Projects/.turso-migration-owned/perf-corpus/staging/complete-corpus-Kn42CL",
+    "kind": "synthetic",
+    "claimScope": "synthetic-generated",
+    "sourceLedgerSha256": "36aad8177cf25ad88891f10811daa0e86151461ad6b4aacc9764ccab7963a912"
+  },
+  "ledgerSha256": {
+    "source": "36aad8177cf25ad88891f10811daa0e86151461ad6b4aacc9764ccab7963a912",
+    "normalized": "48f74d02ae6622ee08b46fba931569893d8adacdae12dcf2290d3c3b22808541",
+    "imported": "67bf6139e6a6209ba5aa1f99831c1d3ce7994d6e41090c710001e2b4120df14c",
+    "disposition": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "branchHeads": "4ae8f1e47cc86767ae33b11618f5a6eeb3e502d69814bf9894a702c83237d79f",
+    "attachments": "7ac3a72e9a74cf60f2216a4c93ccb6ecd14276c556a9ff8ad437fad2395282a5",
+    "contextHashes": "ab667fc7df71dbf32d5a68e068a34f0a0e17740d9e21e4f588b3ceb10f119c75",
+    "rollbackReceipt": "c2b3812beabc7347b9e48bb62f16fffa5a8a9f64b567f50e1da922d84b6f4aa2"
+  },
+  "bounds": {
+    "partitionCount": 4,
+    "maxBatchBytes": 4096,
+    "maxRecordsPerPartition": 100,
+    "maxLineBytes": 33554432
+  },
+  "counts": {
+    "discovered": 3,
+    "copied": 2,
+    "imported": 1,
+    "dispositioned": 1,
+    "attachments": 1,
+    "branchHeads": 1,
+    "contextHashes": 1,
+    "pending": 0,
+    "failed": 0
+  },
+  "bytes": {
+    "discovered": 316,
+    "copied": 291
+  },
+  "coverage": {
+    "byRoot": {
+      "synthetic-local-profile": 1,
+      "synthetic-github-primary-artifact": 1,
+      "synthetic-other-harness": 1
+    },
+    "bySourceNamespace": {
+      "omp:test": 1,
+      "github:test/repo:release": 1,
+      "foreign:test": 1
+    },
+    "byKind": {
+      "session": 2,
+      "attachment": 1
+    }
+  },
+  "rollbackDrillVerified": true,
+  "completionBadge": "COMPLETE",
+  "actualCorpusCompletionClaim": false,
+  "issues": [],
+  "issueCount": 0,
+  "issueSamplesTruncated": false
+}

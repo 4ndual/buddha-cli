@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"synthetic-a","timestamp":"2026-09-15T00:00:00.000Z","cwd":"/synthetic"}
+{"type":"message","id":"a1","parentId":null,"timestamp":"2026-09-15T00:00:01.000Z","message":{"role":"user","content":"searchable synthetic alpha"}}
