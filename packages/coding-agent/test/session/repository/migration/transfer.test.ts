@@ -54,6 +54,12 @@ class MemoryReplica implements LogicalImportTarget {
 
 	constructor(readonly replicaId: string, initial: LogicalBundle) {
 		this.bundle = structuredClone(initial);
+		for (const branch of this.bundle.branches) {
+			this.mappings.set(`${replicaId}\0${branch.branch_id}`, branch.branch_id);
+			for (const alias of branch.replica_aliases ?? []) {
+				this.mappings.set(`${alias.replica_id}\0${alias.branch_id}`, branch.branch_id);
+			}
+		}
 	}
 
 	async readLogicalSnapshot(): Promise<LogicalBundle> {
@@ -76,7 +82,21 @@ class MemoryReplica implements LogicalImportTarget {
 			const mappingKey = `${plan.source_replica_id}\0${plan.source_branch_id}`;
 			const existingVersion = versions.get(plan.version.version_id);
 			if (existingVersion) {
-				this.mappings.set(mappingKey, existingVersion.branch_id);
+				const current = branches.get(plan.target_branch_id);
+				if (!current) {
+					branches.set(plan.target_branch_id, {
+						branch_id: plan.target_branch_id,
+						origin_id: existingVersion.origin_id,
+						parent_branch_id: null,
+						fork_point_hash: existingVersion.fork_point_hash,
+						head_hash: existingVersion.head_hash,
+						head_version_id: existingVersion.version_id,
+						replica_aliases: plan.branch_aliases,
+					});
+				}
+				for (const alias of plan.branch_aliases) {
+					this.mappings.set(`${alias.replica_id}\0${alias.branch_id}`, plan.target_branch_id);
+				}
 				continue;
 			}
 			const current = branches.get(plan.target_branch_id);
@@ -98,8 +118,11 @@ class MemoryReplica implements LogicalImportTarget {
 				fork_point_hash: plan.version.fork_point_hash,
 				head_hash: plan.version.head_hash,
 				head_version_id: plan.version.version_id,
+				replica_aliases: plan.branch_aliases,
 			});
-			this.mappings.set(mappingKey, plan.target_branch_id);
+			for (const alias of plan.branch_aliases) {
+				this.mappings.set(`${alias.replica_id}\0${alias.branch_id}`, plan.target_branch_id);
+			}
 		}
 		next.origins = [...origins].sort();
 		next.events = [...events.values()];
@@ -280,10 +303,35 @@ describe("semantic reconciliation", () => {
 		}
 	});
 
+	test("retains explicit branch identity when sibling branches share one immutable version", async () => {
+		const root = await temporaryRoot();
+		const sourceBundle = fixture("explicit-source", "C");
+		sourceBundle.branches = [
+			...sourceBundle.branches,
+			{
+				...sourceBundle.branches[0],
+				branch_id: "parallel",
+				parent_branch_id: "main",
+				fork_point_hash: "C",
+			},
+		];
+		const source = new MemoryReplica("explicit-source", sourceBundle);
+		const target = new MemoryReplica("explicit-target", fixture("explicit-target", "C"));
+		await synchronizeLogicalReplicas(source, target, {
+			jobId: "explicit-branch",
+			leftJournalPath: join(root, "explicit-lr.json"),
+			rightJournalPath: join(root, "explicit-rl.json"),
+			maxBatchBytes: 1024 * 1024,
+		});
+		const result = await target.readLogicalSnapshot();
+		expect(new Set(result.branches.map((branch) => branch.branch_id))).toEqual(new Set(["main", "parallel"]));
+		expect(result.branches.map((branch) => branch.head_version_id)).toEqual(["vC", "vC"]);
+	});
 	test("historical truncation creates a sibling and preserves the longer history", async () => {
 		const root = await temporaryRoot();
 		const target = new MemoryReplica("target", fixture("target", "C"));
 		const truncated = fixture("source", "A", true);
+
 		await synchronizeLogicalReplicas(new MemoryReplica("source", truncated), target, {
 			jobId: "truncation",
 			leftJournalPath: join(root, "trunc-lr.json"),
