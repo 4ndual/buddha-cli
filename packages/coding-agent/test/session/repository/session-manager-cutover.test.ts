@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { SessionEventReference, SessionSwitchEvent } from "../../../src/extensibility/shared-events";
 import type { RpcSessionReference, RpcSessionState } from "../../../src/modes/rpc/rpc-types";
+import { AcpAgent } from "../../../src/modes/acp/acp-agent";
 import {
 	computeReplicaIdentity,
 	JsonlSessionRepository,
@@ -88,6 +89,33 @@ describe("repository-backed SessionManager", () => {
 		expect(resumed.getEntries().map(entry => entry.type)).toEqual(["message", "title_change"]);
 		expect(resumed.buildSessionContext().messages[0]).toMatchObject({ role: "user", content: "repository context" });
 		await repo.close();
+	});
+
+	test("ACP repository listing uses opaque keyset cursors", async () => {
+		const root = temporaryRoot("omp-manager-acp-");
+		const source = repository(root);
+		const first = await SessionManager.createInRepository(source, "/workspace/acp");
+		first.appendMessage({ role: "user", content: "first", timestamp: 1 });
+		await first.flush();
+		const second = await SessionManager.createInRepository(source, "/workspace/acp");
+		second.appendMessage({ role: "user", content: "second", timestamp: 2 });
+		await second.flush();
+
+		const repo = dbFacade(source);
+		const agent = new AcpAgent(
+			{} as never,
+			(async () => {
+				throw new Error("not used");
+			}) as never,
+			{ sessionManager: { getRepository: () => repo } } as never,
+		);
+		const page = await agent.listSessions({});
+		expect(page.sessions).toHaveLength(2);
+		expect(page.sessions.map(session => session.sessionId).sort()).toEqual(
+			[first.getSessionLocator()!.branchId, second.getSessionLocator()!.branchId].sort(),
+		);
+		expect(page.nextCursor).toBeUndefined();
+		await source.close();
 	});
 
 	test("DB logical results expose no path and ordinary manager operations leave sentinel tree untouched", async () => {

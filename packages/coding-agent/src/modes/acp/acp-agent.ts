@@ -66,8 +66,14 @@ import type { AgentSession, AgentSessionEvent } from "../../session/agent-sessio
 import { BlobStore, resolveImageDataSync } from "../../session/blob-store";
 import { isSilentAbort, SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
 import type { UsageStatistics } from "../../session/session-entries";
-import type { SessionInfo as StoredSessionInfo } from "../../session/session-listing";
-import { SessionManager } from "../../session/session-manager";
+import {
+	listRepositorySessionsPage,
+	resolveRepositorySession,
+	type LogicalSessionInfo,
+	type SessionInfo as StoredJsonlSessionInfo,
+} from "../../session/session-listing";
+import { SessionManager, type SessionReference } from "../../session/session-manager";
+import type { KeysetCursor, SessionRepository } from "../../session/repository/types";
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
 import { buildAvailableSlashCommands, toAcpAvailableCommands } from "../../slash-commands/available-commands";
 import { DEFAULT_STT_MODEL_KEY, STT_MODEL_OPTIONS } from "../../stt/models";
@@ -83,6 +89,7 @@ import {
 	TTS_LOCAL_VOICE_OPTIONS,
 } from "../../tts/models";
 import { canonicalizeMessage } from "../../utils/thinking-display";
+
 import { createAcpClientBridge } from "./acp-client-bridge";
 import {
 	extractAssistantMessageText,
@@ -90,6 +97,8 @@ import {
 	normalizeReplayToolArguments,
 } from "./acp-event-mapper";
 import { ACP_TERMINAL_AUTH_FLAG } from "./terminal-auth";
+
+type StoredSessionInfo = StoredJsonlSessionInfo | LogicalSessionInfo;
 
 const ACP_DEFAULT_MODE_ID = "default";
 const ACP_PLAN_MODE_ID = "plan";
@@ -622,6 +631,16 @@ export class AcpAgent implements Agent {
 		this.#createSession = createSession;
 	}
 
+	#sessionRepository(): SessionRepository | undefined {
+		const initial = this.#initialSession?.sessionManager.getRepository();
+		if (initial) return initial;
+		for (const record of this.#sessions.values()) {
+			const repository = record.session.sessionManager.getRepository();
+			if (repository) return repository;
+		}
+		return undefined;
+	}
+
 	setCancelCleanupTimeoutForTesting(timeoutMs: number): void {
 		this.#cancelCleanupTimeoutMs = Math.max(1, timeoutMs);
 	}
@@ -715,6 +734,20 @@ export class AcpAgent implements Agent {
 		}
 		for (const record of this.#sessions.values()) {
 			await record.session.sessionManager.flush();
+		}
+		const repository = this.#sessionRepository();
+		if (repository) {
+			const page = await listRepositorySessionsPage(repository, {
+				cursor: params.cursor ? (params.cursor as KeysetCursor) : undefined,
+				limit: SESSION_PAGE_SIZE,
+			});
+			const sessions = params.cwd
+				? page.items.filter(session => path.resolve(session.cwd) === path.resolve(params.cwd!))
+				: page.items;
+			return {
+				sessions: sessions.map(session => this.#toSessionInfo(session)),
+				nextCursor: page.nextCursor,
+			};
 		}
 		const sessions = await this.#listStoredSessions(params.cwd ?? undefined);
 		const offset = this.#parseCursor(params.cursor ?? undefined);
@@ -1250,7 +1283,7 @@ export class AcpAgent implements Agent {
 		if (!storedSession) {
 			throw new Error(`ACP session not found: ${sessionId}`);
 		}
-		return await this.#openStoredSession(storedSession.path, cwd, mcpServers, sessionId);
+		return await this.#openStoredSession(storedSession, cwd, mcpServers, sessionId);
 	}
 
 	async #resumeManagedSession(sessionId: string, cwd: string, mcpServers: McpServer[]): Promise<ManagedSessionRecord> {
@@ -1265,20 +1298,26 @@ export class AcpAgent implements Agent {
 		if (!storedSession) {
 			throw new Error(`ACP session not found: ${sessionId}`);
 		}
-		return await this.#openStoredSession(storedSession.path, cwd, mcpServers, sessionId);
+		return await this.#openStoredSession(storedSession, cwd, mcpServers, sessionId);
 	}
 
 	async #forkManagedSession(params: ForkSessionRequest): Promise<ManagedSessionRecord> {
-		const sourcePath = await this.#resolveForkSourceSessionPath(params.sessionId);
+		const source = await this.#resolveForkSourceSession(params.sessionId);
 		const { session, setToolUIContext } = normalizeCreatedAcpSession(
 			await this.#createSession(path.resolve(params.cwd), {
 				interactivePrompts: this.#clientCapabilities?.elicitation?.form != null,
 			}),
 		);
 		try {
-			const success = await session.switchSession(sourcePath);
-			if (!success) {
-				throw new Error(`ACP session fork was cancelled: ${params.sessionId}`);
+			if (source.locator) {
+				const repository = this.#sessionRepository();
+				if (!repository) throw new Error("Repository session is unavailable");
+				await session.switchRepositorySession(repository, source.locator);
+			} else {
+				const success = await session.switchSession(source.path!);
+				if (!success) {
+					throw new Error(`ACP session fork was cancelled: ${params.sessionId}`);
+				}
 			}
 			const forked = await session.fork();
 			if (!forked) {
@@ -1292,7 +1331,7 @@ export class AcpAgent implements Agent {
 	}
 
 	async #openStoredSession(
-		sessionPath: string,
+		storedSession: StoredSessionInfo,
 		cwd: string,
 		mcpServers: McpServer[],
 		sessionId: string,
@@ -1303,9 +1342,15 @@ export class AcpAgent implements Agent {
 			}),
 		);
 		try {
-			const success = await session.switchSession(sessionPath);
-			if (!success) {
-				throw new Error(`ACP session load was cancelled: ${sessionId}`);
+			if (storedSession.locator) {
+				const repository = this.#sessionRepository();
+				if (!repository) throw new Error("Repository session is unavailable");
+				await session.switchRepositorySession(repository, storedSession.locator);
+			} else {
+				const success = await session.switchSession(storedSession.path);
+				if (!success) {
+					throw new Error(`ACP session load was cancelled: ${sessionId}`);
+				}
 			}
 		} catch (error) {
 			await this.#disposeStandaloneSession(session);
@@ -1387,25 +1432,25 @@ export class AcpAgent implements Agent {
 		}
 	}
 
-	async #resolveForkSourceSessionPath(sessionId: string): Promise<string> {
+	async #resolveForkSourceSession(sessionId: string): Promise<SessionReference> {
 		const loaded = this.#sessions.get(sessionId);
 		if (loaded) {
 			if (isPromptTurnInFlight(loaded.promptTurn)) {
 				throw new Error(`ACP session fork is unavailable while a prompt is in progress: ${sessionId}`);
 			}
 			await loaded.session.sessionManager.flush();
-			const sessionPath = loaded.session.sessionManager.getSessionFile();
-			if (!sessionPath) {
+			const reference = loaded.session.sessionManager.getSessionReference();
+			if (!reference) {
 				throw new Error(`ACP session cannot be forked before it is persisted: ${sessionId}`);
 			}
-			return sessionPath;
+			return reference;
 		}
 
 		const storedSession = await this.#findStoredSessionById(sessionId);
 		if (!storedSession) {
 			throw new Error(`ACP session not found: ${sessionId}`);
 		}
-		return storedSession.path;
+		return storedSession.locator ? { locator: storedSession.locator } : { path: storedSession.path };
 	}
 
 	async #handlePromptEvent(record: ManagedSessionRecord, event: AgentSessionEvent): Promise<void> {
@@ -2208,11 +2253,23 @@ export class AcpAgent implements Agent {
 	}
 
 	async #listStoredSessions(cwd?: string): Promise<StoredSessionInfo[]> {
+		const repository = this.#sessionRepository();
+		if (repository) {
+			const page = await listRepositorySessionsPage(repository, { limit: 100 });
+			return cwd ? page.items.filter(session => path.resolve(session.cwd) === path.resolve(cwd)) : [...page.items];
+		}
 		const sessions = cwd ? await SessionManager.list(cwd) : await SessionManager.listAll();
 		return sessions.sort((left, right) => right.modified.getTime() - left.modified.getTime());
 	}
 
 	async #findStoredSession(sessionId: string, cwd: string): Promise<StoredSessionInfo | undefined> {
+		const repository = this.#sessionRepository();
+		if (repository) {
+			return (
+				(await resolveRepositorySession(repository, sessionId, { cwd, pageSize: SESSION_PAGE_SIZE })) ??
+				(await resolveRepositorySession(repository, sessionId, { pageSize: SESSION_PAGE_SIZE }))
+			);
+		}
 		const sessions = await this.#listStoredSessions(cwd);
 		const scoped = sessions.find(session => session.id === sessionId);
 		if (scoped) {
@@ -2227,6 +2284,10 @@ export class AcpAgent implements Agent {
 	}
 
 	async #findStoredSessionById(sessionId: string): Promise<StoredSessionInfo | undefined> {
+		const repository = this.#sessionRepository();
+		if (repository) {
+			return resolveRepositorySession(repository, sessionId, { pageSize: SESSION_PAGE_SIZE });
+		}
 		const sessions = await this.#listStoredSessions();
 		return sessions.find(session => session.id === sessionId);
 	}
