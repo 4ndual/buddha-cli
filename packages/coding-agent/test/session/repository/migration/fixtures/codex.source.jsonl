@@ -1,0 +1,5 @@
+{"timestamp":"2026-04-05T06:07:08.000Z","type":"session_meta","payload":{"id":"fixture-codex","cwd":"/fixture/codex"}}
+{"timestamp":"2026-04-05T06:07:09.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"do not execute"}]}}
+{"timestamp":"2026-04-05T06:07:10.000Z","type":"response_item","payload":{"type":"function_call","call_id":"codex-call-1","name":"read","arguments":"{\"path\":\"copied.txt\"}"}}
+{"timestamp":"2026-04-05T06:07:11.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"codex-call-1","output":"preserved output"}}
+{"timestamp":"2026-04-05T06:07:12.000Z","type":"event_msg","payload":{"type":"agent_message","message":"finished"}}
