@@ -88,6 +88,7 @@ export interface CorpusAccounting {
 	parseErrors: number;
 	missingParents: number;
 	cycles: number;
+	identityConflicts: number;
 	branchHeads: number;
 	attachmentReferences: number;
 	missingAttachments: number;

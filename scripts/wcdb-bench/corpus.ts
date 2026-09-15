@@ -231,6 +231,7 @@ export async function accountCorpus(options: AccountCorpusOptions): Promise<Corp
 	let parseErrors = 0;
 	let missingParents = 0;
 	let cycles = 0;
+	let identityConflicts = 0;
 	let branchHeads = 0;
 	let attachmentReferences = 0;
 	let missingAttachments = 0;
@@ -350,32 +351,79 @@ export async function accountCorpus(options: AccountCorpusOptions): Promise<Corp
 
 			const ids = new Set<string>();
 			const parents = new Map<string, string>();
+			const origins = new Map<string, string | null>();
+			const semanticPayloadHashes = new Map<string, string>();
+			const eventHashes = new Map<string, string>();
+			const conflictingIds = new Set<string>();
+			const cycleNodes = new Set<string>();
 			const hasChildren = new Set<string>();
 			await streamTextLines(filePath, (text, line) => {
 				if (text.trim().length === 0) return;
 				const parsed = parseRecord(text, fileSha256, line);
-				if (parsed.kind === "session" || parsed.kind === "header" || parsed.kind === "custom") return;
+				if (!parsed.value || parsed.kind === "session" || parsed.kind === "header" || parsed.kind === "custom") return;
+				const semanticPayloadHash = sha256Text(canonicalJson(parsed.value));
+				const priorHash = semanticPayloadHashes.get(parsed.recordId);
+				if (priorHash && priorHash !== semanticPayloadHash) {
+					conflictingIds.add(parsed.recordId);
+					identityConflicts++;
+					return;
+				}
 				ids.add(parsed.recordId);
+				semanticPayloadHashes.set(parsed.recordId, semanticPayloadHash);
+				origins.set(parsed.recordId, parsed.originId);
 				if (parsed.parentId) {
 					parents.set(parsed.recordId, parsed.parentId);
 					hasChildren.add(parsed.parentId);
 				}
 			});
 			for (const parent of parents.values()) if (!ids.has(parent)) missingParents++;
-			for (const id of ids) {
-				const seen = new Set<string>();
-				let cursor: string | undefined = id;
-				while (cursor) {
-					if (seen.has(cursor)) {
-						cycles++;
-						break;
-					}
-					seen.add(cursor);
-					cursor = parents.get(cursor);
+			const resolveEventHash = (id: string, visiting: Set<string>): string | null => {
+				const cached = eventHashes.get(id);
+				if (cached) return cached;
+				if (visiting.has(id)) {
+					for (const cycleId of visiting) cycleNodes.add(cycleId);
+					return null;
 				}
-			}
+				const semanticPayloadHash = semanticPayloadHashes.get(id);
+				if (!semanticPayloadHash) return null;
+				visiting.add(id);
+				const parentId = parents.get(id) ?? null;
+				const parentHash = parentId ? resolveEventHash(parentId, visiting) : null;
+				visiting.delete(id);
+				const eventHash = sha256Text(
+					canonicalJson({
+						canonicalizerVersion: 1,
+						originId: origins.get(id) ?? null,
+						originalEventId: id,
+						parentHash,
+						semanticPayloadHash,
+					}),
+				);
+				eventHashes.set(id, eventHash);
+				return eventHash;
+			};
+			for (const id of ids) resolveEventHash(id, new Set<string>());
+			const ancestryContextHashes = new Map<string, string>();
+			const resolveContextHash = (id: string): string | null => {
+				const cached = ancestryContextHashes.get(id);
+				if (cached) return cached;
+				const semanticPayloadHash = semanticPayloadHashes.get(id);
+				if (!semanticPayloadHash || cycleNodes.has(id)) return null;
+				const parentId = parents.get(id) ?? null;
+				const parentContextHash = parentId ? resolveContextHash(parentId) : null;
+				const hash = sha256Text(
+					canonicalJson({
+						contextAccountingVersion: 1,
+						parentContextHash,
+						semanticPayloadHash,
+					}),
+				);
+				ancestryContextHashes.set(id, hash);
+				return hash;
+			};
+			for (const id of ids) resolveContextHash(id);
+			cycles += cycleNodes.size;
 			branchHeads += [...ids].filter(id => !hasChildren.has(id)).length;
-			const rollingContext = new Bun.CryptoHasher("sha256");
 			const mapped = ledgerDisposition(normalizationLedger, relativePath, filePath, fileSha256) ?? ledgerDisposition(inventoryLedger, relativePath, filePath, fileSha256);
 			await streamTextLines(filePath, async (text, line, recordBytes) => {
 				if (text.trim().length === 0) return;
@@ -383,8 +431,7 @@ export async function accountCorpus(options: AccountCorpusOptions): Promise<Corp
 				const oversized = recordBytes > options.maxRecordBytes;
 				const malformed = parsed.value === null;
 				if (malformed) parseErrors++;
-				if (parsed.contextEligible && parsed.value) rollingContext.update(canonicalJson(parsed.value));
-				const contextHash = parsed.contextEligible && parsed.value ? rollingContext.copy().digest("hex") : null;
+				const contextHash = parsed.contextEligible && parsed.value ? (ancestryContextHashes.get(parsed.recordId) ?? null) : null;
 				if (contextHash) contextHashes++;
 				attachmentReferences += parsed.attachmentHashes.length;
 				for (const hash of parsed.attachmentHashes) {
@@ -399,7 +446,24 @@ export async function accountCorpus(options: AccountCorpusOptions): Promise<Corp
 					disposition = "quarantined";
 					reason = `record exceeds byte cap ${options.maxRecordBytes}`;
 				}
-				const recordHash = sha256Text(text);
+				if (conflictingIds.has(parsed.recordId)) {
+					disposition = "quarantined";
+					reason = "same source event identity has divergent semantic payloads";
+				}
+				const rawRecordHash = sha256Text(text);
+				const semanticPayloadHash = parsed.value ? sha256Text(canonicalJson(parsed.value)) : rawRecordHash;
+				const parentHash = parsed.parentId ? (eventHashes.get(parsed.parentId) ?? null) : null;
+				const computedEventHash = sha256Text(
+					canonicalJson({
+						canonicalizerVersion: 1,
+						originId: parsed.originId ?? mapped?.originId ?? null,
+						originalEventId: parsed.recordId,
+						parentHash,
+						semanticPayloadHash,
+					}),
+				);
+				const recordHash = conflictingIds.has(parsed.recordId) ? computedEventHash : (eventHashes.get(parsed.recordId) ?? computedEventHash);
+				const graphEvent = ids.has(parsed.recordId);
 				const receipt: CorpusRecordDisposition = {
 					recordId: parsed.recordId,
 					fileSha256,
@@ -411,11 +475,16 @@ export async function accountCorpus(options: AccountCorpusOptions): Promise<Corp
 					disposition,
 					reason,
 					originId: parsed.originId ?? mapped?.originId ?? null,
-					branchHead: hasChildren.has(parsed.recordId) ? null : recordHash,
+					branchHead: graphEvent && !hasChildren.has(parsed.recordId) ? recordHash : null,
 					contextHash,
-					parentHash: parsed.parentId,
+					parentHash,
 					attachmentHashes: parsed.attachmentHashes,
-					provenance: { source: "copied-corpus", ...(mapped?.provenance ?? {}) },
+					provenance: {
+						source: "copied-corpus",
+						rawRecordSha256: rawRecordHash,
+						contextHashAlgorithm: "ancestry-context-accounting-v1",
+						...(mapped?.provenance ?? {}),
+					},
 				};
 				await recordOutput.write(`${JSON.stringify(receipt)}\n`);
 				records++;
@@ -427,13 +496,23 @@ export async function accountCorpus(options: AccountCorpusOptions): Promise<Corp
 		await recordOutput.close();
 	}
 	const unresolved = (dispositions["copied-awaiting-normalization"] ?? 0) + (dispositions.quarantined ?? 0);
-	const status = files.length === 0 || stoppedForCap || unresolved > 0 || missingParents > 0 || cycles > 0 || missingAttachments > 0 ? "blocked" : "measured";
+	const status =
+		files.length === 0 ||
+		stoppedForCap ||
+		unresolved > 0 ||
+		missingParents > 0 ||
+		cycles > 0 ||
+		identityConflicts > 0 ||
+		missingAttachments > 0
+			? "blocked"
+			: "measured";
 	const reasons: string[] = [];
 	if (files.length === 0) reasons.push("copied corpus has no regular files");
 	if (stoppedForCap) reasons.push("input byte cap excluded one or more files");
 	if (unresolved > 0) reasons.push(`${unresolved} records are awaiting normalization or quarantined`);
 	if (missingParents > 0) reasons.push(`${missingParents} parent references are unresolved`);
 	if (cycles > 0) reasons.push(`${cycles} cycles detected`);
+	if (identityConflicts > 0) reasons.push(`${identityConflicts} divergent payloads reuse a source event identity`);
 	if (missingAttachments > 0) reasons.push(`${missingAttachments} attachment hashes have no ledger mapping`);
 	return {
 		status,
@@ -446,6 +525,8 @@ export async function accountCorpus(options: AccountCorpusOptions): Promise<Corp
 		dispositions,
 		parseErrors,
 		missingParents,
+		cycles,
+		identityConflicts,
 		branchHeads,
 		attachmentReferences,
 		missingAttachments,
