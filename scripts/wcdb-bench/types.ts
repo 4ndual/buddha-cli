@@ -128,6 +128,13 @@ export interface BenchmarkReceipt {
 		mountOptions: string;
 		bunVersion: string;
 	};
+	processPeak: {
+		rssBytes: number | null;
+		pssBytes: number | null;
+		sampleIntervalMs: number;
+		samples: number;
+		source: "/proc/<pid>/status VmHWM and /proc/<pid>/smaps_rollup Pss";
+	};
 	pins: {
 		harnessCommit: string | null;
 		nativeGatePath: string;
