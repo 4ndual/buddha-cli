@@ -1,0 +1,11 @@
+{
+  "documents": [
+    { "id": 1, "body": "foo_bar src/lib/file-name.ts" },
+    { "id": 2, "body": "acción rápida del niño" },
+    { "id": 3, "body": "exact phrase alpha beta" },
+    { "id": 4, "body": "prefixable prefixation" }
+  ],
+  "payload": "deterministic application zstd payload — niño — foo_bar",
+  "binary": [0, 255, 1, 128, 42],
+  "int64": "9223372036854775806"
+}

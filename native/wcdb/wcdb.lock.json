@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "wcdb": {
+    "release": "2.1.16",
+    "tag": "v2.1.16",
+    "commit": "df808591b9f9a9ab42156006819c3550d5af13a3",
+    "sourceUrl": "https://github.com/Tencent/wcdb/releases/download/v2.1.16/wcdb-2.1.16.zip",
+    "archive": "wcdb-2.1.16.zip",
+    "archiveSha256": "260845053c5dedc4578570203a5ba235c3be1e74a671c2fc1aeb12c988dd5346",
+    "archiveBytes": 82871471
+  },
+  "bundled": {
+    "sqliteVersion": "3.27.2",
+    "sqliteVersionNumber": 3027002,
+    "sqliteSourceId": "2019-02-25 16:06:06 bd49a8271d650fa89e446b42e513b595a717b9212c91dd384aab871fc1d0alt1",
+    "cryptoArchiveSha256": "9b0ec08c9b141e7aaba25d816b6dbc376db5af08058e2dc8f781fdcd79e23b7e",
+    "zlibArchiveSha256": "130a90a90c07681fe325bd87f8e087690033f556857b7ccad1568eca570b4c81"
+  },
+  "toolchain": {
+    "platform": "linux",
+    "architecture": "x86_64",
+    "compiler": "gcc-g++ 13.3.0 x86_64-linux-gnu",
+    "libc": "glibc 2.39",
+    "cmake": "3.28.3",
+    "ninja": "1.11.1",
+    "bun": "1.4.2+744846f84",
+    "bunFfiAbi": "bun:ffi at pinned Bun revision; bridge ABI 1"
+  },
+  "build": {
+    "wcdbCmakeFlags": [
+      "-DCMAKE_BUILD_TYPE=Release",
+      "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+      "-DBUILD_SHARED_LIBS=OFF",
+      "-DSKIP_WCONAN=ON",
+      "-DWCDB_CPP=ON",
+      "-DWCDB_BRIDGE=ON",
+      "-DWCDB_ZSTD=ON",
+      "-DCMAKE_C_FLAGS=-D_Nullable= -D_Nonnull=",
+      "-DCMAKE_CXX_FLAGS=-D_Nullable= -D_Nonnull= -include climits"
+    ],
+    "parallelism": 1,
+    "bridgeCxxStandard": 20,
+    "bridgeAbi": 1,
+    "batchProtocol": 1
+  },
+  "outputs": {
+    "bridgeSha256": "dd73090caa4289eee842b8d09f60e9ea31987f4f36661bbae52de02a06582cb1",
+    "wcdbStaticSha256": "36420ffbfcf19285844d286aa89821c1d50542d2a94cc744d1edbb74c7241907",
+    "sqlcipherStaticSha256": "a793372f4edbeff17dd30deda2e1312db68b3e67cd7a4c0ff4a7dfc3f6cfb0da",
+    "zstdStaticSha256": "2cf696100b854d3762882fb8222a4c42d28366015bbbccd5879dac5ed1ec0c6b"
+  },
+  "policy": {
+    "productionInstall": false,
+    "productionModeSelection": false,
+    "bunSqliteSubstitution": false,
+    "exceptionsAcrossCAbi": false,
+    "defaultCapabilityEnabled": false
+  }
+}
