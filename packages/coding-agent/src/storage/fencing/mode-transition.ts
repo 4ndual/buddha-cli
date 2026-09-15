@@ -236,9 +236,6 @@ export class ExperimentalModeTransition {
 					case "committing":
 					case "reopening":
 						throw new Error(EXPERIMENTAL_MODE_SWITCH_CAPABILITY.reason);
-					case "completed":
-					case "failed":
-						return this.state;
 				}
 			}
 		} catch (error) {

@@ -47,6 +47,10 @@ function validateReceipt(
 	}
 }
 
+function isCancellationRequested(journal: DurableJobJournal): boolean {
+	return journal.snapshot.phase === "cancel-requested";
+}
+
 export interface ByteBoundedRunResult {
 	state: "completed" | "cancelled";
 	commits: number;
@@ -116,7 +120,7 @@ export async function runByteBoundedJob<T>(options: {
 	};
 
 	for await (const item of options.itemsFrom(cursor)) {
-		if (options.journal.snapshot.phase === "cancel-requested") return finishCancellation();
+		if (isCancellationRequested(options.journal)) return finishCancellation();
 		if (!Number.isSafeInteger(item.byteLength) || item.byteLength <= 0) {
 			throw new Error(`Invalid byte length at cursor ${item.cursor}`);
 		}
@@ -129,13 +133,13 @@ export async function runByteBoundedJob<T>(options: {
 		}
 		if (batchBytes + item.byteLength > snapshot.byteLimit) {
 			await flushBatch();
-			if (options.journal.snapshot.phase === "cancel-requested") return finishCancellation();
+			if (isCancellationRequested(options.journal)) return finishCancellation();
 		}
 		batch.push(item);
 		batchBytes += item.byteLength;
 	}
 	await flushBatch();
-	if (options.journal.snapshot.phase === "cancel-requested") return finishCancellation();
+	if (isCancellationRequested(options.journal)) return finishCancellation();
 	await options.journal.markCompleted();
 	const completed = options.journal.snapshot;
 	return {
