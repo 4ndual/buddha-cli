@@ -18,6 +18,12 @@ import {
 	stringifyJson,
 	toError,
 } from "@oh-my-pi/pi-utils";
+import type { BranchId, EventHash, SessionRepository } from "../storage/contracts";
+import {
+	activeSessionRepository,
+	parseRepositorySessionRef,
+	repositorySessionRef,
+} from "../storage/repository-provider";
 import type { StructuredSubagentSchemaMode } from "../task/types";
 import { ArtifactManager } from "./artifacts";
 import { type BlobPutOptions, type BlobPutResult, BlobStore } from "./blob-store";
@@ -114,6 +120,9 @@ function artifactsDirectoryFor(sessionFile: string | undefined): string | null {
 
 /** Copy a session's artifact directory to another session, matching interactive `/fork`. */
 export async function copySessionArtifacts(sourceSessionFile: string, destinationSessionFile: string): Promise<void> {
+	if (parseRepositorySessionRef(sourceSessionFile) || parseRepositorySessionRef(destinationSessionFile)) {
+		throw new Error("Database session artifacts require an explicit export or JSONL storage mode.");
+	}
 	const sourceArtifactsDir = artifactsDirectoryFor(sourceSessionFile);
 	const destinationArtifactsDir = artifactsDirectoryFor(destinationSessionFile);
 	if (!sourceArtifactsDir || !destinationArtifactsDir) return;
@@ -525,6 +534,10 @@ export class SessionManager {
 	/** Serializes async disk work (flush/close/atomic rewrite). Appends are synchronous and bypass it. */
 	#diskTail: Promise<void> = Promise.resolve();
 	#diskFailure: Error | undefined;
+	/** Active repository state for a resumed Database branch; absent in JSONL mode. */
+	#repository: SessionRepository | undefined;
+	#repositoryBranchId: BranchId | undefined;
+	#repositoryHeadHash: EventHash | null = null;
 	#diskFailureLogged = false;
 	/** FIFO reservation for atomic batches and authoritative recovery. */
 	#atomicPersistenceTail: Promise<void> = Promise.resolve();
@@ -575,9 +588,11 @@ export class SessionManager {
 		this.#sessionDir = sessionDir;
 		this.#persist = persist;
 		this.#storage = storage;
+		const repository = activeSessionRepository();
+		if (repository?.mode === "db") this.#repository = repository;
 		this.#blobs = new BlobStore(getBlobsDir());
 
-		if (persist && sessionDir) this.#storage.ensureDirSync(sessionDir);
+		if (persist && sessionDir && !this.#repository) this.#storage.ensureDirSync(sessionDir);
 	}
 
 	#rememberBreadcrumb(cwd: string, sessionFile: string, fresh = false): void {
@@ -962,6 +977,38 @@ export class SessionManager {
 	}
 
 	#appendToSessionFile(entry: SessionEntry): void {
+		if (this.#repository) {
+			if (this.#released || !this.#persist) return;
+			const branchId = this.#repositoryBranchId;
+			if (!branchId) {
+				this.#noteDiskFailure(
+					new Error(
+						"Creating a new Database session is unavailable until the repository contract supports origin creation.",
+					),
+				);
+				return;
+			}
+			void this.#scheduleDiskWork(async () => {
+				const currentBranchId = this.#repositoryBranchId;
+				if (!currentBranchId) throw new Error("Database branch disappeared before append.");
+				const result = await this.#repository!.append({
+					branchId: currentBranchId,
+					expectedHeadHash: this.#repositoryHeadHash,
+					entry,
+					replicaId: this.#repository!.replicaId,
+					operationId: entry.id,
+				});
+				if (result.durability !== "power-loss") {
+					throw new Error(`Database append acknowledged insufficient durability: ${result.durability}`);
+				}
+				this.#repositoryBranchId = result.branchId;
+				this.#repositoryHeadHash = result.eventHash;
+				this.#sessionFile = repositorySessionRef(result.branchId);
+				this.#fileIsCurrent = true;
+				this.#rewriteRequired = false;
+			}).catch(() => undefined);
+			return;
+		}
 		if (this.#released || !this.#persist || !this.#sessionFile) return;
 		if (this.#atomicEntryBatch) {
 			this.#fileIsCurrent = false;
@@ -1038,6 +1085,28 @@ export class SessionManager {
 	}
 
 	async #persistTitleChangeEntry(entry: TitleChangeEntry, update: SessionTitleUpdate): Promise<void> {
+		if (this.#repository) {
+			const branchId = this.#repositoryBranchId;
+			if (!branchId) throw new Error("Cannot persist a Database title without an active branch.");
+			await this.#scheduleDiskWork(async () => {
+				const currentBranchId = this.#repositoryBranchId;
+				if (!currentBranchId) throw new Error("Database branch disappeared before title append.");
+				const result = await this.#repository!.append({
+					branchId: currentBranchId,
+					expectedHeadHash: this.#repositoryHeadHash,
+					entry,
+					replicaId: this.#repository!.replicaId,
+					operationId: entry.id,
+				});
+				if (result.durability !== "power-loss") {
+					throw new Error(`Database append acknowledged insufficient durability: ${result.durability}`);
+				}
+				this.#repositoryBranchId = result.branchId;
+				this.#repositoryHeadHash = result.eventHash;
+				this.#sessionFile = repositorySessionRef(result.branchId);
+			});
+			return;
+		}
 		if (!this.#persist || !this.#sessionFile) return;
 		if (this.#diskFailure) {
 			this.#fileIsCurrent = false;
@@ -1106,6 +1175,11 @@ export class SessionManager {
 	}
 
 	#resetToNewSession(options?: NewSessionOptions, forcedSessionFile?: string): string | undefined {
+		if (this.#repository && this.#persist) {
+			throw new Error(
+				"Creating a new Database session is unavailable until the repository contract supports origin creation.",
+			);
+		}
 		this.#diskTail = Promise.resolve();
 		this.#clearDiskError();
 		this.#reconcileSessionDirForFallback();
@@ -1334,6 +1408,9 @@ export class SessionManager {
 		const clone = new SessionManager(this.#cwd, this.#sessionDir, persist, this.#storage);
 		clone.#suppressBreadcrumb = true;
 		clone.restoreState(this.captureState());
+		clone.#repository = this.#repository;
+		clone.#repositoryBranchId = this.#repositoryBranchId;
+		clone.#repositoryHeadHash = this.#repositoryHeadHash;
 		if (!persist) {
 			clone.#sessionFile = undefined;
 			clone.#fileIsCurrent = false;
@@ -1367,7 +1444,9 @@ export class SessionManager {
 		this.#artifactManagerSessionFile = null;
 		this.#adoptedArtifactManager = null;
 
-		if (this.#sessionFile) this.#rememberBreadcrumb(this.#cwd, this.#sessionFile);
+		if (this.#sessionFile && !parseRepositorySessionRef(this.#sessionFile)) {
+			this.#rememberBreadcrumb(this.#cwd, this.#sessionFile);
+		}
 	}
 
 	/**
@@ -1412,18 +1491,31 @@ export class SessionManager {
 		this.#clearDiskError();
 		this.#draftOnlySessionCleanupArmed = false;
 
-		const resolvedSessionFile = path.resolve(sessionFile);
+		const repositoryBranchId = parseRepositorySessionRef(sessionFile);
+		const resolvedSessionFile = repositoryBranchId ? sessionFile : path.resolve(sessionFile);
+		const repository = repositoryBranchId ? activeSessionRepository() : undefined;
+		if (repositoryBranchId && (!repository || repository.mode !== "db")) {
+			throw new Error("Database session reference cannot be resumed while Database storage mode is inactive.");
+		}
 		const loaded = loadedSession ?? (await loadSessionFile(resolvedSessionFile, this.#storage));
 		if (loaded.invalidHeader) {
 			throw new Error(
-				`Cannot resume session "${resolvedSessionFile}": the session header is missing or malformed. The file was not modified.`,
+				`Cannot resume session "${resolvedSessionFile}": the session header is missing or malformed. The session was not modified.`,
 			);
 		}
 
 		this.#sessionFile = resolvedSessionFile;
-		this.#rememberBreadcrumb(this.#cwd, resolvedSessionFile);
+		this.#repository = repository;
+		this.#repositoryBranchId = repositoryBranchId;
+		this.#repositoryHeadHash = repositoryBranchId
+			? ((await repository!.getHeader(repositoryBranchId))?.identity.headHash ?? null)
+			: null;
+		if (!repositoryBranchId) this.#rememberBreadcrumb(this.#cwd, resolvedSessionFile);
 
 		const { entries: fileEntries, titleSlot } = loaded;
+		if (repositoryBranchId && fileEntries.length === 0) {
+			throw new Error(`Database branch ${repositoryBranchId} was not found.`);
+		}
 		if (fileEntries.length === 0) {
 			// Explicit but empty/missing path (e.g. --session flag): start fresh but
 			// keep the requested path and materialize the header immediately.
@@ -1450,9 +1542,10 @@ export class SessionManager {
 		const headerCwd = header.cwd ? path.resolve(header.cwd) : undefined;
 		if (headerCwd && headerCwd !== path.resolve(this.#cwd) && (await directoryIsEnterable(headerCwd))) {
 			this.#cwd = headerCwd;
-			this.#sessionDir = path.dirname(resolvedSessionFile);
-			this.#fallbackRuntimeOnly = false;
-			this.#rememberBreadcrumb(this.#cwd, resolvedSessionFile);
+			if (!repositoryBranchId) {
+				this.#sessionDir = path.dirname(resolvedSessionFile);
+				this.#rememberBreadcrumb(this.#cwd, resolvedSessionFile);
+			}
 		} else if (headerCwd && headerCwd !== path.resolve(this.#cwd)) {
 			// Header cwd not enterable: keep runtime cwd but mark fallback
 			// so workspace changes stay runtime-only until the transcript
@@ -1467,7 +1560,10 @@ export class SessionManager {
 		this.#titleUpdatedAt = titleSlot?.updatedAt ?? header.timestamp;
 		this.#hasTitleSlot = titleSlot !== undefined;
 		this.#fileIsCurrent = true;
-		this.#rewriteRequired = migrated || loaded.malformedRecords > 0;
+		if (repositoryBranchId && (migrated || loaded.malformedRecords > 0)) {
+			throw new Error("Database session requires migration before it can be resumed.");
+		}
+		this.#rewriteRequired = !repositoryBranchId && (migrated || loaded.malformedRecords > 0);
 		this.#forceFileCreation = true;
 		this.#artifactManager = null;
 		this.#artifactManagerSessionFile = null;
@@ -1503,6 +1599,9 @@ export class SessionManager {
 	 * @returns the old and new session file paths, or undefined when not persisting.
 	 */
 	async fork(): Promise<{ oldSessionFile: string; newSessionFile: string } | undefined> {
+		if (this.#repository) {
+			throw new Error("Interactive Database fork requires repository version context; export or switch to JSONL mode.");
+		}
 		if (!this.#persist || !this.#sessionFile) return undefined;
 
 		const oldSessionFile = this.#sessionFile;
@@ -1544,6 +1643,9 @@ export class SessionManager {
 
 	/** Move the session to a new working directory. */
 	async moveTo(newCwd: string, targetSessionDir?: string): Promise<void> {
+		if (this.#repository) {
+			throw new Error("Database sessions have no movable JSONL path; export the branch or switch to JSONL mode.");
+		}
 		const resolvedCwd = path.resolve(newCwd);
 		const resolvedTargetDir = targetSessionDir ? path.resolve(targetSessionDir) : undefined;
 		const managedRoot = resolveManagedSessionRoot(this.#sessionDir, this.#cwd);
@@ -1728,6 +1830,9 @@ export class SessionManager {
 	}
 
 	async #appendEntriesAtomicallyLocked<T>(append: () => T): Promise<T> {
+		if (this.#repository) {
+			throw new Error("Atomic multi-entry Database persistence is not supported by the repository contract.");
+		}
 		if (!this.#persist || !this.#sessionFile) return append();
 		if (this.#atomicEntryBatch) throw new Error("Atomic persistence lock ownership was violated.");
 		try {
@@ -1803,6 +1908,13 @@ export class SessionManager {
 
 	/** Flush pending writes. Call before switching sessions or on shutdown. */
 	async flush(): Promise<void> {
+		if (this.#repository) {
+			if (!this.#persist || !this.#sessionFile) return;
+			await this.#diskTail;
+			await this.#repository.flush({ durability: "power-loss" });
+			if (this.#diskFailure) throw this.#diskFailure;
+			return;
+		}
 		if (!this.#persist || !this.#sessionFile) return;
 		await this.#scheduleDiskWork(async () => {
 			if (this.#writer?.isOpen()) await this.#writer.flush();
@@ -1820,6 +1932,9 @@ export class SessionManager {
 	 * history, and Ctrl+C must not rebuild the whole JSONL string just to flush.
 	 */
 	flushSync(): void {
+		if (this.#repository) {
+			throw new Error("Database sessions require asynchronous flush(); synchronous JSONL flush is unavailable.");
+		}
 		if (!this.#persist || !this.#sessionFile) return;
 		if (this.#atomicEntryBatch) throw new Error("Cannot synchronously flush during an atomic session batch.");
 		if (this.#diskFailure) throw this.#diskFailure;

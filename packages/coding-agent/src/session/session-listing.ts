@@ -6,6 +6,8 @@ import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { computeDefaultSessionDir } from "./session-paths";
 import { FileSessionStorage, type SessionStorage, type SessionStorageStat } from "./session-storage";
 import { lookupSessionTitle, recordSessionTitle } from "./title-index";
+import type { RepositoryCursor, RepositorySessionHeader, SessionRepository } from "../storage/contracts";
+import { activeSessionRepository, repositorySessionRef } from "../storage/repository-provider";
 
 /**
  * Coarse lifecycle status of a session, derived from its last persisted message.
@@ -607,12 +609,43 @@ async function scanSessionDirReadOnly(
 		return [];
 	}
 }
+function repositoryHeaderInfo(header: RepositorySessionHeader): SessionInfo {
+	const info: SessionInfo = {
+		path: repositorySessionRef(header.identity.branchId),
+		id: header.header.id,
+		cwd: header.header.cwd,
+		created: new Date(header.createdAt),
+		modified: new Date(header.modifiedAt),
+		messageCount: header.messageCount,
+		size: header.payloadBytes,
+		firstMessage: header.header.title ?? "(no messages)",
+		allMessagesText: "",
+		status: "unknown",
+	};
+	if (header.header.title !== undefined) info.title = header.header.title;
+	return info;
+}
+
+async function listRepositorySessions(repository: SessionRepository, limit?: number): Promise<SessionInfo[]> {
+	const sessions: SessionInfo[] = [];
+	let cursor: RepositoryCursor | undefined;
+	do {
+		const remaining = limit === undefined ? 100 : Math.min(100, limit - sessions.length);
+		if (remaining <= 0) break;
+		const page = await repository.listSessions({ cursor, limit: remaining, sort: "modified-desc" });
+		sessions.push(...page.items.map(repositoryHeaderInfo));
+		cursor = page.nextCursor;
+	} while (cursor);
+	return sessions;
+}
 
 /**
  * List sessions in a resolved session directory (newest first), reading each
  * file's lifecycle {@link SessionStatus}.
  */
 export function listSessions(sessionDir: string, storage: SessionStorage): Promise<SessionInfo[]> {
+	const repository = activeSessionRepository();
+	if (repository?.mode === "db") return listRepositorySessions(repository);
 	return scanSessionDir(sessionDir, storage, true);
 }
 
@@ -620,6 +653,8 @@ export function listSessions(sessionDir: string, storage: SessionStorage): Promi
  * List sessions without repairing orphaned backups or mutating the directory.
  */
 export function listSessionsReadOnly(sessionDir: string, storage: SessionStorage): Promise<SessionInfo[]> {
+	const repository = activeSessionRepository();
+	if (repository?.mode === "db") return listRepositorySessions(repository);
 	return scanSessionDirReadOnly(sessionDir, storage, true);
 }
 
@@ -628,6 +663,8 @@ export async function listAllSessions(
 	storage: SessionStorage = new FileSessionStorage(),
 	sessionsRoot: string = getSessionsDir(),
 ): Promise<SessionInfo[]> {
+	const repository = activeSessionRepository();
+	if (repository?.mode === "db") return await listRepositorySessions(repository);
 	try {
 		const files = await Array.fromAsync(new Bun.Glob("*/*.jsonl").scan(sessionsRoot), name =>
 			path.join(sessionsRoot, name),
@@ -643,6 +680,8 @@ export async function findMostRecentSession(
 	sessionDir: string,
 	storage: SessionStorage = new FileSessionStorage(),
 ): Promise<string | null> {
+	const repository = activeSessionRepository();
+	if (repository?.mode === "db") return (await listRepositorySessions(repository, 1))[0]?.path ?? null;
 	const sessions = await scanSessionDir(sessionDir, storage, false);
 	return sessions[0]?.path ?? null;
 }
@@ -671,6 +710,15 @@ export async function getRecentSessions(
 	limit = 4,
 	storage: SessionStorage = new FileSessionStorage(),
 ): Promise<RecentSessionInfo[]> {
+	const repository = activeSessionRepository();
+	if (repository?.mode === "db") {
+		const sessions = await listRepositorySessions(repository, limit);
+		return sessions.map(session => ({
+			path: session.path,
+			name: sessionDisplayName(session),
+			timeAgo: formatTimeAgo(session.modified),
+		}));
+	}
 	let files: string[];
 	try {
 		files = storage.listFilesSync(sessionDir, "*.jsonl");
@@ -753,6 +801,14 @@ export async function resolveResumableSession(
 	const localMatch = localSessions.find(session => sessionMatchesResumeArg(session, sessionArg));
 	if (localMatch) {
 		return { session: localMatch, scope: "local" };
+	}
+	const repository = activeSessionRepository();
+	if (repository?.mode === "db") {
+		const hits = await repository.searchSessions({ text: sessionArg, limit: 1 });
+		const branchId = hits.items[0]?.reachableBranchIds[0];
+		if (!branchId) return undefined;
+		const header = await repository.getHeader(branchId);
+		return header ? { session: repositoryHeaderInfo(header), scope: "global" } : undefined;
 	}
 
 	if (sessionDir && resolvedOptions.allowGlobalFallback !== true) {

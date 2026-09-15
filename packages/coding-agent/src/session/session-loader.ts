@@ -7,6 +7,8 @@ import type { FileEntry, RawFileEntry, SessionEntry, SessionHeader } from "./ses
 import { migrateToCurrentVersion } from "./session-migrations";
 import { isExternalizableImagePosition, isPersistenceTruncatedString } from "./session-persistence";
 import { FileSessionStorage, type SessionStorage } from "./session-storage";
+import type { RepositoryCursor } from "../storage/contracts";
+import { activeSessionRepository, parseRepositorySessionRef } from "../storage/repository-provider";
 import {
 	parseTitleSlotFromContent,
 	parseTitleSlotLine,
@@ -274,12 +276,35 @@ async function loadWithKnownSize(filePath: string, storage: SessionStorage, size
 		: parseSessionContent(await storage.readText(filePath));
 	return loaded.invalidHeader ? { ...loaded, entries: [] } : loaded;
 }
+async function loadRepositorySession(filePath: string): Promise<SessionLoadResult | undefined> {
+	const branchId = parseRepositorySessionRef(filePath);
+	if (!branchId) return undefined;
+	const repository = activeSessionRepository();
+	if (!repository || repository.mode !== "db") {
+		throw new Error("Database session reference cannot be loaded while Database storage mode is inactive.");
+	}
+	const storedHeader = await repository.getHeader(branchId);
+	if (!storedHeader) return { entries: [], titleSlot: undefined, malformedRecords: 0, invalidHeader: false };
+	const entries: FileEntry[] = [storedHeader.header];
+	let cursor: RepositoryCursor | undefined;
+	do {
+		const page = await repository.listTree({ branchId, direction: "descendants", cursor, limit: 500 });
+		for (const event of page.items) {
+			if (!event.entry) throw new Error(`Database event ${event.eventHash} has no hydrated session entry`);
+			entries.push(event.entry);
+		}
+		cursor = page.nextCursor;
+	} while (cursor);
+	return { entries, titleSlot: undefined, malformedRecords: 0, invalidHeader: false };
+}
 
 /** Load and validate a session while retaining malformed-record diagnostics. */
 export async function loadSessionFile(
 	filePath: string,
 	storage: SessionStorage = new FileSessionStorage(),
 ): Promise<SessionLoadResult> {
+	const repositorySession = await loadRepositorySession(filePath);
+	if (repositorySession) return repositorySession;
 	try {
 		return await loadWithKnownSize(filePath, storage, storage.statSync(filePath).size);
 	} catch (err) {
@@ -305,6 +330,13 @@ export async function visitEntriesFromFile(
 	visit: (entry: FileEntry) => void | boolean,
 	storage: SessionStorage = new FileSessionStorage(),
 ): Promise<void> {
+	const repositorySession = await loadRepositorySession(filePath);
+	if (repositorySession) {
+		for (const entry of repositorySession.entries) {
+			if (visit(entry) === false) break;
+		}
+		return;
+	}
 	const size = storage.statSync(filePath).size;
 	if (shouldStreamEntries(storage, size)) {
 		let sawFirstEntry = false;
