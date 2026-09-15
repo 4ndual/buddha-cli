@@ -23,6 +23,8 @@ import type { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import type { AgentRegistry, AgentStatus } from "../../registry/agent-registry";
 import type { FileEntry, SessionMessageEntry } from "../../session/session-entries";
 import { parseSessionEntries } from "../../session/session-loader";
+import { readRepositoryTranscriptPage } from "../../session/repository-consumers";
+import type { KeysetCursor, SessionLocator, SessionRepository } from "../../session/repository/types";
 import { replaceTabs, shortenPath, truncateToWidth } from "../../tools/render-utils";
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
 import { getEditorTheme, theme } from "../theme/theme";
@@ -157,6 +159,10 @@ export class AgentTranscriptViewer implements Component {
 	#remoteError = "";
 	#hasRemoteData = false;
 
+	#repositoryCursor: KeysetCursor | undefined;
+	#repositorySourceKey = "";
+	#repositoryFetchInFlight = false;
+	#repositoryComplete = false;
 	#model: string | undefined;
 	#pollTimer: NodeJS.Timeout | undefined;
 	#disposed = false;
@@ -213,14 +219,19 @@ export class AgentTranscriptViewer implements Component {
 	// Transcript loading
 	// ========================================================================
 
-	/** Refresh the transcript from a local file or remote host. */
+	/** Refresh the transcript from a logical repository, local file, or remote host. */
 	#refresh(): void {
 		if (this.#disposed) return;
 		if (this.deps.remote) {
 			this.#fetchRemote();
 			return;
 		}
-		const sessionFile = this.deps.registry.get(this.deps.agentId)?.sessionFile;
+		const ref = this.deps.registry.get(this.deps.agentId);
+		if (ref?.sessionRepository && ref.sessionLocator) {
+			this.#fetchRepository(ref.sessionRepository, ref.sessionLocator);
+			return;
+		}
+		const sessionFile = ref?.sessionFile;
 		if (!sessionFile) {
 			this.#clearLocal("none");
 			return;
@@ -241,6 +252,42 @@ export class AgentTranscriptViewer implements Component {
 			}
 		}
 		this.#loadLocalFull(sessionFile, stat);
+	}
+
+	#fetchRepository(repository: SessionRepository, locator: SessionLocator): void {
+		if (!repository || !locator || this.#repositoryFetchInFlight) return;
+		const sourceKey = `${repository.replicaId}:${locator.branchId}:${locator.versionId ?? ""}`;
+		if (sourceKey !== this.#repositorySourceKey) {
+			this.#repositorySourceKey = sourceKey;
+			this.#repositoryCursor = undefined;
+			this.#repositoryComplete = false;
+			this.#model = undefined;
+			this.#rebuild([]);
+		}
+		if (this.#repositoryComplete) return;
+		this.#repositoryFetchInFlight = true;
+		void readRepositoryTranscriptPage(
+			{ repository, locator },
+			{ cursor: this.#repositoryCursor },
+		)
+			.then(page => {
+				if (this.#disposed || this.#repositorySourceKey !== sourceKey) return;
+				this.#repositoryCursor = page.nextCursor;
+				this.#repositoryComplete = page.nextCursor === undefined;
+				const messages = this.#extractMessages(page.entries as FileEntry[]);
+				if (messages.length > 0) this.#append(messages);
+				else this.deps.requestRender();
+			})
+			.catch(error => {
+				logger.warn("transcript viewer: repository page failed", {
+					agentId: this.deps.agentId,
+					error: String(error),
+				});
+			})
+			.finally(() => {
+				this.#repositoryFetchInFlight = false;
+				if (!this.#repositoryComplete) queueMicrotask(() => this.#refresh());
+			});
 	}
 
 	#clearLocal(reason: string): void {

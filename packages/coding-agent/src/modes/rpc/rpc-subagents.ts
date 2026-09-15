@@ -1,7 +1,13 @@
 import * as fs from "node:fs/promises";
 import { isEnoent } from "@oh-my-pi/pi-utils";
+import { AgentRegistry } from "../../registry/agent-registry";
 import type { FileEntry, SessionMessageEntry } from "../../session/session-entries";
 import { parseSessionEntries } from "../../session/session-loader";
+import {
+	readRepositoryTranscriptPage,
+	type RepositorySessionSource,
+} from "../../session/repository-consumers";
+import type { KeysetCursor, SessionLocator, SessionRepository } from "../../session/repository/types";
 import {
 	type AgentProgress,
 	type SubagentEventPayload,
@@ -24,6 +30,9 @@ export interface RpcSubagentTranscriptSelector {
 	subagentId?: string;
 	sessionFile?: string;
 	fromByte?: number;
+	repository?: SessionRepository;
+	sessionLocator?: SessionLocator;
+	cursor?: KeysetCursor;
 }
 
 type RpcSubagentOutput = (frame: RpcSubagentFrame) => void;
@@ -63,6 +72,22 @@ function addPruned(set: Set<string>, value: string, maxSize: number): void {
 		if (oldest.done) break;
 		set.delete(oldest.value);
 	}
+}
+
+/** Repository-mode RPC transcript page. Cursor is backend-owned, never a byte offset. */
+export async function readRpcSubagentRepositoryTranscript(
+	source: RepositorySessionSource,
+	cursor?: KeysetCursor,
+): Promise<RpcSubagentMessagesResult> {
+	const page = await readRepositoryTranscriptPage(source, { cursor });
+	const entries = page.entries as FileEntry[];
+	return {
+		sessionLocator: source.locator,
+		cursor: page.nextCursor,
+		reset: false,
+		entries,
+		messages: entries.filter(isSessionMessageEntry).map(entry => entry.message),
+	};
 }
 
 export async function readRpcSubagentTranscript(sessionFile: string, fromByte = 0): Promise<RpcSubagentMessagesResult> {
@@ -246,7 +271,20 @@ export class RpcSubagentRegistry {
 	}
 
 	resolveSessionFile(selector: RpcSubagentTranscriptSelector): string {
+		const source = this.resolveTranscriptSource(selector);
+		if (typeof source === "string") return source;
+		throw new Error("Subagent transcript is repository-backed and has no session file");
+	}
+
+	resolveTranscriptSource(selector: RpcSubagentTranscriptSelector): string | RepositorySessionSource {
+		if (selector.repository && selector.sessionLocator) {
+			return { repository: selector.repository, locator: selector.sessionLocator };
+		}
 		if (selector.subagentId) {
+			const ref = AgentRegistry.global().get(selector.subagentId);
+			if (ref?.sessionRepository && ref.sessionLocator) {
+				return { repository: ref.sessionRepository, locator: ref.sessionLocator };
+			}
 			const snapshot = this.#subagents.get(selector.subagentId);
 			const sessionFile = snapshot?.sessionFile ?? this.#transcriptSessionFilesBySubagentId.get(selector.subagentId);
 			if (!sessionFile) {
@@ -254,12 +292,10 @@ export class RpcSubagentRegistry {
 			}
 			return sessionFile;
 		}
-
 		if (selector.sessionFile) {
 			if (this.#hasTranscriptSessionFile(selector.sessionFile)) return selector.sessionFile;
 			throw new Error("Unknown subagent session file");
 		}
-
-		throw new Error("get_subagent_messages requires subagentId or sessionFile");
+		throw new Error("get_subagent_messages requires subagentId, session locator, or sessionFile");
 	}
 }

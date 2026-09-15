@@ -13,6 +13,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
 import { artifactsDirsFromRegistry } from "./registry-helpers";
+import { RepositoryArtifactManager } from "../session/repository-consumers";
 import type { InternalResource, InternalUrl, ProtocolHandler, ResolveContext, UrlCompletion } from "./types";
 
 const MAX_INLINE_ARTIFACT_BYTES = 8 * 1024 * 1024;
@@ -100,6 +101,29 @@ export class ArtifactProtocolHandler implements ProtocolHandler {
 	readonly immutable = true;
 
 	async resolve(url: InternalUrl, context?: ResolveContext): Promise<InternalResource> {
+		if (context?.sessionRepository && context.sessionLocator) {
+			const health = await context.sessionRepository.health();
+			const manager = new RepositoryArtifactManager(
+				context.sessionRepository,
+				context.sessionLocator,
+				health.modeGeneration,
+			);
+			const id = parseArtifactId(url);
+			const bytes = await manager.read(id);
+			if (!bytes) throw new Error(`Artifact ${id} not found`);
+			if (bytes.byteLength > MAX_INLINE_ARTIFACT_BYTES && !context.pathOnly) {
+				throw new Error(
+					`Artifact ${id} is ${bytes.byteLength} bytes; full internal resolution is blocked. Use read selectors such as artifact://${id}:1-3000 or artifact://${id}:raw:1-3000`,
+				);
+			}
+			return {
+				url: url.href,
+				content: context.pathOnly ? "" : new TextDecoder().decode(bytes),
+				contentType: "text/plain",
+				size: bytes.byteLength,
+				notes: context.pathOnly ? ["Repository artifacts have no filesystem path"] : undefined,
+			};
+		}
 		const artifact = await resolveArtifactFile(url, context);
 
 		// Path-only callers (search/grep, bash URL expansion) never touch the

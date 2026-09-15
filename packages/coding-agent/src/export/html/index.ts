@@ -6,6 +6,12 @@ import { getResolvedThemeColors, getThemeExportColors } from "../../modes/theme/
 import type { SessionEntry, SessionHeader } from "../../session/session-entries";
 import { loadEntriesFromFile } from "../../session/session-loader";
 import { SessionManager } from "../../session/session-manager";
+import {
+	readRepositoryExportSnapshot,
+	type ExplicitRepositoryExportSource,
+	type RepositorySessionSource,
+} from "../../session/repository-consumers";
+import type { KeysetCursor, RelatedResourceKind } from "../../session/repository/types";
 import type { ExportThemeNames } from "./args";
 import templateCssPath from "./template.css" with { type: "file" };
 import templateHtmlPath from "./template.html" with { type: "file" };
@@ -247,6 +253,63 @@ async function collectSubSessionsFromDir(
 	}
 }
 
+async function collectRepositoryBindings(
+	source: RepositorySessionSource,
+	kind: RelatedResourceKind,
+): Promise<Array<{ key: string; target: RepositorySessionSource["locator"] }>> {
+	const bindings: Array<{ key: string; target: RepositorySessionSource["locator"] }> = [];
+	let cursor: KeysetCursor | undefined;
+	do {
+		const page = await source.repository.listRelatedResources({
+			owner: source.locator,
+			kind,
+			cursor,
+			limit: 200,
+		});
+		for (const binding of page.items) bindings.push({ key: binding.locator.key, target: binding.target });
+		cursor = page.nextCursor;
+	} while (cursor !== undefined);
+	return bindings;
+}
+
+/** Collect explicit repository lineage for standalone HTML/share exports. */
+export async function collectRepositorySubSessions(
+	source: ExplicitRepositoryExportSource,
+): Promise<Record<string, SubSession>> {
+	const result: Record<string, SubSession> = {};
+	const visited = new Set<string>();
+	const visit = async (owner: ExplicitRepositoryExportSource, parentKey: string | null): Promise<void> => {
+		const identity = `${owner.locator.branchId}:${owner.locator.versionId ?? ""}`;
+		if (visited.has(identity)) return;
+		visited.add(identity);
+		const bindings = (
+			await Promise.all([
+				collectRepositoryBindings(owner, "child-session"),
+				collectRepositoryBindings(owner, "advisor-session"),
+			])
+		).flat();
+		for (const binding of bindings) {
+			const key = parentKey ? `${parentKey}/${binding.key}` : binding.key;
+			const child: ExplicitRepositoryExportSource = {
+				repository: owner.repository,
+				transferService: owner.transferService,
+				locator: binding.target,
+			};
+			const snapshot = await readRepositoryExportSnapshot(child);
+			result[key] = {
+				agentId: binding.key,
+				parent: parentKey,
+				header: sessionHeaderForExport(snapshot.header),
+				entries: [...snapshot.entries],
+				leafId: snapshot.entries.at(-1)?.id ?? null,
+			};
+			await visit(child, key);
+		}
+	};
+	await visit(source, null);
+	return result;
+}
+
 /** Generate HTML from bundled template with runtime substitutions. */
 async function generateHtml(
 	sessionData: SessionData,
@@ -285,6 +348,29 @@ export async function exportSessionToHtml(
 	const html = await generateHtml(sessionData, palette, opts.themeNames, opts.themeName);
 	const outputPath = opts.outputPath || `${APP_NAME}-session-${path.basename(sessionFile, ".jsonl")}.html`;
 
+	await Bun.write(outputPath, html);
+	return outputPath;
+}
+
+/** Export a DB-backed session using the explicitly injected transfer boundary. */
+export async function exportRepositorySessionToHtml(
+	source: ExplicitRepositoryExportSource,
+	options?: ExportOptions | string,
+): Promise<string> {
+	const opts: ExportOptions = typeof options === "string" ? { outputPath: options } : options || {};
+	const snapshot = await readRepositoryExportSnapshot(source);
+	const sessionData: SessionData = {
+		header: sessionHeaderForExport(snapshot.header),
+		entries: [...snapshot.entries],
+		leafId: snapshot.entries.at(-1)?.id ?? null,
+	};
+	if (opts.includeSubSessions !== false) {
+		const subSessions = await collectRepositorySubSessions(source);
+		if (Object.keys(subSessions).length > 0) sessionData.subSessions = subSessions;
+	}
+	const palette = opts.palette ?? (opts.themeName ? "theme" : "web");
+	const html = await generateHtml(sessionData, palette, opts.themeNames, opts.themeName);
+	const outputPath = opts.outputPath || `${APP_NAME}-session-${source.locator.branchId}.html`;
 	await Bun.write(outputPath, html);
 	return outputPath;
 }
