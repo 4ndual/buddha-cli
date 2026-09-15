@@ -101,6 +101,13 @@ export interface EngineReceipt {
 	engine: "direct-sqlite" | "wcdb-bridge";
 	version: string | null;
 	settings: Record<string, string | number | boolean | null>;
+	pins?: {
+		wcdbCommit: string;
+		sqliteVersion: string;
+		librarySha256: string;
+		bridgeExecutableSha256: string;
+		buildManifestSha256: string;
+	};
 	metrics: Record<string, MetricReceipt>;
 	bridgeCallTotal: number;
 }
@@ -126,6 +133,9 @@ export interface BenchmarkReceipt {
 		nativeGateSha256: string | null;
 		nativeLibrarySha256: string | null;
 		nativeBuildManifestSha256: string | null;
+		nativeBridgeExecutableSha256: string | null;
+		wcdbCommit: string | null;
+		sqliteVersion: string | null;
 	};
 	limits: {
 		maxInputBytes: number;
@@ -167,8 +177,14 @@ export interface NativeGate {
 	schemaVersion: 1;
 	status: "passed";
 	bridgeCommand: string[];
+	bridgeExecutablePath: string;
+	bridgeExecutableSha256: string;
 	libraryPath: string;
+	librarySha256: string;
 	buildManifestPath: string;
+	buildManifestSha256: string;
+	wcdbCommit: string;
+	sqliteVersion: string;
 	engineVersion: string;
 	protocol: "wcdb-bench-ndjson-v1";
 	settings: Record<string, string | number | boolean | null>;
