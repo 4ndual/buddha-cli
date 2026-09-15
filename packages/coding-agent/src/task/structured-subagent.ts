@@ -33,6 +33,7 @@ import {
 	runIsolatedSubprocess,
 } from "./isolation-runner";
 import { generateTaskName } from "./name-generator";
+import type { RepositorySessionSource } from "../session/repository-consumers";
 import { AgentOutputManager } from "./output-manager";
 import { resolveSpawnPolicy } from "./spawn-policy";
 import {
@@ -358,6 +359,7 @@ export async function reserveStructuredSubagentId(
 interface ArtifactLease {
 	sessionFile: string | null;
 	artifactsDir: string;
+	repositorySource?: RepositorySessionSource;
 	temporary: boolean;
 	unregister: (() => void) | undefined;
 }
@@ -366,6 +368,22 @@ async function leaseArtifacts(
 	session: ToolSession,
 	invocationKind: StructuredSubagentRequest["invocationKind"],
 ): Promise<ArtifactLease> {
+	const repository = session.sessionManager?.getRepository?.();
+	const locator = session.sessionManager?.getSessionLocator?.();
+	if (repository && locator) {
+		const artifactsDir = path.join(
+			os.tmpdir(),
+			`${invocationKind === "eval" ? "omp-eval-agent" : "omp-task"}-${Snowflake.next()}`,
+		);
+		await fs.mkdir(artifactsDir, { recursive: true });
+		return {
+			sessionFile: null,
+			artifactsDir,
+			temporary: true,
+			unregister: registerArtifactsDir(artifactsDir),
+			repositorySource: { repository, locator },
+		};
+	}
 	const sessionFile = session.getSessionFile();
 	if (sessionFile) {
 		const artifactsDir = sessionFile.slice(0, -6);
@@ -435,6 +453,7 @@ function buildExecutorOptions(
 					outputSchemaMode: policy.schema.mode,
 				}),
 		sessionFile: lease.sessionFile,
+		parentRepositorySource: lease.repositorySource,
 		persistArtifacts: !lease.temporary,
 		artifactsDir: lease.artifactsDir,
 		enableLsp: policy.enableLsp,
