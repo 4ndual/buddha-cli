@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-const PROFILE_NAMES = new Set(["stock", "buddha-v1"]);
+const PROFILE_NAMES = new Set(["stock", "buddha-v1", "chat"]);
 const LEGACY_FILES = ["AGENTS.md", "PERSONALITY.md", "SYSTEM.md", "RULES.md", "config.yml", "mcp.json", "models.yml"];
 const LEGACY_DIRECTORIES = ["agents", "skills", "commands", "hooks"];
 const LEGACY_EXTENSIONS = [
@@ -35,7 +35,9 @@ async function copyIfPresent(source: string, destination: string): Promise<void>
 
 const profile = option("--profile");
 if (!profile || !PROFILE_NAMES.has(profile)) {
-	throw new Error("Usage: install-profile.ts --profile stock|buddha-v1 [--root <omp-root>] [--legacy-agent-dir <dir>] [--bridge-dir <dir>]");
+	throw new Error(
+		"Usage: install-profile.ts --profile stock|buddha-v1|chat [--root <omp-root>] [--legacy-agent-dir <dir>] [--bridge-dir <dir>]",
+	);
 }
 
 const root = path.resolve(option("--root") ?? path.join(os.homedir(), ".omp"));
