@@ -1,8 +1,9 @@
 import type { Terminal } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
-import { getRecentSessions } from "../session/session-listing";
+import { getRecentSessions, listRepositorySessionsPage } from "../session/session-listing";
 import { computeDefaultSessionDir } from "../session/session-paths";
 import { FileSessionStorage } from "../session/session-storage";
+import type { SessionRepository } from "../session/repository/types";
 import type { LspServerInfo, RecentSession } from "./components/welcome";
 import { COMPOSER_DEFAULTS, Composer, type ComposerPreferences, type ComposerWelcomeUpdate } from "./composer";
 import {
@@ -25,6 +26,8 @@ export interface PrepaintComposerOptions {
 	readonly theme?: ComposerThemePreferences;
 	readonly recentSessions?: () => Promise<RecentSession[]>;
 	readonly cache?: boolean;
+	/** Explicit active repository; omitted during JSONL-only prepaint. */
+	readonly repository?: SessionRepository;
 }
 
 /** Final settings pushed into the live composer after Settings and the theme resolve. */
@@ -112,7 +115,7 @@ export function beginStartupComposer(options: PrepaintComposerOptions = {}): voi
 	}
 	const pending: PendingComposer = { composer, cwd, cache: useCache };
 	pendingComposer = pending;
-	pending.recentSessions = refreshRecentSessions(pending, options.recentSessions);
+	pending.recentSessions = refreshRecentSessions(pending, options.recentSessions, options.repository);
 }
 
 /** Take the live prepaint composer away from the module-level startup owner. */
@@ -171,9 +174,10 @@ export function setStartupComposerLspServers(servers: LspServerInfo[]): void {
 async function refreshRecentSessions(
 	pending: PendingComposer,
 	loadOverride: (() => Promise<RecentSession[]>) | undefined,
+	repository: SessionRepository | undefined,
 ): Promise<RecentSession[] | undefined> {
 	try {
-		const sessions = loadOverride ? await loadOverride() : await loadRecentSessions(pending.cwd);
+		const sessions = loadOverride ? await loadOverride() : await loadRecentSessions(pending.cwd, repository);
 		if (pending.cache) {
 			void writeComposerRecentSessionsCache(pending.cwd, sessions).catch(error => {
 				logger.debug("composer recent sessions cache write failed", { error });
@@ -189,9 +193,25 @@ async function refreshRecentSessions(
 	}
 }
 
-async function loadRecentSessions(cwd: string): Promise<RecentSession[]> {
+async function loadRecentSessions(cwd: string, repository?: SessionRepository): Promise<RecentSession[]> {
+	if (repository) {
+		const page = await listRepositorySessionsPage(repository, { limit: 4 });
+		return page.items
+			.filter(session => !session.cwd || session.cwd === cwd)
+			.map(session => ({ name: session.title ?? session.firstMessage, timeAgo: formatRecentTime(session.modified) }));
+	}
 	const storage = new FileSessionStorage();
 	const dir = computeDefaultSessionDir(cwd, storage);
 	const list = await getRecentSessions(dir, 4, storage);
 	return list.map(session => ({ name: session.name, timeAgo: session.timeAgo }));
+}
+
+function formatRecentTime(date: Date): string {
+	const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
+	if (seconds < 60) return "just now";
+	const minutes = Math.floor(seconds / 60);
+	if (minutes < 60) return `${minutes}m ago`;
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return `${hours}h ago`;
+	return `${Math.floor(hours / 24)}d ago`;
 }

@@ -30,7 +30,7 @@ import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import type { Theme } from "../../modes/theme/theme";
 import type { ReadonlySessionManager } from "../../session/session-manager";
 import type { TodoItem } from "../../tools/todo";
-import type { RetryErrorUpdate } from "../shared-events";
+import type { RetryErrorUpdate, SessionEventReference } from "../shared-events";
 
 /** Alias for clarity */
 export type CustomToolUIContext = HookUIContext;
@@ -110,8 +110,8 @@ export type CustomToolSessionEvent =
 	| {
 			/** Reason for the session event */
 			reason: "start" | "switch" | "branch" | "tree" | "shutdown";
-			/** Previous session file path, or undefined for "start" and "shutdown" */
-			previousSessionFile: string | undefined;
+			/** Previous logical session, or undefined for "start" and "shutdown". */
+			previousSession?: SessionEventReference;
 	  }
 	| {
 			reason: "auto_compaction_start";

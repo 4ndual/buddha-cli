@@ -2,14 +2,21 @@ import { ProcessTerminal, TUI } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
 import { SessionSelectorComponent } from "../modes/components/session-selector";
 import { HistoryStorage } from "../session/history-storage";
-import type { SessionInfo } from "../session/session-listing";
+import {
+	listRepositorySessionsPage,
+	type LogicalSessionInfo,
+	type SessionInfo,
+} from "../session/session-listing";
 import { SessionManager } from "../session/session-manager";
 import { loadPinnedSessionIds } from "../session/session-pins";
 import { FileSessionStorage } from "../session/session-storage";
+import type { ListSessionsQuery, SessionRepository } from "../session/repository/types";
+
+type SelectableSession = SessionInfo | LogicalSessionInfo;
 
 /** Presentation and capability controls for the standalone session picker. */
 export interface SessionPickerOptions {
-	allSessions?: SessionInfo[];
+	allSessions?: SelectableSession[];
 	title?: string;
 	scopeLabel?: string | false;
 	showCwd?: boolean;
@@ -17,6 +24,7 @@ export interface SessionPickerOptions {
 	allowGlobalScope?: boolean;
 	historySearch?: boolean;
 	pinnedIds?: ReadonlySet<string>;
+	repository?: SessionRepository;
 }
 
 /**
@@ -25,11 +33,11 @@ export interface SessionPickerOptions {
  * search, and an all-projects scope; foreign import pickers disable those
  * source-owned capabilities.
  */
-export async function selectSession(
-	sessions: SessionInfo[],
+export async function selectSession<T extends SelectableSession>(
+	sessions: T[],
 	options: SessionPickerOptions = {},
-): Promise<SessionInfo | null> {
-	const { promise, resolve } = Promise.withResolvers<SessionInfo | null>();
+): Promise<T | null> {
+	const { promise, resolve } = Promise.withResolvers<T | null>();
 	const ui = new TUI(new ProcessTerminal());
 	let resolved = false;
 	const storage = new FileSessionStorage();
@@ -40,7 +48,7 @@ export async function selectSession(
 	const pinnedIds = options.pinnedIds ?? (await loadPinnedSessionIds());
 
 	let historyMatcher: ((query: string) => string[]) | undefined;
-	if (options.historySearch !== false) {
+	if (options.historySearch !== false && !options.repository) {
 		try {
 			const history = HistoryStorage.open();
 			historyMatcher = (query: string) => history.matchingSessionIds(query);
@@ -52,11 +60,11 @@ export async function selectSession(
 	const showSelector = () => {
 		const selector = new SessionSelectorComponent(
 			sessions,
-			(session: SessionInfo) => {
+			(session: SelectableSession) => {
 				if (!resolved) {
 					resolved = true;
 					ui.stop();
-					resolve(session);
+					resolve(session as T);
 				}
 			},
 			() => {
@@ -77,12 +85,26 @@ export async function selectSession(
 				onDelete:
 					options.allowDelete === false
 						? undefined
-						: async (session: SessionInfo) => {
+						: async (session: SelectableSession) => {
+								if (session.locator && options.repository) {
+									const health = await options.repository.health();
+									return options.repository.drop({
+										locator: session.locator,
+										explicit: true,
+										expectedModeGeneration: health.modeGeneration,
+									});
+								}
+								if (!session.path) throw new Error("Session has no deletable JSONL path");
 								await storage.deleteSessionWithArtifacts(session.path);
 								return true;
 							},
 				historyMatcher,
-				loadAllSessions: options.allowGlobalScope === false ? undefined : () => SessionManager.listAll(storage),
+				loadAllSessions:
+					options.allowGlobalScope === false
+						? undefined
+						: options.repository
+							? async () => [...(await listRepositorySessionsPage(options.repository!, { limit: 100 })).items]
+							: () => SessionManager.listAll(storage),
 				allSessions: options.allSessions,
 				getTerminalRows: () => ui.terminal.rows,
 				fillHeight: true,
@@ -112,4 +134,15 @@ export async function selectSession(
 	ui.setFocus(selector);
 	ui.start();
 	return promise;
+}
+
+/** Open a picker over one bounded repository page. */
+export async function selectRepositorySession(
+	repository: SessionRepository,
+	query: ListSessionsQuery = {},
+	options: Omit<SessionPickerOptions, "repository"> = {},
+): Promise<LogicalSessionInfo | null> {
+	const page = await listRepositorySessionsPage(repository, { ...query, limit: query.limit ?? 100 });
+	const selected = await selectSession([...page.items], { ...options, repository, historySearch: false });
+	return (selected as LogicalSessionInfo | null) ?? null;
 }

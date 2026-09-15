@@ -6,6 +6,15 @@ import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { computeDefaultSessionDir } from "./session-paths";
 import { FileSessionStorage, type SessionStorage, type SessionStorageStat } from "./session-storage";
 import { lookupSessionTitle, recordSessionTitle } from "./title-index";
+import type {
+	KeysetCursor,
+	KeysetPage,
+	ListSessionsQuery,
+	RepositoryMode,
+	RepositorySessionHeader,
+	SessionLocator,
+	SessionRepository,
+} from "./repository/types";
 
 /**
  * Coarse lifecycle status of a session, derived from its last persisted message.
@@ -23,26 +32,28 @@ import { lookupSessionTitle, recordSessionTitle } from "./title-index";
  */
 export type SessionStatus = "complete" | "interrupted" | "aborted" | "error" | "pending" | "unknown";
 
-export interface SessionInfo {
-	path: string;
+export interface SessionSummary {
 	id: string;
 	/** Working directory where the session was started. Empty string for old sessions. */
 	cwd: string;
 	title?: string;
-	/** Path to the parent session (if this session was forked). */
-	parentSessionPath?: string;
 	created: Date;
 	modified: Date;
 	messageCount: number;
-	/** File size in bytes on disk; used for compact list rendering. */
 	size: number;
 	firstMessage: string;
 	allMessagesText: string;
-	/**
-	 * Coarse lifecycle status from the session's last persisted message. Optional:
-	 * synthesized {@link SessionInfo}s (cross-project stubs, tests) leave it unset.
-	 */
 	status?: SessionStatus;
+}
+
+/** Legacy JSONL listing result with a real physical path. */
+export interface SessionInfo extends SessionSummary {
+	path: string;
+	mode?: "jsonl";
+	/** Present when JSONL was accessed through the repository boundary. */
+	locator?: SessionLocator;
+	/** Path to the parent session (if this session was forked). */
+	parentSessionPath?: string;
 }
 
 export interface ResolvedSessionMatch {
@@ -55,6 +66,18 @@ export interface RecentSessionInfo {
 	path: string;
 	name: string;
 	timeAgo: string;
+}
+
+/** Repository listing result. DB mode never exposes or invents a path. */
+export interface LogicalSessionInfo extends SessionSummary {
+	mode: RepositoryMode;
+	locator: SessionLocator;
+	path?: never;
+}
+
+export interface LogicalSessionPage {
+	items: readonly LogicalSessionInfo[];
+	nextCursor?: KeysetCursor;
 }
 
 const SESSION_LIST_PREFIX_BYTES = 4096;
@@ -459,6 +482,7 @@ async function scanSessionFile(
 		const messageCount = Math.max(parsedMessageCount, countMessageMarkers(content));
 		const info: SessionInfo = {
 			path: file,
+			mode: "jsonl",
 			id: header.id,
 			cwd: header.cwd ?? "",
 			title: header.title ?? shortSummary,
@@ -636,6 +660,64 @@ export async function listAllSessions(
 	} catch {
 		return [];
 	}
+}
+
+function repositoryHeaderToSessionInfo(header: RepositorySessionHeader, mode: RepositoryMode): LogicalSessionInfo {
+	const title = sanitizeSessionName(header.metadata.title);
+	const created = new Date(header.metadata.createdAt);
+	const modified = new Date(header.modifiedAt);
+	return {
+		mode,
+		locator: { branchId: header.branchId, versionId: header.versionId },
+		id: header.branchId,
+		cwd: header.metadata.cwd ?? "",
+		title,
+		created,
+		modified,
+		messageCount: header.generation,
+		size: 0,
+		firstMessage: title ?? "(no messages)",
+		allMessagesText: title ?? "",
+	};
+}
+
+/**
+ * List one bounded keyset page from a repository. Unlike the legacy JSONL
+ * helpers, this never scans a directory or manufactures a backing file path.
+ */
+export async function listRepositorySessionsPage(
+	repository: SessionRepository,
+	query: ListSessionsQuery = {},
+): Promise<LogicalSessionPage> {
+	const page: KeysetPage<RepositorySessionHeader> = await repository.listSessions(query);
+	return {
+		items: page.items.map(header => repositoryHeaderToSessionInfo(header, repository.mode)),
+		nextCursor: page.nextCursor,
+	};
+}
+
+/** Resolve an id/prefix without ever holding more than one bounded page. */
+export async function resolveRepositorySession(
+	repository: SessionRepository,
+	sessionArg: string,
+	options: { cwd?: string; pageSize?: number } = {},
+): Promise<LogicalSessionInfo | undefined> {
+	const needle = sessionArg.toLocaleLowerCase();
+	const pageSize = Math.min(Math.max(options.pageSize ?? 100, 1), 1_000);
+	let cursor: KeysetCursor | undefined;
+	do {
+		const page = await listRepositorySessionsPage(repository, { cursor, limit: pageSize });
+		const match = page.items.find(session => {
+			if (options.cwd && path.resolve(session.cwd) !== path.resolve(options.cwd)) return false;
+			return (
+				session.id.toLocaleLowerCase().startsWith(needle) ||
+				session.locator.branchId.toLocaleLowerCase().startsWith(needle)
+			);
+		});
+		if (match) return match;
+		cursor = page.nextCursor;
+	} while (cursor);
+	return undefined;
 }
 
 /** Exported for testing */

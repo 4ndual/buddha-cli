@@ -16,10 +16,17 @@ import {
 import { formatBytes } from "@oh-my-pi/pi-utils";
 import { theme } from "../../modes/theme/theme";
 import { matchesAppInterrupt, matchesSelectDown, matchesSelectUp } from "../../modes/utils/keybinding-matchers";
-import type { SessionInfo, SessionStatus } from "../../session/session-listing";
+import type {
+	LogicalSessionInfo,
+	SessionInfo as JsonlSessionInfo,
+	SessionStatus,
+} from "../../session/session-listing";
 import { shortenPath } from "../../tools/render-utils";
 import { HookSelectorComponent } from "./hook-selector";
+
 import { bottomBorder, OverlayPanel, row, topBorder } from "./overlay-box";
+
+type SessionInfo = JsonlSessionInfo | LogicalSessionInfo;
 
 /**
  * Themed glyph + colored label for a session's lifecycle status, or `undefined`
@@ -47,6 +54,10 @@ function formatSessionStatus(status: SessionStatus | undefined): string | undefi
 /** Returns the IDs of sessions whose recorded prompts match a query, best first. */
 export type SessionHistoryMatcher = (query: string) => string[];
 
+function sessionIdentity(session: SessionInfo): string {
+	return session.locator?.branchId ?? session.path ?? session.id;
+}
+
 function sessionSearchText(session: SessionInfo): string {
 	const parts = [
 		session.id,
@@ -54,7 +65,8 @@ function sessionSearchText(session: SessionInfo): string {
 		session.cwd ?? "",
 		session.firstMessage ?? "",
 		session.allMessagesText,
-		session.path,
+		session.path ?? "",
+		session.locator?.branchId ?? "",
 	];
 	return parts.filter(Boolean).join(" ");
 }
@@ -212,16 +224,18 @@ export function mergeSessionRanking(
 	}
 
 	const historyMatches: SessionInfo[] = [];
-	const historyPaths = new Set<string>();
+	const matchedIdentities = new Set<string>();
 	for (const id of historyIds) {
 		const session = sessionsById.get(id);
-		if (!session || historyPaths.has(session.path)) continue;
+		if (!session) continue;
+		const identity = sessionIdentity(session);
+		if (matchedIdentities.has(identity)) continue;
 		historyMatches.push(session);
-		historyPaths.add(session.path);
+		matchedIdentities.add(identity);
 	}
 	if (historyMatches.length === 0) return fuzzy;
 
-	const metadataOnly = fuzzy.filter(session => !historyPaths.has(session.path));
+	const metadataOnly = fuzzy.filter(session => !matchedIdentities.has(sessionIdentity(session)));
 	return [...historyMatches, ...metadataOnly];
 }
 
@@ -490,8 +504,9 @@ class SessionList implements Component {
 		}
 	}
 
-	removeSession(sessionPath: string): void {
-		const index = this.#allSessions.findIndex(s => s.path === sessionPath);
+	removeSession(session: SessionInfo): void {
+		const identity = sessionIdentity(session);
+		const index = this.#allSessions.findIndex(candidate => sessionIdentity(candidate) === identity);
 		if (index === -1) return;
 		this.#allSessions.splice(index, 1);
 		// Re-filter to update filteredSessions
@@ -976,7 +991,7 @@ export class SessionSelectorComponent extends OverlayPanel {
 					try {
 						const deleted = await this.#onDelete(session);
 						if (deleted) {
-							this.#sessionList.removeSession(session.path);
+							this.#sessionList.removeSession(session);
 						}
 					} catch (err) {
 						this.#showError(err instanceof Error ? err.message : String(err));
