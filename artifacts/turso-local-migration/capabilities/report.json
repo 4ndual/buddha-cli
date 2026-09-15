@@ -1,6 +1,6 @@
 {
   "reportVersion": 1,
-  "generatedAt": "2026-09-15T22:27:55.412Z",
+  "generatedAt": "2026-09-15T22:31:54.234Z",
   "databaseModeEnabled": false,
   "engine": {
     "package": "@tursodatabase/database",
@@ -15,7 +15,7 @@
     "platform": "linux",
     "arch": "x64"
   },
-  "probeRoot": "/home/andual/Projects/.turso-migration-owned/engine/databases/capability-1789511274086-2509512",
+  "probeRoot": "/home/andual/Projects/.turso-migration-owned/engine/databases/capability-1789511513584-2520903",
   "capabilities": {
     "offlineInstallAndLocalUse": {
       "status": "supported",
@@ -32,7 +32,7 @@
       "mandatory": true,
       "detail": "Pinned native N-API package loads and executes under Bun",
       "evidence": {
-        "directPath": "/home/andual/Projects/.turso-migration-owned/engine/databases/capability-1789511274086-2509512/native-load.db"
+        "directPath": "/home/andual/Projects/.turso-migration-owned/engine/databases/capability-1789511513584-2520903/native-load.db"
       }
     },
     "nativeVersionEnforcement": {
@@ -60,7 +60,7 @@
       "mandatory": true,
       "detail": "Local connection enabled foreign keys and applied every pinned migration transactionally",
       "evidence": {
-        "databasePath": "/home/andual/Projects/.turso-migration-owned/engine/databases/capability-1789511274086-2509512/sessions.turso.db",
+        "databasePath": "/home/andual/Projects/.turso-migration-owned/engine/databases/capability-1789511513584-2520903/sessions.turso.db",
         "schemaVersion": 2
       }
     },
@@ -99,7 +99,7 @@
       "detail": "Per-query deadline interrupts native execution",
       "evidence": {
         "queryTimeoutMs": 5,
-        "elapsedMs": 5.374772000000007
+        "elapsedMs": 5.177801999999986
       }
     },
     "largeIntegers": {
@@ -139,7 +139,7 @@
       "mandatory": true,
       "detail": "Separate Bun processes serialized writers without losing either commit",
       "evidence": {
-        "waitedMs": 433.22326799999996,
+        "waitedMs": 337.532178,
         "rows": [
           {
             "value": "child"
@@ -165,7 +165,7 @@
       "mandatory": true,
       "detail": "Committed state survived clean close and read-only restart",
       "evidence": {
-        "restartPath": "/home/andual/Projects/.turso-migration-owned/engine/databases/capability-1789511274086-2509512/restart.db"
+        "restartPath": "/home/andual/Projects/.turso-migration-owned/engine/databases/capability-1789511513584-2520903/restart.db"
       }
     },
     "durableCommitRecovery": {
@@ -189,15 +189,15 @@
       "mandatory": true,
       "detail": "Checkpoint, close, exclusive full-file copy, fsync, and reopen fallback passed",
       "evidence": {
-        "sourcePath": "/home/andual/Projects/.turso-migration-owned/engine/databases/capability-1789511274086-2509512/backup-source.db",
-        "destinationPath": "/home/andual/Projects/.turso-migration-owned/engine/databases/capability-1789511274086-2509512/backup-copy.db",
+        "sourcePath": "/home/andual/Projects/.turso-migration-owned/engine/databases/capability-1789511513584-2520903/backup-source.db",
+        "destinationPath": "/home/andual/Projects/.turso-migration-owned/engine/databases/capability-1789511513584-2520903/backup-copy.db",
         "checkpoint": {
           "busy": 0,
           "logFrames": 72,
           "checkpointedFrames": 72
         },
         "closedBeforeCopy": true,
-        "copiedAt": 1789511275207
+        "copiedAt": 1789511514180
       }
     },
     "nativeFtsIndex": {
@@ -325,20 +325,20 @@
               "highlightedText": "<mark>bounded</mark> sentinel 5"
             },
             {
+              "eventHash": "bounded-event-4",
+              "originId": "origin-capability",
+              "role": "user",
+              "eventTime": 14,
+              "score": 0,
+              "highlightedText": "<mark>bounded</mark> sentinel 4"
+            },
+            {
               "eventHash": "bounded-event-2",
               "originId": "origin-capability",
               "role": "user",
               "eventTime": 12,
               "score": 0,
               "highlightedText": "<mark>bounded</mark> sentinel 2"
-            },
-            {
-              "eventHash": "bounded-event-1",
-              "originId": "origin-capability",
-              "role": "user",
-              "eventTime": 11,
-              "score": 0,
-              "highlightedText": "<mark>bounded</mark> sentinel 1"
             }
           ],
           "nextOffset": 3
@@ -363,6 +363,95 @@
       "approach": "package optional native binding via standard ESM import",
       "outcome": "supported",
       "detail": "Bun loaded the pinned linux-x64-gnu N-API artifact and used a local file"
+    }
+  ],
+  "ftsRankingPrefixApproaches": [
+    {
+      "approach": "default-tokenizer-documented-wildcard",
+      "outcome": "unsupported",
+      "detail": "ranking did not differentiate scores; prefix did not match both documents",
+      "evidence": {
+        "indexSql": "CREATE INDEX documents_fts ON documents USING fts (text)",
+        "rankingQuery": "database",
+        "prefixQuery": "data*",
+        "ranked": [
+          {
+            "id": "one",
+            "score": 0
+          },
+          {
+            "id": "two",
+            "score": 0
+          }
+        ],
+        "prefix": [],
+        "rankingSupported": false,
+        "prefixSupported": false
+      }
+    },
+    {
+      "approach": "weighted-index-column-qualified-grammar",
+      "outcome": "unsupported",
+      "detail": "ranking did not differentiate scores; prefix did not match both documents",
+      "evidence": {
+        "indexSql": "CREATE INDEX documents_fts ON documents USING fts (text) WITH (weights = 'text=2.0')",
+        "rankingQuery": "text:database",
+        "prefixQuery": "text:data*",
+        "ranked": [
+          {
+            "id": "one",
+            "score": 0
+          },
+          {
+            "id": "two",
+            "score": 0
+          }
+        ],
+        "prefix": [],
+        "rankingSupported": false,
+        "prefixSupported": false
+      }
+    },
+    {
+      "approach": "ngram-tokenizer-autocomplete-query",
+      "outcome": "unsupported",
+      "detail": "ranking did not differentiate scores; prefix matched both documents",
+      "evidence": {
+        "indexSql": "CREATE INDEX documents_fts ON documents USING fts (text) WITH (tokenizer = 'ngram')",
+        "rankingQuery": "database",
+        "prefixQuery": "data",
+        "ranked": [
+          {
+            "id": "one",
+            "score": 0
+          },
+          {
+            "id": "two",
+            "score": 0
+          }
+        ],
+        "prefix": [
+          {
+            "id": "one"
+          },
+          {
+            "id": "two"
+          }
+        ],
+        "rankingSupported": false,
+        "prefixSupported": true
+      }
+    },
+    {
+      "approach": "per-column-default-tokenizer-syntax",
+      "outcome": "unsupported",
+      "detail": "Pinned engine rejected the documented index/query approach",
+      "evidence": {
+        "indexSql": "CREATE INDEX documents_fts ON documents USING fts (text WITH tokenizer=default)",
+        "rankingQuery": "database",
+        "prefixQuery": "data*",
+        "error": "Error: failed to consume stmt: near \"WITH\": syntax error"
+      }
     }
   ]
 }
