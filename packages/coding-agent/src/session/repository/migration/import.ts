@@ -106,6 +106,9 @@ export async function planLogicalImport(
 	const allEvents = new Map(target.events.map((event) => [event.event_hash, event]));
 	for (const event of source.events) allEvents.set(event.event_hash, event);
 	const existingVersions = new Set(target.versions.map((version) => version.version_id));
+	const allVersions = new Map(target.versions.map((version) => [version.version_id, version]));
+	for (const version of source.versions) allVersions.set(version.version_id, version);
+	const availableEventHashes = new Set(target.events.map((event) => event.event_hash));
 	const targetBranches = new Map(target.branches.map((branch) => [branch.branch_id, { ...branch }]));
 	const sourceBranches = new Map(source.branches.map((branch) => [branch.branch_id, branch]));
 	const mappedBranches = new Map<string, string>();
@@ -139,19 +142,38 @@ export async function planLogicalImport(
 		}
 		let relationship: ImportRelationship = "new";
 		let expectedHead: string | null = null;
+		let parentBranchId = sourceBranch.parent_branch_id;
 		if (targetBranch) {
 			expectedHead = targetBranch.head_hash;
-			if (targetBranch.head_hash === version.head_hash) relationship = "idempotent";
-			else if (isAncestor(targetBranch.head_hash, version.head_hash, allEvents)) relationship = "extension";
-			else {
-				relationship = isAncestor(version.head_hash, targetBranch.head_hash, allEvents) ? "historical" : "divergence";
-				targetBranchId = mapped ?? derivedBranchId(source.replica_id, version.branch_id, version.version_id);
+			const targetVersionIsAncestor = isVersionAncestor(
+				targetBranch.head_version_id,
+				version.version_id,
+				allVersions,
+			);
+			const sourceVersionIsAncestor = isVersionAncestor(
+				version.version_id,
+				targetBranch.head_version_id,
+				allVersions,
+			);
+			if (
+				targetVersionIsAncestor &&
+				isAncestor(targetBranch.head_hash, version.head_hash, allEvents)
+			) {
+				relationship = "extension";
+			} else {
+				relationship =
+					sourceVersionIsAncestor || isAncestor(version.head_hash, targetBranch.head_hash, allEvents)
+						? "historical"
+						: "divergence";
+				parentBranchId = targetBranch.branch_id;
+				targetBranchId = derivedBranchId(source.replica_id, version.branch_id, version.version_id);
 				targetBranch = targetBranches.get(targetBranchId);
 				expectedHead = targetBranch?.head_hash ?? null;
 			}
 		}
 		mappedBranches.set(version.branch_id, targetBranchId);
-		const events = collectMissingAncestry(version.head_hash, sourceEvents, allEvents, new Set(target.events.map((event) => event.event_hash)));
+		const events = collectMissingAncestry(version.head_hash, sourceEvents, allEvents, availableEventHashes);
+		for (const event of events) availableEventHashes.add(event.event_hash);
 		result.push({
 			source_replica_id: source.replica_id,
 			source_branch_id: version.branch_id,
@@ -165,13 +187,31 @@ export async function planLogicalImport(
 		targetBranches.set(targetBranchId, {
 			branch_id: targetBranchId,
 			origin_id: version.origin_id,
-			parent_branch_id: relationship === "divergence" || relationship === "historical" ? targetBranch?.branch_id ?? null : sourceBranch.parent_branch_id,
+			parent_branch_id: parentBranchId,
 			fork_point_hash: version.fork_point_hash,
 			head_hash: version.head_hash,
 			head_version_id: version.version_id,
 		});
 	}
 	return result;
+}
+
+export function isVersionAncestor(
+	possibleAncestor: string,
+	descendant: string,
+	versions: ReadonlyMap<string, LogicalVersion>,
+): boolean {
+	let cursor: string | null = descendant;
+	const visited = new Set<string>();
+	while (cursor !== null) {
+		if (cursor === possibleAncestor) return true;
+		if (visited.has(cursor)) throw new Error(`Cycle in version ancestry at ${cursor}`);
+		visited.add(cursor);
+		const version = versions.get(cursor);
+		if (!version) return false;
+		cursor = version.parent_version_id;
+	}
+	return false;
 }
 
 export function isAncestor(

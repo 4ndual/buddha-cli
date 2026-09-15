@@ -247,6 +247,39 @@ describe("semantic reconciliation", () => {
 		expect((await right.readLogicalSnapshot()).branches).toHaveLength(firstRight.branches.length);
 	});
 
+	test("preserves concurrent metadata-only revisions as sibling branches", async () => {
+		const root = await temporaryRoot();
+		const leftBundle = fixture("left-metadata", "C");
+		const rightBundle = fixture("right-metadata", "C");
+		leftBundle.versions = leftBundle.versions.map((entry) =>
+			entry.version_id === "vC"
+				? { ...entry, version_id: "vC-left", metadata_revision_id: "metadata-left", metadata: { title: "left" } }
+				: entry,
+		);
+		leftBundle.branches = [{ ...leftBundle.branches[0], head_version_id: "vC-left" }];
+		rightBundle.versions = rightBundle.versions.map((entry) =>
+			entry.version_id === "vC"
+				? { ...entry, version_id: "vC-right", metadata_revision_id: "metadata-right", metadata: { title: "right" } }
+				: entry,
+		);
+		rightBundle.branches = [{ ...rightBundle.branches[0], head_version_id: "vC-right" }];
+		const left = new MemoryReplica("left-metadata", leftBundle);
+		const right = new MemoryReplica("right-metadata", rightBundle);
+		await synchronizeLogicalReplicas(left, right, {
+			jobId: "metadata",
+			leftJournalPath: join(root, "metadata-lr.json"),
+			rightJournalPath: join(root, "metadata-rl.json"),
+			maxBatchBytes: 1024 * 1024,
+		});
+		for (const replica of [left, right]) {
+			const snapshot = await replica.readLogicalSnapshot();
+			expect(snapshot.branches).toHaveLength(2);
+			expect(new Set(snapshot.versions.map((entry) => entry.version_id))).toEqual(
+				new Set(["vA", "vB", "vC-left", "vC-right"]),
+			);
+		}
+	});
+
 	test("historical truncation creates a sibling and preserves the longer history", async () => {
 		const root = await temporaryRoot();
 		const target = new MemoryReplica("target", fixture("target", "C"));
