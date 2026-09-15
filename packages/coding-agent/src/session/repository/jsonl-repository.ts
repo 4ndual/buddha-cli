@@ -74,7 +74,7 @@ const DEFAULT_PAGE_SIZE = 100;
 const MAX_PAGE_SIZE = 1_000;
 const DEFAULT_PAYLOAD_CHUNK_BYTES = 64 * 1024;
 
-interface JsonlSessionRepositoryOptions {
+export interface JsonlSessionRepositoryOptions {
 	rootDir: string;
 	replicaId: ReplicaId;
 	modeGeneration: ModeGeneration;
@@ -221,7 +221,11 @@ function encodeCursor(cursor: CursorEnvelope): KeysetCursor {
 	return Buffer.from(JSON.stringify(cursor)).toString("base64url") as KeysetCursor;
 }
 
-function decodeCursor(cursor: KeysetCursor | undefined, kind: CursorEnvelope["kind"], filter: string): CursorEnvelope | undefined {
+function decodeCursor(
+	cursor: KeysetCursor | undefined,
+	kind: CursorEnvelope["kind"],
+	filter: string,
+): CursorEnvelope | undefined {
 	if (!cursor) return undefined;
 	let parsed: unknown;
 	try {
@@ -235,6 +239,17 @@ function decodeCursor(cursor: KeysetCursor | undefined, kind: CursorEnvelope["ki
 		throw new RepositoryIntegrityError("Repository cursor does not belong to this query");
 	}
 	return envelope;
+}
+
+function cursorIndexAfter<T>(
+	items: readonly T[],
+	cursor: CursorEnvelope | undefined,
+	matches: (item: T, cursor: CursorEnvelope) => boolean,
+): number {
+	if (!cursor) return 0;
+	const index = items.findIndex(item => matches(item, cursor));
+	if (index < 0) throw new RepositoryIntegrityError("Repository cursor no longer exists");
+	return index + 1;
 }
 
 function emptyTransferReport(): TransferReport {
@@ -610,16 +625,18 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 				const byTime = lexicalCompare(right.modifiedAt, left.modifiedAt);
 				return byTime !== 0 ? byTime : lexicalCompare(left.branchId, right.branchId);
 			});
-		const after = cursor
-			? headers.findIndex(header => header.modifiedAt === cursor.modifiedAt && header.branchId === cursor.branchId) + 1
-			: 0;
+		const after = cursorIndexAfter(
+			headers,
+			cursor,
+			(header, keyset) => header.modifiedAt === keyset.modifiedAt && header.branchId === keyset.branchId,
+		);
 		const limit = boundedLimit(query.limit);
-		const items = headers.slice(Math.max(after, 0), Math.max(after, 0) + limit);
+		const items = headers.slice(after, after + limit);
 		const last = items.at(-1);
 		return {
 			items,
 			nextCursor:
-				last && Math.max(after, 0) + items.length < headers.length
+				last && after + items.length < headers.length
 					? encodeCursor({ kind: "list", filter, modifiedAt: last.modifiedAt, branchId: last.branchId })
 					: undefined,
 		};
@@ -648,16 +665,18 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 			const byTime = lexicalCompare(right.header.modifiedAt, left.header.modifiedAt);
 			return byTime !== 0 ? byTime : lexicalCompare(left.header.branchId, right.header.branchId);
 		});
-		const after = cursor
-			? hits.findIndex(hit => hit.header.modifiedAt === cursor.modifiedAt && hit.header.branchId === cursor.branchId) + 1
-			: 0;
+		const after = cursorIndexAfter(
+			hits,
+			cursor,
+			(hit, keyset) => hit.header.modifiedAt === keyset.modifiedAt && hit.header.branchId === keyset.branchId,
+		);
 		const limit = boundedLimit(query.limit);
-		const items = hits.slice(Math.max(after, 0), Math.max(after, 0) + limit);
+		const items = hits.slice(after, after + limit);
 		const last = items.at(-1);
 		return {
 			items,
 			nextCursor:
-				last && Math.max(after, 0) + items.length < hits.length
+				last && after + items.length < hits.length
 					? encodeCursor({
 							kind: "search",
 							filter,
@@ -683,16 +702,18 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 		const nodes: RepositoryTreeNode[] = state.events
 			.map(event => ({ ...event, childEventHashes: children.get(event.eventHash) ?? [] }))
 			.sort((left, right) => left.generation - right.generation || lexicalCompare(left.eventHash, right.eventHash));
-		const after = cursor
-			? nodes.findIndex(node => node.generation === cursor.generation && node.eventHash === cursor.eventHash) + 1
-			: 0;
+		const after = cursorIndexAfter(
+			nodes,
+			cursor,
+			(node, keyset) => node.generation === keyset.generation && node.eventHash === keyset.eventHash,
+		);
 		const limit = boundedLimit(query.limit);
-		const items = nodes.slice(Math.max(after, 0), Math.max(after, 0) + limit);
+		const items = nodes.slice(after, after + limit);
 		const last = items.at(-1);
 		return {
 			items,
 			nextCursor:
-				last && Math.max(after, 0) + items.length < nodes.length
+				last && after + items.length < nodes.length
 					? encodeCursor({
 							kind: "tree",
 							filter,
@@ -1141,7 +1162,8 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 				);
 				this.#publishStateSync(siblingState, options.expectedModeGeneration);
 				report.forked++;
-			} catch {
+			} catch (error) {
+				if (error instanceof StaleModeGenerationError) throw error;
 				report.quarantined++;
 			}
 		}
@@ -1156,9 +1178,13 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 			.filter(state => !query.originId || state.header.originId === query.originId)
 			.filter(state => !query.branchId || state.header.branchId === query.branchId)
 			.sort((left, right) => lexicalCompare(left.header.branchId, right.header.branchId));
-		const after = cursor?.branchId ? states.findIndex(state => state.header.branchId === cursor.branchId) + 1 : 0;
-		const limit = boundedLimit(query.limit);
-		for (const state of states.slice(Math.max(after, 0), Math.max(after, 0) + limit)) yield this.#archiveItem(state);
+		const after = cursorIndexAfter(
+			states,
+			cursor,
+			(state, keyset) => state.header.branchId === keyset.branchId,
+		);
+		const limit = query.limit === undefined ? states.length : boundedLimit(query.limit);
+		for (const state of states.slice(after, after + limit)) yield this.#archiveItem(state);
 	}
 
 	async syncFrom(source: SessionTransferService, options: SyncOptions): Promise<TransferReport> {
