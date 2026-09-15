@@ -42,3 +42,4 @@ export {
 	type SchemaTransaction,
 	type TursoSchemaMigration,
 } from "./schema";
+export * from "./repository";
