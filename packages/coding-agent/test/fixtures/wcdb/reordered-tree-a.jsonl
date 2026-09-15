@@ -1,0 +1,4 @@
+{"type":"session","version":3,"id":"reordered-tree","timestamp":"2026-02-05T00:00:00.000Z","cwd":"/fixtures/reordered"}
+{"type":"message","id":"root","parentId":null,"timestamp":"2026-02-05T00:00:01.000Z","message":{"role":"user","content":"root","timestamp":1770249601000}}
+{"type":"message","id":"left","parentId":"root","timestamp":"2026-02-05T00:00:02.000Z","message":{"role":"user","content":"left","timestamp":1770249602000}}
+{"type":"message","id":"right","parentId":"root","timestamp":"2026-02-05T00:00:03.000Z","message":{"role":"user","content":"right","timestamp":1770249603000}}

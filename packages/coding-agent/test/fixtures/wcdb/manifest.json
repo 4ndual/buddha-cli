@@ -1,0 +1,19 @@
+{
+  "format": "omp-wcdb-verification-fixtures-v1",
+  "files": [
+    { "path": "cyclic.jsonl", "sha256": "24a7855d8128901410da572ee3d050e5f06568bd7b019fb89a938a3d8abf6029", "disposition": "quarantined", "reason": "cycle" },
+    { "path": "duplicate-id-harness-a.jsonl", "sha256": "ad668c53a989adbd67ee4ccfd8bf381bd6efc9e4a9045171605ed67eff014c59", "disposition": "resumable", "sourceNamespace": "harness-a" },
+    { "path": "duplicate-id-harness-b.jsonl", "sha256": "6e89282a57fd434192bf9fed8d64d5a18943bc5b4fbda82cc016aa56182e7761", "disposition": "resumable", "sourceNamespace": "harness-b" },
+    { "path": "malformed-and-truncated.jsonl", "sha256": "d9c80c4d7a5fa0033b212e546501c2ee7c27940a50c2e7bd1ccd40ab57027659", "disposition": "quarantined", "reason": "malformed-and-truncated" },
+    { "path": "missing-parent.jsonl", "sha256": "c73cfa52a3808f2d83e15880ce87b91520a711999cb96582af06c2c9332c3b15", "disposition": "quarantined", "reason": "missing-parent" },
+    { "path": "omp-v1-legacy.jsonl", "sha256": "3036d611750883ed7e5ced6ab5244d76716aaa191a45eb4dd86440e45e58342b", "disposition": "resumable", "sourceNamespace": "omp-v1" },
+    { "path": "omp-v2-legacy.jsonl", "sha256": "3e72dc867c6145853a1f460a5cc7bd76b7518e43de0c20ac88813b91f411f359", "disposition": "resumable", "sourceNamespace": "omp-v2" },
+    { "path": "omp-v3-complete.jsonl", "sha256": "a13a0868aa5cb76f0a750bdc1450790914b4fdb7a91ca31407901f9d1facacdc", "disposition": "resumable", "sourceNamespace": "omp-v3" },
+    { "path": "reordered-tree-a.jsonl", "sha256": "833b8d2342485304f49ff87ce3c82afe06c89693a1bc013e72367ebfe4903302", "disposition": "resumable", "sourceNamespace": "omp-copy-a" },
+    { "path": "reordered-tree-b.jsonl", "sha256": "0fff41f6fb450f5d8093a130619ab3a7871fcf98c7a67dd463771e3b4e9cf2a2", "disposition": "resumable", "sourceNamespace": "omp-copy-b" }
+  ],
+  "inlinePayloads": [
+    { "id": "binary-attachment", "encoding": "base64", "data": "AAECAP8=", "sha256": "ef7e301027f931dfba06c7ded4ef305797f43cc115a664f9af9b57d08c3172c2", "length": 5 },
+    { "id": "raw-original", "encoding": "base64", "data": "AP8QQUJD", "sha256": "6d640bb027909f9a400f194f593499a2183d93549e77f2d541315d5e16ebf850", "length": 6 }
+  ]
+}

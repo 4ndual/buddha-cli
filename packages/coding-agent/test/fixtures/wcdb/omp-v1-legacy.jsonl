@@ -1,0 +1,4 @@
+{"type":"session","id":"omp-v1-legacy","timestamp":"2024-01-02T03:04:05.000Z","cwd":"/fixtures/v1"}
+{"type":"message","timestamp":"2024-01-02T03:04:06.000Z","message":{"role":"user","content":"legacy question","timestamp":1704164646000}}
+{"type":"message","timestamp":"2024-01-02T03:04:07.000Z","message":{"role":"hookMessage","content":"legacy hook payload","display":false,"timestamp":1704164647000}}
+{"type":"compaction","timestamp":"2024-01-02T03:04:08.000Z","summary":"legacy summary","firstKeptEntryIndex":1,"tokensBefore":42}

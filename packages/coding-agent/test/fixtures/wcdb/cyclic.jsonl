@@ -1,0 +1,3 @@
+{"type":"session","version":3,"id":"cyclic","timestamp":"2026-02-02T00:00:00.000Z","cwd":"/fixtures/cyclic"}
+{"type":"message","id":"cycle-a","parentId":"cycle-b","timestamp":"2026-02-02T00:00:01.000Z","message":{"role":"user","content":"a","timestamp":1769990401000}}
+{"type":"message","id":"cycle-b","parentId":"cycle-a","timestamp":"2026-02-02T00:00:02.000Z","message":{"role":"user","content":"b","timestamp":1769990402000}}
