@@ -416,6 +416,108 @@ export interface ParseSessionResult {
 	toolResults: ToolResultLink[];
 	newOffset: number;
 }
+
+export interface RepositoryStatsIdentity {
+	originId: string;
+	branchId: string;
+	versionId: string;
+	cwd?: string;
+	agentType?: AgentType;
+}
+
+export type RepositoryMessageStats = Omit<MessageStats, "sessionFile" | "folder"> & {
+	session: RepositoryStatsIdentity;
+};
+export type RepositoryUserMessageStats = Omit<UserMessageStats, "sessionFile" | "folder"> & {
+	session: RepositoryStatsIdentity;
+};
+export type RepositoryUserMessageLink = Omit<UserMessageLink, "sessionFile"> & {
+	session: RepositoryStatsIdentity;
+};
+export type RepositoryToolCallStats = Omit<ToolCallStats, "sessionFile" | "folder"> & {
+	session: RepositoryStatsIdentity;
+};
+export type RepositoryToolResultLink = Omit<ToolResultLink, "sessionFile"> & {
+	session: RepositoryStatsIdentity;
+};
+
+export interface RepositoryStatsBatch {
+	stats: RepositoryMessageStats[];
+	userStats: RepositoryUserMessageStats[];
+	userLinks: RepositoryUserMessageLink[];
+	toolCalls: RepositoryToolCallStats[];
+	toolResults: RepositoryToolResultLink[];
+	currentServiceTier?: ServiceTierByFamily;
+}
+
+/**
+ * Parse one already-bounded repository event page. State needed across pages is
+ * returned explicitly; this function neither opens JSONL nor retains a full
+ * session transcript.
+ */
+export function parseRepositoryEventPage(
+	entries: readonly SessionEntry[],
+	identity: RepositoryStatsIdentity,
+	currentServiceTier?: ServiceTierByFamily,
+): RepositoryStatsBatch {
+	const sourceKey = identity.branchId;
+	const folder = identity.cwd ?? "";
+	const agentType = identity.agentType ?? "main";
+	const stats: MessageStats[] = [];
+	const userStats: UserMessageStats[] = [];
+	const userLinks: UserMessageLink[] = [];
+	const toolCalls: ToolCallStats[] = [];
+	const toolResults: ToolResultLink[] = [];
+	for (const entry of entries) {
+		if (isServiceTierChange(entry)) {
+			currentServiceTier = coerceServiceTierByFamily(entry.serviceTier);
+			continue;
+		}
+		if (isUserMessage(entry)) {
+			const user = extractUserStats(sourceKey, folder, entry);
+			if (user) userStats.push(user);
+			continue;
+		}
+		if (isToolResultMessage(entry)) {
+			const result = extractToolResultLink(sourceKey, entry);
+			if (result) toolResults.push(result);
+			continue;
+		}
+		if (isModelUsage(entry)) {
+			const usage = extractModelUsageStats(sourceKey, folder, entry, agentType);
+			if (usage) stats.push(usage);
+			continue;
+		}
+		if (!isAssistantMessage(entry)) continue;
+		const assistant = extractStats(sourceKey, folder, entry, currentServiceTier, agentType);
+		if (assistant) stats.push(assistant);
+		toolCalls.push(...extractToolCalls(sourceKey, folder, entry, agentType));
+		const parentId = entry.parentId;
+		const message = entry.message as AssistantMessage;
+		if (parentId && message.model && message.provider) {
+			userLinks.push({
+				sessionFile: sourceKey,
+				entryId: parentId,
+				model: message.model,
+				provider: message.provider,
+			});
+		}
+	}
+	return {
+		stats: stats.map(({ sessionFile: _sessionFile, folder: _folder, ...value }) => ({ ...value, session: identity })),
+		userStats: userStats.map(({ sessionFile: _sessionFile, folder: _folder, ...value }) => ({
+			...value,
+			session: identity,
+		})),
+		userLinks: userLinks.map(({ sessionFile: _sessionFile, ...value }) => ({ ...value, session: identity })),
+		toolCalls: toolCalls.map(({ sessionFile: _sessionFile, folder: _folder, ...value }) => ({
+			...value,
+			session: identity,
+		})),
+		toolResults: toolResults.map(({ sessionFile: _sessionFile, ...value }) => ({ ...value, session: identity })),
+		currentServiceTier,
+	};
+}
 export async function parseSessionFile(sessionPath: string, fromOffset = 0): Promise<ParseSessionResult> {
 	let bytes: Uint8Array;
 	try {

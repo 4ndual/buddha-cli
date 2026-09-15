@@ -62,8 +62,13 @@ CREATE INDEX IF NOT EXISTS idx_history_created_at ON history(created_at DESC);
 
 let cancelExitCleanup: (() => void) | undefined;
 
-/** Stores searchable prompts with only their latest project and session metadata. */
+/**
+ * JSONL-mode prompt index. Database-mode consumers must inject a
+ * SessionRepository into RepositoryHistoryProjection instead of opening this
+ * sidecar database.
+ */
 export class HistoryStorage {
+	readonly mode = "jsonl" as const;
 	#db: Database;
 	static #instance?: HistoryStorage;
 	#sessionResolver?: () => string | undefined;

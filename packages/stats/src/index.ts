@@ -18,6 +18,21 @@ export {
 export { closeDb } from "./db";
 export { getGainDashboardStats } from "./gain-aggregator";
 export { formatStatsDashboardUrl, startServer } from "./server";
+export {
+	streamRepositoryStats,
+	type RepositoryStatsPage,
+	type RepositoryStatsSource,
+	type StreamRepositoryStatsOptions,
+} from "./repository";
+export type {
+	RepositoryMessageStats,
+	RepositoryStatsBatch,
+	RepositoryStatsIdentity,
+	RepositoryToolCallStats,
+	RepositoryToolResultLink,
+	RepositoryUserMessageLink,
+	RepositoryUserMessageStats,
+} from "./parser";
 export type { GainDashboardStats, GainSource, GainSourceTotals, GainTimeSeriesPoint } from "./shared-types";
 export type {
 	AggregatedStats,
