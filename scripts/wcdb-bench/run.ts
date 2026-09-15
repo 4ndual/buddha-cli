@@ -55,10 +55,12 @@ function parseOptions(): Options {
 		artifactRoot,
 		databaseRoot: optionValue("databases") ?? path.join(DEFAULT_TEAM_ROOT, "databases/perf"),
 		inventoryLedgerPath: optionValue("inventory-ledger"),
-		normalizationLedgerPath: optionValue("normalization-ledger"),
+		normalizationLedgerPath:
+			optionValue("normalization-ledger") ??
+			path.join(DEFAULT_TEAM_ROOT, "staging/normalize/normalization-ledger.7992c8d815d2e597aa2759f7b36f83d28f5f19b4e5dcd765d406225dc7ae6986.json"),
 		nativeGatePath: optionValue("native-gate") ?? path.join(DEFAULT_TEAM_ROOT, "artifacts/native/capability-gate.json"),
 		iterations: numericOption("iterations", full ? 50 : 3),
-		maxInputBytes: numericOption("max-input-bytes", full ? 32 * 1024 ** 3 : 8 * 1024 ** 2),
+		maxInputBytes: numericOption("max-input-bytes", full ? 64 * 1024 ** 3 : 8 * 1024 ** 2),
 		maxRecordBytes: numericOption("max-record-bytes", full ? 64 * 1024 ** 2 : 256 * 1024),
 		scale: numericOption("scale", full ? 10 : 1),
 		longestEntries: numericOption("longest-entries", full ? 5_000 : 32),
