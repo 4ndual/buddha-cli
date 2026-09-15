@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-09-15T22:20:13.227Z",
+  "adapterLabel": "in-memory-test-adapter (harness proof; not Turso engine data)",
+  "corpus": {
+    "root": "/home/andual/Projects/.turso-migration-owned/perf-corpus/staging/complete-corpus-MEf378",
+    "kind": "synthetic",
+    "claimScope": "synthetic-generated",
+    "recordsPath": "/home/andual/Projects/.turso-migration-owned/perf-corpus/staging/complete-corpus-MEf378/synthetic-10x.jsonl",
+    "records": 10000,
+    "bytes": 21881557,
+    "actualEightMonthCorpusMeasured": false
+  },
+  "bounds": {
+    "batchRecords": 7,
+    "batchBytes": 2097152,
+    "maxRecords": 10000,
+    "maxLineBytes": 33554432
+  },
+  "latencyMs": {
+    "cold": {
+      "list": {
+        "p50": 0.0018339999999170686,
+        "p95": 0.019987000000014632,
+        "p99": 0.019987000000014632,
+        "min": 0.0018339999999170686,
+        "max": 0.019987000000014632,
+        "samples": 2
+      },
+      "search": {
+        "p50": 0.4516560000000709,
+        "p95": 0.7293369999999868,
+        "p99": 0.7293369999999868,
+        "min": 0.4516560000000709,
+        "max": 0.7293369999999868,
+        "samples": 2
+      },
+      "context": {
+        "p50": 0.2581240000000662,
+        "p95": 0.5132519999999658,
+        "p99": 0.5132519999999658,
+        "min": 0.2581240000000662,
+        "max": 0.5132519999999658,
+        "samples": 2
+      },
+      "method": "adapter-reset"
+    },
+    "warm": {
+      "list": {
+        "p50": 0.0009820000000217988,
+        "p95": 0.017021999999997206,
+        "p99": 0.017021999999997206,
+        "min": 0.0006020000000717118,
+        "max": 0.017021999999997206,
+        "samples": 3
+      },
+      "search": {
+        "p50": 0.3469800000000305,
+        "p95": 0.37841900000000805,
+        "p99": 0.37841900000000805,
+        "min": 0.2783309999999801,
+        "max": 0.37841900000000805,
+        "samples": 3
+      },
+      "context": {
+        "p50": 0.12902199999996355,
+        "p95": 0.14547299999992447,
+        "p99": 0.14547299999992447,
+        "min": 0.12495400000000245,
+        "max": 0.14547299999992447,
+        "samples": 3
+      }
+    },
+    "fsync": {
+      "p50": 67.68084099999999,
+      "p95": 202.99258099999997,
+      "p99": 202.99258099999997,
+      "min": 24.88175799999999,
+      "max": 202.99258099999997,
+      "samples": 3
+    },
+    "concurrentSearch": {
+      "p50": 0.4520880000000034,
+      "p95": 0.930313999999953,
+      "p99": 0.930313999999953,
+      "min": 0.2327060000000074,
+      "max": 0.930313999999953,
+      "samples": 4
+    }
+  },
+  "import": {
+    "seconds": 0.14494121900000004,
+    "recordsPerSecond": 68993.48624907037,
+    "mebibytesPerSecond": 143.97477168920037,
+    "batches": 1429,
+    "largestBatchRecords": 7,
+    "largestBatchBytes": 1050027
+  },
+  "concurrency": {
+    "writes": 4,
+    "searches": 4,
+    "seconds": 0.056027097000000026,
+    "errors": 0
+  },
+  "cpu": {
+    "userMs": 58.487,
+    "systemMs": 144.111
+  },
+  "memory": {
+    "baselineRssBytes": 64978944,
+    "peakRssBytes": 121606144,
+    "baselinePssBytes": 29922304,
+    "peakPssBytes": 86023168
+  },
+  "disk": {
+    "beforeBytes": 0,
+    "afterBytes": 6,
+    "growthBytes": 6,
+    "categories": {
+      "other": {
+        "beforeBytes": 0,
+        "afterBytes": 6,
+        "growthBytes": 6
+      }
+    }
+  }
+}
