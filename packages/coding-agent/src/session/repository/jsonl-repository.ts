@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { SessionEntry, SessionHeader } from "../session-entries";
+import { TITLE_CHANGE_ENTRY_TYPE, type SessionEntry, type SessionHeader, type TitleChangeEntry } from "../session-entries";
 import { parseSessionContent } from "../session-loader";
 import {
 	assertIdentityClaim,
@@ -14,6 +14,7 @@ import {
 import type {
 	AppendWithExpectedHeadRequest,
 	AppendWithExpectedHeadResult,
+	ArchiveStreamLimits,
 	BranchId,
 	ConsumeDraftRequest,
 	CreateSessionRequest,
@@ -50,6 +51,8 @@ import type {
 	SaveDraftRequest,
 	SearchSessionsQuery,
 	SessionArchiveItem,
+	SessionArchiveEntryPage,
+	SessionArchivePayloadPage,
 	SessionDraft,
 	SessionExportItem,
 	SessionImportItem,
@@ -74,7 +77,11 @@ import type {
 const MANIFEST_NAME = ".omp-session-repository-v1.json";
 const PAYLOAD_DIRECTORY = ".omp-session-payloads-v1";
 const DEFAULT_PAGE_SIZE = 100;
+export const JSONL_REPOSITORY_PUBLICATION_LOCK = ".omp-session-repository-v1.lock";
+
 const MAX_PAGE_SIZE = 1_000;
+const utf8Encoder = new TextEncoder();
+
 const DEFAULT_PAYLOAD_CHUNK_BYTES = 64 * 1024;
 
 export interface JsonlSessionRepositoryOptions {
@@ -94,7 +101,21 @@ interface BranchState {
 	entries: readonly SessionEntry[];
 	events: readonly RepositoryEvent[];
 	eventsByHash: Map<EventHash, RepositoryEvent>;
+	fileIdentity: { dev: bigint; ino: bigint } | undefined;
 }
+interface MaterializedArchiveItem {
+	source: SourceIdentity;
+	sourceAlias: SourceAlias;
+	originId: OriginId;
+	branchId: BranchId;
+	versionId: VersionId;
+	parentVersionId: VersionId | null;
+	forkPointHash: EventHash | null;
+	header: SessionHeader;
+	entries: readonly SessionEntry[];
+	metadata: SessionSemanticMetadata;
+}
+
 
 interface ManifestBranch {
 	fileName: string;
@@ -156,6 +177,23 @@ export class RepositoryIntegrityError extends Error {
 		this.name = "RepositoryIntegrityError";
 	}
 }
+function validateArchiveLimits(limits: ArchiveStreamLimits): void {
+	const values = {
+		maxEntryBytes: limits.maxEntryBytes,
+		maxEntriesPerPage: limits.maxEntriesPerPage,
+		maxTotalEntries: limits.maxTotalEntries,
+		maxTotalEntryBytes: limits.maxTotalEntryBytes,
+		maxPayloadRefsPerPage: limits.maxPayloadRefsPerPage,
+		maxTotalPayloadRefs: limits.maxTotalPayloadRefs,
+	};
+	for (const [name, value] of Object.entries(values)) {
+		if (!Number.isSafeInteger(value) || value < 0) throw new RangeError(`${name} must be a non-negative safe integer`);
+	}
+	if (limits.maxEntryBytes < 1 || limits.maxEntriesPerPage < 1 || limits.maxPayloadRefsPerPage < 1) {
+		throw new RangeError("Per-entry and per-page archive limits must be positive");
+	}
+}
+
 
 function boundedLimit(limit: number | undefined): number {
 	if (limit === undefined) return DEFAULT_PAGE_SIZE;
@@ -179,6 +217,21 @@ function semanticMetadataFromHeader(header: SessionHeader): SessionSemanticMetad
 	}
 	if (header.providerPromptCacheKey !== undefined) metadata.providerPromptCacheKey = header.providerPromptCacheKey;
 	return metadata;
+}
+
+function validateRepositoryFileName(fileName: string, suffix?: string): void {
+	if (
+		fileName.length === 0 ||
+		fileName.includes("\0") ||
+		fileName.includes("/") ||
+		fileName.includes("\\") ||
+		fileName === "." ||
+		fileName === ".." ||
+		path.basename(fileName) !== fileName ||
+		(suffix !== undefined && !fileName.endsWith(suffix))
+	) {
+		throw new RepositoryIntegrityError(`Unsafe repository file name: ${JSON.stringify(fileName)}`);
+	}
 }
 
 function eventSemanticPayload(entry: SessionEntry): Record<string, unknown> {
@@ -323,6 +376,8 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 	#orphanManifestBranches: ManifestBranch[] = [];
 	#tombstones: ManifestTombstone[] = [];
 	#loadPromise: Promise<void> | undefined;
+	#rootFd: number | undefined;
+	#payloadDirectoryFd: number | undefined;
 	#closed = false;
 
 	constructor(options: JsonlSessionRepositoryOptions) {
@@ -348,9 +403,199 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 		if (!this.#loadPromise) this.#loadPromise = this.#load();
 		await this.#loadPromise;
 	}
+	#ensureRootFdSync(): number {
+		if (this.#rootFd !== undefined) return this.#rootFd;
+		const existed = fs.existsSync(this.#rootDir);
+		fs.mkdirSync(this.#rootDir, { recursive: true });
+		const before = fs.lstatSync(this.#rootDir, { bigint: true });
+		if (before.isSymbolicLink() || !before.isDirectory()) {
+			throw new RepositoryIntegrityError("JSONL repository root must be a real directory");
+		}
+		const fd = fs.openSync(
+			this.#rootDir,
+			fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW,
+		);
+		const opened = fs.fstatSync(fd, { bigint: true });
+		if (opened.dev !== before.dev || opened.ino !== before.ino) {
+			fs.closeSync(fd);
+			throw new RepositoryIntegrityError("JSONL repository root changed while opening");
+		}
+		this.#rootFd = fd;
+		if (!existed) {
+			const parentFd = fs.openSync(path.dirname(this.#rootDir), fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
+			try {
+				fs.fsyncSync(parentFd);
+			} finally {
+				fs.closeSync(parentFd);
+			}
+		}
+		return fd;
+	}
+
+	#rootMemberPath(fileName: string): string {
+		validateRepositoryFileName(fileName);
+		return `/proc/self/fd/${this.#ensureRootFdSync()}/${fileName}`;
+	}
+
+	#readUtf8MemberSync(fileName: string): { content: string; identity: { dev: bigint; ino: bigint } } {
+		const fd = fs.openSync(this.#rootMemberPath(fileName), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+		try {
+			const stat = fs.fstatSync(fd, { bigint: true });
+			if (!stat.isFile() || stat.nlink !== 1n) {
+				throw new RepositoryIntegrityError(`Repository member is not an owned regular file: ${fileName}`);
+			}
+			return { content: fs.readFileSync(fd, "utf8"), identity: { dev: stat.dev, ino: stat.ino } };
+		} finally {
+			fs.closeSync(fd);
+		}
+	}
+
+	#writeDurableMemberSync(fileName: string, content: string | Uint8Array): { dev: bigint; ino: bigint } {
+		validateRepositoryFileName(fileName);
+		const temporaryName = `.${fileName}.${Bun.randomUUIDv7()}.tmp`;
+		const temporaryPath = this.#rootMemberPath(temporaryName);
+		const fd = fs.openSync(
+			temporaryPath,
+			fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+			0o600,
+		);
+		let published = false;
+		try {
+			fs.writeFileSync(fd, content);
+			fs.fsyncSync(fd);
+			fs.closeSync(fd);
+			fs.renameSync(temporaryPath, this.#rootMemberPath(fileName));
+			published = true;
+			fs.fsyncSync(this.#ensureRootFdSync());
+			const publishedFd = fs.openSync(this.#rootMemberPath(fileName), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+			try {
+				const stat = fs.fstatSync(publishedFd, { bigint: true });
+				if (!stat.isFile() || stat.nlink !== 1n) {
+					throw new RepositoryIntegrityError(`Published repository member is unsafe: ${fileName}`);
+				}
+				return { dev: stat.dev, ino: stat.ino };
+			} finally {
+				fs.closeSync(publishedFd);
+			}
+		} catch (error) {
+			try {
+				fs.closeSync(fd);
+			} catch {}
+			if (!published && fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+			throw error;
+		}
+	}
+	#ensurePayloadDirectoryFdSync(): number {
+		if (this.#payloadDirectoryFd !== undefined) return this.#payloadDirectoryFd;
+		const directoryPath = this.#rootMemberPath(PAYLOAD_DIRECTORY);
+		if (!fs.existsSync(directoryPath)) {
+			fs.mkdirSync(directoryPath, { mode: 0o700 });
+			fs.fsyncSync(this.#ensureRootFdSync());
+		}
+		const before = fs.lstatSync(directoryPath, { bigint: true });
+		if (before.isSymbolicLink() || !before.isDirectory()) {
+			throw new RepositoryIntegrityError("Payload storage must be a real directory");
+		}
+		const fd = fs.openSync(
+			directoryPath,
+			fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW,
+		);
+		const opened = fs.fstatSync(fd, { bigint: true });
+		if (opened.dev !== before.dev || opened.ino !== before.ino) {
+			fs.closeSync(fd);
+			throw new RepositoryIntegrityError("Payload directory changed while opening");
+		}
+		this.#payloadDirectoryFd = fd;
+		return fd;
+	}
+
+	#payloadMemberPath(fileName: string): string {
+		if (!/^payload_v1_[a-f0-9]{64}$/.test(fileName) && !/^\.[a-zA-Z0-9-]+\.tmp$/.test(fileName)) {
+			throw new RepositoryIntegrityError(`Unsafe payload file name: ${JSON.stringify(fileName)}`);
+		}
+		return `/proc/self/fd/${this.#ensurePayloadDirectoryFdSync()}/${fileName}`;
+	}
+
+	#deleteOwnedMemberSync(fileName: string, expected: { dev: bigint; ino: bigint } | undefined): void {
+		validateRepositoryFileName(fileName);
+		const sourcePath = this.#rootMemberPath(fileName);
+		if (!fs.existsSync(sourcePath)) return;
+		const fd = fs.openSync(sourcePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+		let opened: fs.BigIntStats;
+		try {
+			opened = fs.fstatSync(fd, { bigint: true });
+			if (
+				!opened.isFile() ||
+				opened.nlink !== 1n ||
+				(expected !== undefined && (opened.dev !== expected.dev || opened.ino !== expected.ino))
+			) {
+				throw new RepositoryIntegrityError(`Refusing to delete replaced repository member: ${fileName}`);
+			}
+			const deletionName = `.${fileName}.${Bun.randomUUIDv7()}.delete`;
+			const deletionPath = this.#rootMemberPath(deletionName);
+			fs.renameSync(sourcePath, deletionPath);
+			const moved = fs.lstatSync(deletionPath, { bigint: true });
+			if (moved.dev !== opened.dev || moved.ino !== opened.ino || !moved.isFile() || moved.nlink !== 1n) {
+				fs.renameSync(deletionPath, sourcePath);
+				throw new RepositoryIntegrityError(`Repository member changed during deletion: ${fileName}`);
+			}
+			fs.unlinkSync(deletionPath);
+			fs.fsyncSync(this.#ensureRootFdSync());
+		} finally {
+			fs.closeSync(fd);
+		}
+	}
+
+
+	#withPublicationFenceSync<T>(expected: ModeGeneration, operation: () => T): T {
+		const lockPath = this.#rootMemberPath(JSONL_REPOSITORY_PUBLICATION_LOCK);
+		let lockFd: number | undefined;
+		for (let attempt = 0; attempt < 500; attempt++) {
+			try {
+				lockFd = fs.openSync(
+					lockPath,
+					fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+					0o600,
+				);
+				break;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+				Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+			}
+		}
+		if (lockFd === undefined) throw new RepositoryIntegrityError("Timed out acquiring JSONL publication lock");
+		const lockIdentity = fs.fstatSync(lockFd, { bigint: true });
+		try {
+			fs.writeFileSync(lockFd, `${process.pid}\n`);
+			fs.fsyncSync(lockFd);
+			fs.fsyncSync(this.#ensureRootFdSync());
+			const persisted = this.#readManifestSync()?.modeGeneration ?? this.#modeGeneration;
+			if (expected !== persisted) throw new StaleModeGenerationError(expected, persisted);
+			this.#modeGeneration = persisted;
+			return operation();
+		} finally {
+			try {
+				const current = fs.lstatSync(lockPath, { bigint: true });
+				if (
+					!current.isFile() ||
+					current.nlink !== 1n ||
+					current.dev !== lockIdentity.dev ||
+					current.ino !== lockIdentity.ino
+				) {
+					throw new RepositoryIntegrityError("Publication lock was replaced while held");
+				}
+				fs.unlinkSync(lockPath);
+				fs.fsyncSync(this.#ensureRootFdSync());
+			} finally {
+				fs.closeSync(lockFd);
+			}
+		}
+	}
+
 
 	async #load(): Promise<void> {
 		if (!fs.existsSync(this.#rootDir)) return;
+		this.#ensureRootFdSync();
 		const manifest = this.#readManifestSync();
 		const claimedFiles = new Set<string>();
 		if (manifest) {
@@ -363,17 +608,22 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 			for (const pointer of manifest.terminalPointers) this.#terminalPointers.set(pointer.terminalId, pointer);
 			for (const branchId of manifest.pinnedBranchIds) this.#pinnedBranchIds.add(branchId);
 			this.#tombstones = manifest.tombstones;
-			for (const tombstone of manifest.tombstones) claimedFiles.add(tombstone.fileName);
+			for (const tombstone of manifest.tombstones) {
+				validateRepositoryFileName(tombstone.fileName, ".jsonl");
+				claimedFiles.add(tombstone.fileName);
+			}
 			for (const branch of manifest.branches) {
+				validateRepositoryFileName(branch.fileName, ".jsonl");
 				claimedFiles.add(branch.fileName);
-				const filePath = path.join(this.#rootDir, branch.fileName);
+				const filePath = this.#rootMemberPath(branch.fileName);
 				if (!fs.existsSync(filePath)) {
 					this.#orphanManifestBranches.push(branch);
 					this.#healthDetails.push(`Manifest branch file is missing: ${branch.fileName}`);
 					continue;
 				}
 				try {
-					const parsed = parseSessionContent(await Bun.file(filePath).text());
+					const member = this.#readUtf8MemberSync(branch.fileName);
+					const parsed = parseSessionContent(member.content);
 					const physicalHeader = parsed.entries[0];
 					if (physicalHeader?.type !== "session") throw new RepositoryIntegrityError("Missing session header");
 					const entries = parsed.entries.slice(1) as SessionEntry[];
@@ -389,6 +639,7 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 						entries,
 						metadata: branch.metadata,
 					}, branch.fileName);
+					state.fileIdentity = member.identity;
 					this.#branches.set(state.header.branchId, state);
 				} catch (error) {
 					this.#orphanManifestBranches.push(branch);
@@ -397,11 +648,12 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 			}
 		}
 
-		for (const dirent of fs.readdirSync(this.#rootDir, { withFileTypes: true })) {
+		for (const dirent of fs.readdirSync(`/proc/self/fd/${this.#ensureRootFdSync()}`, { withFileTypes: true })) {
 			if (!dirent.isFile() || !dirent.name.endsWith(".jsonl") || claimedFiles.has(dirent.name)) continue;
 			try {
-				const filePath = path.join(this.#rootDir, dirent.name);
-				const parsed = parseSessionContent(await Bun.file(filePath).text());
+				validateRepositoryFileName(dirent.name, ".jsonl");
+				const member = this.#readUtf8MemberSync(dirent.name);
+				const parsed = parseSessionContent(member.content);
 				const physicalHeader = parsed.entries[0];
 				if (physicalHeader?.type !== "session") throw new RepositoryIntegrityError("Missing session header");
 				const source: SourceIdentity = {
@@ -432,6 +684,7 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 					dirent.name,
 					false,
 				);
+				state.fileIdentity = member.identity;
 				if (!this.#branches.has(state.header.branchId)) this.#branches.set(state.header.branchId, state);
 			} catch (error) {
 				this.#healthDetails.push(`Failed to discover ${dirent.name}: ${String(error)}`);
@@ -439,7 +692,7 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 		}
 	}
 
-	#buildState(item: SessionArchiveItem, fileName: string, verifyVersion = true): BranchState {
+	#buildState(item: MaterializedArchiveItem, fileName: string, verifyVersion = true): BranchState {
 		const origin = computeOriginIdentity(item.source);
 		const alias = computeSourceAlias(item.source);
 		this.#collisions.remember(origin);
@@ -529,13 +782,15 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 			entries: item.entries,
 			events,
 			eventsByHash,
+			fileIdentity: undefined,
 		};
 	}
 
 	#readManifestSync(): RepositoryManifest | undefined {
-		const manifestPath = path.join(this.#rootDir, MANIFEST_NAME);
+		if (!fs.existsSync(this.#rootDir)) return undefined;
+		const manifestPath = this.#rootMemberPath(MANIFEST_NAME);
 		if (!fs.existsSync(manifestPath)) return undefined;
-		const parsed = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as RepositoryManifest;
+		const parsed = JSON.parse(this.#readUtf8MemberSync(MANIFEST_NAME).content) as RepositoryManifest;
 		if (parsed.version !== 1 || typeof parsed.modeGeneration !== "string") {
 			throw new RepositoryIntegrityError("Unsupported JSONL repository manifest");
 		}
@@ -554,11 +809,6 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 		};
 	}
 
-	#assertFenceSync(expected: ModeGeneration): void {
-		const persisted = this.#readManifestSync()?.modeGeneration ?? this.#modeGeneration;
-		if (expected !== persisted) throw new StaleModeGenerationError(expected, persisted);
-		this.#modeGeneration = persisted;
-	}
 
 	#manifest(): RepositoryManifest {
 		const branches: ManifestBranch[] = [...this.#branches.values()].map(state => ({
@@ -589,32 +839,30 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 	}
 
 	#writeManifestSync(): void {
-		fs.mkdirSync(this.#rootDir, { recursive: true });
-		const destination = path.join(this.#rootDir, MANIFEST_NAME);
-		const temporary = `${destination}.${Bun.randomUUIDv7()}.tmp`;
-		fs.writeFileSync(temporary, `${JSON.stringify(this.#manifest())}\n`);
-		fs.renameSync(temporary, destination);
+		this.#writeDurableMemberSync(MANIFEST_NAME, `${JSON.stringify(this.#manifest())}\n`);
 	}
 
 	#publishStateSync(state: BranchState, expectedModeGeneration: ModeGeneration): void {
-		this.#assertFenceSync(expectedModeGeneration);
-		fs.mkdirSync(this.#rootDir, { recursive: true });
-		const destination = path.join(this.#rootDir, state.fileName);
-		const temporary = `${destination}.${Bun.randomUUIDv7()}.tmp`;
-		fs.writeFileSync(temporary, serializeJsonl(state.physicalHeader, state.entries));
-		fs.renameSync(temporary, destination);
-		const prior = this.#branches.get(state.header.branchId);
-		this.#branches.set(state.header.branchId, state);
-		try {
-			this.#writeManifestSync();
-		} catch (error) {
-			if (prior) this.#branches.set(prior.header.branchId, prior);
-			else this.#branches.delete(state.header.branchId);
-			throw error;
-		}
+		this.#withPublicationFenceSync(expectedModeGeneration, () => {
+			validateRepositoryFileName(state.fileName, ".jsonl");
+			const identity = this.#writeDurableMemberSync(
+				state.fileName,
+				serializeJsonl(state.physicalHeader, state.entries),
+			);
+			const publishedState: BranchState = { ...state, fileIdentity: identity };
+			const prior = this.#branches.get(state.header.branchId);
+			this.#branches.set(state.header.branchId, publishedState);
+			try {
+				this.#writeManifestSync();
+			} catch (error) {
+				if (prior) this.#branches.set(prior.header.branchId, prior);
+				else this.#branches.delete(state.header.branchId);
+				throw error;
+			}
+		});
 	}
 
-	#archiveItem(state: BranchState): SessionExportItem {
+	#materializedItem(state: BranchState): MaterializedArchiveItem {
 		return {
 			source: state.source,
 			sourceAlias: state.sourceAlias,
@@ -626,6 +874,135 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 			header: state.physicalHeader,
 			entries: state.entries,
 			metadata: state.header.metadata,
+		};
+	}
+
+	#archiveItem(state: BranchState, limits: ArchiveStreamLimits): SessionExportItem {
+		validateArchiveLimits(limits);
+		if (state.entries.length > limits.maxTotalEntries) {
+			throw new RangeError(`Session has more than ${limits.maxTotalEntries} entries`);
+		}
+		let entryBytes = 0;
+		for (const entry of state.entries) {
+			const encodedByteLength = utf8Encoder.encode(JSON.stringify(entry)).byteLength;
+			if (encodedByteLength > limits.maxEntryBytes) {
+				throw new RangeError(`Session entry ${entry.id} exceeds ${limits.maxEntryBytes} bytes`);
+			}
+			entryBytes += encodedByteLength;
+			if (entryBytes > limits.maxTotalEntryBytes) {
+				throw new RangeError(`Session entries exceed ${limits.maxTotalEntryBytes} bytes`);
+			}
+		}
+		const entries = state.entries;
+		return {
+			source: state.source,
+			sourceAlias: state.sourceAlias,
+			originId: state.header.originId,
+			branchId: state.header.branchId,
+			versionId: state.header.versionId,
+			parentVersionId: state.header.parentVersionId,
+			forkPointHash: state.header.forkPointHash,
+			header: state.physicalHeader,
+			metadata: state.header.metadata,
+			entryCount: entries.length,
+			entryBytes,
+			payloadRefCount: 0,
+			async *openEntryPages(): AsyncIterable<SessionArchiveEntryPage> {
+				let pageItems: SessionArchiveEntryPage["items"][number][] = [];
+				let pageBytes = 0;
+				for (const entry of entries) {
+					const encodedByteLength = utf8Encoder.encode(JSON.stringify(entry)).byteLength;
+					if (
+						pageItems.length >= limits.maxEntriesPerPage ||
+						(pageItems.length > 0 && pageBytes + encodedByteLength > limits.maxTotalEntryBytes)
+					) {
+						yield { items: pageItems, byteLength: pageBytes };
+						pageItems = [];
+						pageBytes = 0;
+					}
+					pageItems.push({ entry, encodedByteLength });
+					pageBytes += encodedByteLength;
+				}
+				if (pageItems.length > 0) yield { items: pageItems, byteLength: pageBytes };
+			},
+			async *openPayloadPages(): AsyncIterable<SessionArchivePayloadPage> {},
+		};
+	}
+
+	async #materializeArchiveItem(
+		item: SessionArchiveItem,
+		limits: ArchiveStreamLimits,
+	): Promise<MaterializedArchiveItem> {
+		validateArchiveLimits(limits);
+		for (const [name, value] of [
+			["entryCount", item.entryCount],
+			["entryBytes", item.entryBytes],
+			["payloadRefCount", item.payloadRefCount],
+		] as const) {
+			if (!Number.isSafeInteger(value) || value < 0) {
+				throw new RangeError(`Archive ${name} must be a non-negative safe integer`);
+			}
+		}
+		if (item.entryCount > limits.maxTotalEntries || item.entryBytes > limits.maxTotalEntryBytes) {
+			throw new RangeError("Archive item exceeds declared entry limits");
+		}
+		if (item.payloadRefCount > limits.maxTotalPayloadRefs) {
+			throw new RangeError("Archive item exceeds declared payload-reference limits");
+		}
+		const entries: SessionEntry[] = [];
+		let entryBytes = 0;
+		let entryPages = 0;
+		for await (const page of item.openEntryPages()) {
+			entryPages++;
+			if (entryPages > Math.max(1, Math.ceil(limits.maxTotalEntries / limits.maxEntriesPerPage))) {
+				throw new RangeError("Archive entry stream emitted too many pages");
+			}
+			if (page.items.length < 1 || page.items.length > limits.maxEntriesPerPage) {
+				throw new RangeError("Archive entry page has an invalid item count");
+			}
+			let pageBytes = 0;
+			for (const record of page.items) {
+				const actualBytes = utf8Encoder.encode(JSON.stringify(record.entry)).byteLength;
+				if (record.encodedByteLength !== actualBytes || actualBytes > limits.maxEntryBytes) {
+					throw new RangeError(`Archive entry ${record.entry.id} has invalid byte accounting`);
+				}
+				pageBytes += actualBytes;
+				entryBytes += actualBytes;
+				entries.push(record.entry);
+				if (entries.length > limits.maxTotalEntries || entryBytes > limits.maxTotalEntryBytes) {
+					throw new RangeError("Archive entry stream exceeded total limits");
+				}
+			}
+			if (page.byteLength !== pageBytes) throw new RangeError("Archive entry page byte accounting mismatch");
+		}
+		let payloadRefCount = 0;
+		for await (const page of item.openPayloadPages()) {
+			if (page.items.length < 1 || page.items.length > limits.maxPayloadRefsPerPage) {
+				throw new RangeError("Archive payload page has an invalid item count");
+			}
+			payloadRefCount += page.items.length;
+			if (payloadRefCount > limits.maxTotalPayloadRefs) {
+				throw new RangeError("Archive payload stream exceeded total limits");
+			}
+		}
+		if (
+			entries.length !== item.entryCount ||
+			entryBytes !== item.entryBytes ||
+			payloadRefCount !== item.payloadRefCount
+		) {
+			throw new RangeError("Archive stream does not match its declared counts");
+		}
+		return {
+			source: item.source,
+			sourceAlias: item.sourceAlias,
+			originId: item.originId,
+			branchId: item.branchId,
+			versionId: item.versionId,
+			parentVersionId: item.parentVersionId,
+			forkPointHash: item.forkPointHash,
+			header: item.header,
+			entries,
+			metadata: item.metadata,
 		};
 	}
 
@@ -813,7 +1190,7 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 			if (existing.header.originId !== origin.id || existing.header.sourceAlias !== alias.id) {
 				throw new RepositoryIntegrityError("Stable session caller key resolved to conflicting identity");
 			}
-			this.#assertFenceSync(request.expectedModeGeneration);
+			this.#withPublicationFenceSync(request.expectedModeGeneration, () => this.#writeManifestSync());
 			return existing.header;
 		}
 		const metadata = request.metadata ?? semanticMetadataFromHeader(request.header);
@@ -842,7 +1219,7 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 		const current = this.#branches.get(request.branchId);
 		if (!current) throw new RepositoryIntegrityError(`Unknown branch ${request.branchId}`);
 		if (request.entries.length === 0 && !request.metadata) {
-			this.#assertFenceSync(request.expectedModeGeneration);
+			this.#withPublicationFenceSync(request.expectedModeGeneration, () => this.#writeManifestSync());
 			return { status: "idempotent", header: current.header };
 		}
 		if (request.expectedHeadHash !== null && !current.eventsByHash.has(request.expectedHeadHash)) {
@@ -858,7 +1235,7 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 		const provisionalBranchId = current.header.branchId;
 		const provisional = this.#buildState(
 			{
-				...this.#archiveItem(current),
+				...this.#materializedItem(current),
 				branchId: provisionalBranchId,
 				versionId: "" as VersionId,
 				parentVersionId: current.header.versionId,
@@ -873,7 +1250,7 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 
 		if (!lostCas) {
 			if (provisional.header.versionId === current.header.versionId) {
-				this.#assertFenceSync(request.expectedModeGeneration);
+				this.#withPublicationFenceSync(request.expectedModeGeneration, () => this.#writeManifestSync());
 				return { status: "idempotent", header: current.header };
 			}
 			this.#publishStateSync(provisional, request.expectedModeGeneration);
@@ -888,7 +1265,7 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 		this.#collisions.remember(sibling);
 		const existingSibling = this.#branches.get(sibling.id);
 		if (existingSibling) {
-			this.#assertFenceSync(request.expectedModeGeneration);
+			this.#withPublicationFenceSync(request.expectedModeGeneration, () => this.#writeManifestSync());
 			return {
 				status: "forked",
 				header: existingSibling.header,
@@ -897,7 +1274,7 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 		}
 		const siblingState = this.#buildState(
 			{
-				...this.#archiveItem(provisional),
+				...this.#materializedItem(provisional),
 				branchId: sibling.id,
 				header: physicalHeaderForBranch(provisional.physicalHeader, sibling.id),
 			},
@@ -922,13 +1299,13 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 		this.#collisions.remember(branch);
 		const existing = this.#branches.get(branch.id);
 		if (existing) {
-			this.#assertFenceSync(request.expectedModeGeneration);
+			this.#withPublicationFenceSync(request.expectedModeGeneration, () => this.#writeManifestSync());
 			return existing.header;
 		}
 		const entries = this.#ancestryEntries(current, request.atEventHash);
 		const state = this.#buildState(
 			{
-				...this.#archiveItem(current),
+				...this.#materializedItem(current),
 				branchId: branch.id,
 				versionId: "" as VersionId,
 				parentVersionId: current.header.parentVersionId,
@@ -958,11 +1335,38 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 		else metadata.title = request.title;
 		if (request.source === undefined) delete metadata.titleSource;
 		else metadata.titleSource = request.source;
+		const eventSource = request.source ?? current.header.metadata.titleSource ?? "user";
+		const nativeParentId =
+			request.expectedHeadHash === null
+				? null
+				: (current.eventsByHash.get(request.expectedHeadHash)?.nativeEntryId ?? null);
+		const digest = new Bun.CryptoHasher("sha256")
+			.update(
+				JSON.stringify([
+					current.header.branchId,
+					request.expectedHeadHash,
+					request.updatedAt,
+					request.title ?? null,
+					eventSource,
+				]),
+			)
+			.digest("hex");
+		const titleChange: TitleChangeEntry = {
+			type: TITLE_CHANGE_ENTRY_TYPE,
+			id: `title-change-${digest.slice(0, 32)}`,
+			parentId: nativeParentId,
+			timestamp: request.updatedAt,
+			title: request.title ?? "",
+			source: eventSource,
+			...(current.header.metadata.title === undefined
+				? {}
+				: { previousTitle: current.header.metadata.title }),
+		};
 		const result = await this.appendWithExpectedHead({
 			branchId: request.branchId,
 			expectedHeadHash: request.expectedHeadHash,
 			expectedModeGeneration: request.expectedModeGeneration,
-			entries: [],
+			entries: [titleChange],
 			metadata,
 		});
 		return result.header;
@@ -975,27 +1379,33 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 		if (request.locator.versionId && request.locator.versionId !== current.header.versionId) {
 			throw new RepositoryIntegrityError("Drop locator version is stale");
 		}
-		this.#assertFenceSync(request.expectedModeGeneration);
-		this.#branches.delete(current.header.branchId);
-		this.#drafts.delete(current.header.branchId);
-		this.#logicalLocations.delete(current.header.branchId);
-		this.#pinnedBranchIds.delete(current.header.branchId);
-		const tombstone: ManifestTombstone = {
-			branchId: current.header.branchId,
-			fileName: current.fileName,
-			deletedAt: new Date().toISOString(),
-		};
-		this.#tombstones.push(tombstone);
-		try {
-			this.#writeManifestSync();
-		} catch (error) {
-			this.#tombstones.pop();
-			this.#branches.set(current.header.branchId, current);
-			throw error;
-		}
-		const filePath = path.join(this.#rootDir, current.fileName);
-		if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-		return true;
+		return this.#withPublicationFenceSync(request.expectedModeGeneration, () => {
+			const priorDraft = this.#drafts.get(current.header.branchId);
+			const priorLocation = this.#logicalLocations.get(current.header.branchId);
+			const wasPinned = this.#pinnedBranchIds.has(current.header.branchId);
+			this.#branches.delete(current.header.branchId);
+			this.#drafts.delete(current.header.branchId);
+			this.#logicalLocations.delete(current.header.branchId);
+			this.#pinnedBranchIds.delete(current.header.branchId);
+			const tombstone: ManifestTombstone = {
+				branchId: current.header.branchId,
+				fileName: current.fileName,
+				deletedAt: new Date().toISOString(),
+			};
+			this.#tombstones.push(tombstone);
+			try {
+				this.#writeManifestSync();
+			} catch (error) {
+				this.#tombstones.pop();
+				this.#branches.set(current.header.branchId, current);
+				if (priorDraft) this.#drafts.set(current.header.branchId, priorDraft);
+				if (priorLocation) this.#logicalLocations.set(current.header.branchId, priorLocation);
+				if (wasPinned) this.#pinnedBranchIds.add(current.header.branchId);
+				throw error;
+			}
+			this.#deleteOwnedMemberSync(current.fileName, current.fileIdentity);
+			return true;
+		});
 	}
 
 	async relocate(request: RelocateSessionRequest): Promise<SessionLocator> {
@@ -1006,9 +1416,10 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 		if (request.locator.versionId && request.locator.versionId !== current.header.versionId) {
 			throw new RepositoryIntegrityError("Relocation locator version is stale");
 		}
-		this.#assertFenceSync(request.expectedModeGeneration);
-		this.#logicalLocations.set(current.header.branchId, request.logicalLocation);
-		this.#writeManifestSync();
+		this.#withPublicationFenceSync(request.expectedModeGeneration, () => {
+			this.#logicalLocations.set(current.header.branchId, request.logicalLocation);
+			this.#writeManifestSync();
+		});
 		return { branchId: current.header.branchId, versionId: current.header.versionId };
 	}
 
@@ -1024,9 +1435,10 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 		if ((prior?.revision ?? null) !== request.expectedRevision) {
 			throw new RepositoryIntegrityError("Draft revision compare-and-swap failed");
 		}
-		this.#assertFenceSync(request.expectedModeGeneration);
-		this.#drafts.set(request.draft.branchId, request.draft);
-		this.#writeManifestSync();
+		this.#withPublicationFenceSync(request.expectedModeGeneration, () => {
+			this.#drafts.set(request.draft.branchId, request.draft);
+			this.#writeManifestSync();
+		});
 		return request.draft;
 	}
 
@@ -1037,9 +1449,10 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 		if (draft.revision !== request.expectedRevision) {
 			throw new RepositoryIntegrityError("Draft revision compare-and-swap failed");
 		}
-		this.#assertFenceSync(request.expectedModeGeneration);
-		this.#drafts.delete(request.branchId);
-		this.#writeManifestSync();
+		this.#withPublicationFenceSync(request.expectedModeGeneration, () => {
+			this.#drafts.delete(request.branchId);
+			this.#writeManifestSync();
+		});
 		return draft;
 	}
 
@@ -1048,9 +1461,10 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 		if (!this.#branches.has(request.locator.owner.branchId) || !this.#branches.has(request.target.branchId)) {
 			throw new RepositoryIntegrityError("Related resource locator references an unknown branch");
 		}
-		this.#assertFenceSync(request.expectedModeGeneration);
-		this.#relatedResources.set(relatedResourceKey(request.locator), request.target);
-		this.#writeManifestSync();
+		this.#withPublicationFenceSync(request.expectedModeGeneration, () => {
+			this.#relatedResources.set(relatedResourceKey(request.locator), request.target);
+			this.#writeManifestSync();
+		});
 	}
 
 	async resolveRelatedResource(locator: RelatedResourceLocator): Promise<SessionLocator | undefined> {
@@ -1090,9 +1504,10 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 		if (!this.#branches.has(request.pointer.session.branchId)) {
 			throw new RepositoryIntegrityError(`Unknown branch ${request.pointer.session.branchId}`);
 		}
-		this.#assertFenceSync(request.expectedModeGeneration);
-		this.#terminalPointers.set(request.pointer.terminalId, request.pointer);
-		this.#writeManifestSync();
+		this.#withPublicationFenceSync(request.expectedModeGeneration, () => {
+			this.#terminalPointers.set(request.pointer.terminalId, request.pointer);
+			this.#writeManifestSync();
+		});
 	}
 
 	async getTerminalSessionPointer(terminalId: string): Promise<TerminalSessionPointer | undefined> {
@@ -1103,10 +1518,11 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 	async setPinned(request: SetSessionPinnedRequest): Promise<void> {
 		await this.#ensureLoaded();
 		if (!this.#branches.has(request.branchId)) throw new RepositoryIntegrityError(`Unknown branch ${request.branchId}`);
-		this.#assertFenceSync(request.expectedModeGeneration);
-		if (request.pinned) this.#pinnedBranchIds.add(request.branchId);
-		else this.#pinnedBranchIds.delete(request.branchId);
-		this.#writeManifestSync();
+		this.#withPublicationFenceSync(request.expectedModeGeneration, () => {
+			if (request.pinned) this.#pinnedBranchIds.add(request.branchId);
+			else this.#pinnedBranchIds.delete(request.branchId);
+			this.#writeManifestSync();
+		});
 	}
 
 	async listPinned(): Promise<readonly BranchId[]> {
@@ -1122,16 +1538,17 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 		if (state.header.headEventHash !== request.checkpoint.headEventHash) {
 			throw new RepositoryIntegrityError("Checkpoint head is not the current branch head");
 		}
-		this.#assertFenceSync(request.expectedModeGeneration);
-		const prior = this.#checkpoints.get(request.checkpoint.checkpointId);
-		this.#checkpoints.set(request.checkpoint.checkpointId, request.checkpoint);
-		try {
-			this.#writeManifestSync();
-		} catch (error) {
-			if (prior) this.#checkpoints.set(prior.checkpointId, prior);
-			else this.#checkpoints.delete(request.checkpoint.checkpointId);
-			throw error;
-		}
+		this.#withPublicationFenceSync(request.expectedModeGeneration, () => {
+			const prior = this.#checkpoints.get(request.checkpoint.checkpointId);
+			this.#checkpoints.set(request.checkpoint.checkpointId, request.checkpoint);
+			try {
+				this.#writeManifestSync();
+			} catch (error) {
+				if (prior) this.#checkpoints.set(prior.checkpointId, prior);
+				else this.#checkpoints.delete(request.checkpoint.checkpointId);
+				throw error;
+			}
+		});
 	}
 
 	async *readContextTail(request: ReadContextTailRequest): AsyncIterable<RepositoryEvent> {
@@ -1162,40 +1579,105 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 
 	async writePayload(request: WritePayloadRequest): Promise<PayloadDescriptor> {
 		await this.#ensureLoaded();
-		const directory = path.join(this.#rootDir, PAYLOAD_DIRECTORY);
-		fs.mkdirSync(directory, { recursive: true });
-		const temporary = path.join(directory, `.${Bun.randomUUIDv7()}.tmp`);
-		const file = await fs.promises.open(temporary, "wx");
+		if (!Number.isSafeInteger(request.maxBytes) || request.maxBytes < 0) {
+			throw new RangeError("maxBytes must be a non-negative safe integer");
+		}
+		if (!Number.isSafeInteger(request.maxChunkBytes) || request.maxChunkBytes < 1) {
+			throw new RangeError("maxChunkBytes must be a positive safe integer");
+		}
+		this.#withPublicationFenceSync(request.expectedModeGeneration, () => undefined);
+		const temporaryName = `.${Bun.randomUUIDv7()}.tmp`;
+		const temporaryPath = this.#payloadMemberPath(temporaryName);
+		const file = await fs.promises.open(
+			temporaryPath,
+			fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+			0o600,
+		);
 		const hasher = new Bun.CryptoHasher("sha256");
 		let byteLength = 0;
+		let completed = false;
 		try {
 			for await (const chunk of request.bytes) {
 				if (!(chunk instanceof Uint8Array)) throw new TypeError("Payload chunks must be Uint8Array values");
-				await file.write(chunk);
+				if (chunk.byteLength > request.maxChunkBytes) {
+					throw new RangeError(`Payload chunk exceeds ${request.maxChunkBytes} bytes`);
+				}
+				if (byteLength + chunk.byteLength > request.maxBytes) {
+					throw new RangeError(`Payload exceeds ${request.maxBytes} bytes`);
+				}
+				let offset = 0;
+				while (offset < chunk.byteLength) {
+					const { bytesWritten } = await file.write(chunk, offset, chunk.byteLength - offset);
+					if (bytesWritten === 0) throw new Error("Short payload write");
+					offset += bytesWritten;
+				}
 				hasher.update(chunk);
 				byteLength += chunk.byteLength;
 			}
+			await file.sync();
+			completed = true;
 		} finally {
 			await file.close();
+			if (!completed && fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
 		}
 		const payloadHash = `payload_v1_${hasher.digest("hex")}` as PayloadHash;
-		const destination = path.join(directory, payloadHash);
-		if (fs.existsSync(destination)) fs.unlinkSync(temporary);
-		else fs.renameSync(temporary, destination);
+		const destination = this.#payloadMemberPath(payloadHash);
 		const descriptor: PayloadDescriptor = { payloadHash, byteLength, mediaType: request.mediaType };
-		this.#payloads.set(payloadHash, descriptor);
-		this.#writeManifestSync();
-		return descriptor;
+		try {
+			return this.#withPublicationFenceSync(request.expectedModeGeneration, () => {
+				if (fs.existsSync(destination)) {
+					const existingFd = fs.openSync(destination, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+					try {
+						const stat = fs.fstatSync(existingFd, { bigint: true });
+						if (!stat.isFile() || stat.nlink !== 1n || stat.size !== BigInt(byteLength)) {
+							throw new RepositoryIntegrityError(`Existing payload is not the expected content: ${payloadHash}`);
+						}
+					} finally {
+						fs.closeSync(existingFd);
+					}
+					fs.unlinkSync(temporaryPath);
+				} else {
+					fs.renameSync(temporaryPath, destination);
+				}
+				fs.fsyncSync(this.#ensurePayloadDirectoryFdSync());
+				const prior = this.#payloads.get(payloadHash);
+				this.#payloads.set(payloadHash, descriptor);
+				try {
+					this.#writeManifestSync();
+				} catch (error) {
+					if (prior) this.#payloads.set(payloadHash, prior);
+					else this.#payloads.delete(payloadHash);
+					throw error;
+				}
+				return descriptor;
+			});
+		} catch (error) {
+			if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+			throw error;
+		}
 	}
 
 	async *readPayload(request: ReadPayloadRequest): AsyncIterable<Uint8Array> {
 		await this.#ensureLoaded();
 		const chunkBytes = request.chunkBytes ?? DEFAULT_PAYLOAD_CHUNK_BYTES;
 		if (!Number.isSafeInteger(chunkBytes) || chunkBytes < 1) throw new RangeError("chunkBytes must be positive");
-		const file = Bun.file(path.join(this.#rootDir, PAYLOAD_DIRECTORY, request.payloadHash));
-		if (!(await file.exists())) throw new RepositoryIntegrityError(`Unknown payload ${request.payloadHash}`);
-		for (let offset = 0; offset < file.size; offset += chunkBytes) {
-			yield new Uint8Array(await file.slice(offset, Math.min(offset + chunkBytes, file.size)).arrayBuffer());
+		const file = await fs.promises.open(
+			this.#payloadMemberPath(request.payloadHash),
+			fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+		);
+		try {
+			const stat = await file.stat({ bigint: true });
+			if (!stat.isFile() || stat.nlink !== 1n) {
+				throw new RepositoryIntegrityError(`Unsafe payload ${request.payloadHash}`);
+			}
+			for (let offset = 0; offset < Number(stat.size); offset += chunkBytes) {
+				const buffer = new Uint8Array(Math.min(chunkBytes, Number(stat.size) - offset));
+				const { bytesRead } = await file.read(buffer, 0, buffer.byteLength, offset);
+				if (bytesRead === 0) throw new Error("Short payload read");
+				yield bytesRead === buffer.byteLength ? buffer : buffer.slice(0, bytesRead);
+			}
+		} finally {
+			await file.close();
 		}
 	}
 
@@ -1204,11 +1686,12 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 		options: ImportArchiveOptions,
 	): Promise<TransferReport> {
 		await this.#ensureLoaded();
-		this.#assertFenceSync(options.expectedModeGeneration);
+		this.#withPublicationFenceSync(options.expectedModeGeneration, () => this.#writeManifestSync());
 		const report = emptyTransferReport();
 		for await (const item of items) {
 			try {
-				const incoming = this.#buildState(item, fileNameForBranch(item.branchId));
+				const materialized = await this.#materializeArchiveItem(item, options.limits);
+				const incoming = this.#buildState(materialized, fileNameForBranch(item.branchId));
 				const existing = this.#branches.get(item.branchId);
 				if (existing?.header.versionId === incoming.header.versionId) {
 					report.duplicates++;
@@ -1226,7 +1709,7 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 				) {
 					const extension = this.#buildState(
 						{
-							...this.#archiveItem(incoming),
+							...this.#materializedItem(incoming),
 							branchId: existing.header.branchId,
 							parentVersionId: existing.header.versionId,
 						},
@@ -1253,7 +1736,7 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 					.sort((left, right) => right.generation - left.generation)[0]?.eventHash ?? null;
 				const siblingState = this.#buildState(
 					{
-						...this.#archiveItem(incoming),
+						...this.#materializedItem(incoming),
 						branchId: sibling.id,
 						parentVersionId: existing.header.versionId,
 						forkPointHash,
@@ -1271,7 +1754,7 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 		return report;
 	}
 
-	async *exportArchive(query: ExportArchiveQuery = {}): AsyncIterable<SessionExportItem> {
+	async *exportArchive(query: ExportArchiveQuery): AsyncIterable<SessionExportItem> {
 		await this.#ensureLoaded();
 		const filter = JSON.stringify({ originId: query.originId ?? null, branchId: query.branchId ?? null });
 		const cursor = decodeCursor(query.cursor, "export", filter);
@@ -1285,17 +1768,16 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 			(state, keyset) => state.header.branchId === keyset.branchId,
 		);
 		const limit = query.limit === undefined ? states.length : boundedLimit(query.limit);
-		for (const state of states.slice(after, after + limit)) yield this.#archiveItem(state);
+		for (const state of states.slice(after, after + limit)) yield this.#archiveItem(state, query.limits);
 	}
 
 	async syncFrom(source: SessionTransferService, options: SyncOptions): Promise<TransferReport> {
-		return this.importArchive(source.exportArchive({ originId: options.originId }), options);
+		return this.importArchive(source.exportArchive({ originId: options.originId, limits: options.limits }), options);
 	}
 
 	async flush(request: FlushRequest): Promise<void> {
 		await this.#ensureLoaded();
-		this.#assertFenceSync(request.expectedModeGeneration);
-		this.#writeManifestSync();
+		this.#withPublicationFenceSync(request.expectedModeGeneration, () => this.#writeManifestSync());
 	}
 
 	async health(): Promise<RepositoryHealth> {
@@ -1315,6 +1797,10 @@ export class JsonlSessionRepository implements SessionRepository, SessionTransfe
 	async close(): Promise<void> {
 		if (this.#closed) return;
 		if (this.#loadPromise) await this.#loadPromise;
+		if (this.#payloadDirectoryFd !== undefined) fs.closeSync(this.#payloadDirectoryFd);
+		if (this.#rootFd !== undefined) fs.closeSync(this.#rootFd);
+		this.#payloadDirectoryFd = undefined;
+		this.#rootFd = undefined;
 		this.#closed = true;
 	}
 }
