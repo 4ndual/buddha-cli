@@ -1,0 +1,78 @@
+{
+  "schema": "omp.wcdb.disk-import-gate-matrix.v1",
+  "observedAt": "2026-09-15T23:15:21.213Z",
+  "gates": [
+    {
+      "gate": "immutable-shared-corpus",
+      "status": "pass",
+      "evidence": "31,429 files / 40,716,213,247 bytes; manifest SHA-256 740e312259166e50003d90eef41eeda86ad65f5bf0d1054b6c879d7333bfb82b independently rehashed"
+    },
+    {
+      "gate": "redundant-copy-complete-accounting",
+      "status": "pass",
+      "evidence": "1,460 files completely accounted: 1,458 authoritative matches, 2 unmatched Git-history objects preserved; zero mismatches or inode aliases"
+    },
+    {
+      "gate": "reviewer-approved-reclaim",
+      "status": "pass",
+      "evidence": "WCDBSafetyFinal approved only the 1,458 pinned manifest rows; 13,036,440,706 apparent bytes deleted with per-entry outcomes"
+    },
+    {
+      "gate": "post-delete-preservation",
+      "status": "pass",
+      "evidence": "All 1,458 authoritative shared files rehashed after deletion; the two unmatched objects survive with manifest SHA-256 7ffa4b4356d0cff63eaa84b471d78163ea3c8dbf1a00c10d4fbfe3a591c4e011"
+    },
+    {
+      "gate": "post-reclaim-capacity",
+      "status": "pass",
+      "evidence": "105,220,235,264 available bytes at revised strategy dry-run; legacy 114,005,397,093-byte peak remains short by 8,785,161,829 bytes"
+    },
+    {
+      "gate": "no-extra-copy-in-place-staging-estimate",
+      "status": "blocked-capacity-estimate",
+      "evidence": "Mandatory complete normalized stage retained; 607 bounded 64 MiB transactions; 114,134,130,277-byte modeled peak; 8,913,895,013 additional bytes required"
+    },
+    {
+      "gate": "byte-bounded-streaming-estimate",
+      "status": "blocked-capacity-estimate",
+      "evidence": "Mandatory complete normalized stage retained; 607 transactions per phase at 64 MiB; 110,070,479,768-byte modeled peak; 4,850,244,504 additional bytes required"
+    },
+    {
+      "gate": "checkpointed-partition-estimate",
+      "status": "blocked-capacity-estimate",
+      "evidence": "Mandatory normalized stage uses 11 immutable <=4 GiB staging generations feeding one profile DB; 110,068,714,392-byte modeled peak; 4,848,479,128 additional bytes required"
+    },
+    {
+      "gate": "measured-full-corpus-amplification",
+      "status": "blocked",
+      "evidence": "No full-corpus WCDB importer has measured actual database/index amplification; 1.25x database and 0.35x index values remain the accepted capacity model, not proof of a safe actual peak"
+    },
+    {
+      "gate": "cancellable-isolated-native-import",
+      "status": "blocked",
+      "evidence": "Synchronous Bun FFI lacks cancellation/crash isolation; DB mode remains disabled"
+    },
+    {
+      "gate": "full-import",
+      "status": "not-run",
+      "evidence": "Preflight did not prove actual peak safe and native isolation remains blocked; no production/session/config mutation or cutover"
+    }
+  ],
+  "receipts": {
+    "strategy": {
+      "path": "scripts/wcdb-migration/receipts/bounded-full-import-strategies.json",
+      "sha256": "8ce5a57aa5ab5f2ad461e087b068a1a6b9ea3bfaebd15bf4a878f4636c657cbf"
+    },
+    "deletion": {
+      "path": "scripts/wcdb-migration/receipts/redundant-copy-deletion.json",
+      "sha256": "fe612b4c62b2ed282dfb5f6eb73370ddb51c8fb95e4834e7ee2276ca533b5882"
+    },
+    "deletionOutcomes": {
+      "path": "scripts/wcdb-migration/receipts/redundant-copy-deletion-outcomes.jsonl",
+      "sha256": "edf582c893223dcb20c85f38025173c4c76d0f87e146d930a2a348f92762a4a8"
+    }
+  },
+  "productionMutation": false,
+  "cutover": false,
+  "databaseModeEnabled": false
+}

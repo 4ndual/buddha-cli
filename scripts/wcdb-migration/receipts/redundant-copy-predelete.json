@@ -1,0 +1,52 @@
+{
+  "schema": "omp.wcdb.redundant-copy-predelete.v1",
+  "observedAt": "2026-09-15T23:10:00Z",
+  "candidateRoot": "/home/andual/Projects/.omp-wcdb-team/copies/wcdb-inventory-20260915",
+  "filesystem": {
+    "source": "/dev/nvme0n1p2",
+    "type": "ext4",
+    "sizeBytes": 982293172224,
+    "usedBytes": 839873118208,
+    "availableBytes": 92446773248
+  },
+  "candidate": {
+    "files": 1460,
+    "apparentBytes": 13039001812,
+    "allocatedBytes": 13042077696
+  },
+  "approvedDeletionSubset": {
+    "status": "awaiting-reviewer-approval",
+    "files": 1458,
+    "apparentBytes": 13036440706,
+    "allocatedBytesExpectedReclaim": 13039509504,
+    "expectedAvailableBytesAfter": 105486282752,
+    "manifest": "scripts/wcdb-migration/receipts/redundant-copy-manifest.jsonl",
+    "manifestSha256": "c59e070804e4c008e5484ad6729bebd3b1168631d02de1b81c826f4a38c36e30"
+  },
+  "preservedSubset": {
+    "files": 2,
+    "apparentBytes": 2561106,
+    "allocatedBytes": 2568192,
+    "reason": "No authoritative shared-snapshot match; these are separately receipted Git-history objects and are not redundant."
+  },
+  "references": {
+    "codeReferences": 0,
+    "knownReceiptReferences": [
+      "/home/andual/Projects/.omp-wcdb-team/artifacts/inventory/eight-month-plan.json",
+      "/home/andual/Projects/.omp-wcdb-team/artifacts/inventory/repository-history-copy.json"
+    ],
+    "activeOpenHandles": 0,
+    "openHandleProbe": "lsof +D candidate returned no output (exit 1)"
+  },
+  "safety": {
+    "allFilesRehashed": true,
+    "allMappedAuthoritativeFilesRehashed": true,
+    "allCandidateLinkCountsOne": true,
+    "noAuthoritativeInodeAliases": true,
+    "sharedSnapshotMutation": false,
+    "originalMutation": false,
+    "tursoMutation": false,
+    "activeSessionMutation": false,
+    "productionMutation": false
+  }
+}

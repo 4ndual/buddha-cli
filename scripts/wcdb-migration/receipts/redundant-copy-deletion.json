@@ -1,0 +1,42 @@
+{
+  "after": {
+    "actualAvailableByteIncrease": 13113278464,
+    "availableBytes": 105543385088
+  },
+  "approvalScope": "Only entries marked redundant-authoritative-match in the pinned reviewed manifest",
+  "approvedBy": "WCDBMigrationCoordinator2.WCDBSafetyFinal",
+  "before": {
+    "availableBytes": 92430106624,
+    "files": 1460,
+    "manifestPath": "/home/andual/Projects/.omp-wcdb-local/scripts/wcdb-migration/receipts/redundant-copy-manifest.jsonl",
+    "manifestSha256": "c59e070804e4c008e5484ad6729bebd3b1168631d02de1b81c826f4a38c36e30"
+  },
+  "candidateRoot": "/home/andual/Projects/.omp-wcdb-team/copies/wcdb-inventory-20260915",
+  "deleted": {
+    "apparentBytes": 13036440706,
+    "expectedAllocatedBytes": 13039509504,
+    "files": 1458,
+    "outcomesPath": "/home/andual/Projects/.omp-wcdb-local/scripts/wcdb-migration/receipts/redundant-copy-deletion-outcomes.jsonl",
+    "outcomesSha256": "edf582c893223dcb20c85f38025173c4c76d0f87e146d930a2a348f92762a4a8"
+  },
+  "deletedAt": "2026-09-15T23:12:24.357Z",
+  "preserved": {
+    "allocatedBytes": 2568192,
+    "apparentBytes": 2561106,
+    "files": 2,
+    "manifestPath": "/home/andual/Projects/.omp-wcdb-local/scripts/wcdb-migration/receipts/redundant-copy-after-manifest.jsonl",
+    "manifestSha256": "7ffa4b4356d0cff63eaa84b471d78163ea3c8dbf1a00c10d4fbfe3a591c4e011"
+  },
+  "schema": "omp.wcdb.redundant-copy-deletion.v1",
+  "verification": {
+    "activeSessionMutation": false,
+    "allAuthoritativeMatchesReverifiedAfterDeletion": true,
+    "allAuthoritativeMatchesReverifiedBeforeDeletion": true,
+    "allCandidatesReverifiedBeforeDeletion": true,
+    "allPreservedFilesRehashedAfterDeletion": true,
+    "originalMutation": false,
+    "productionMutation": false,
+    "sharedSnapshotMutation": false,
+    "tursoMutation": false
+  }
+}

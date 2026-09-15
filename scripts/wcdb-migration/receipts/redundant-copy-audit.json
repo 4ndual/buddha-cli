@@ -1,0 +1,57 @@
+{
+  "auditedAt": "2026-09-15T23:09:54.894Z",
+  "authoritative": {
+    "allCandidateFilesRehashed": true,
+    "allMappedAuthoritativeFilesRehashed": true,
+    "manifestCopiedBytes": 40716213247,
+    "manifestCopiedFiles": 31429,
+    "manifestPath": "/home/andual/Projects/.turso-migration-owned/artifacts/copied-corpus-manifest.json",
+    "manifestSha256": "740e312259166e50003d90eef41eeda86ad65f5bf0d1054b6c879d7333bfb82b",
+    "root": "/home/andual/Projects/.turso-migration-owned/backup/corpus-2026-09-15"
+  },
+  "candidate": {
+    "allLinkCountsOne": true,
+    "allocatedBytes": 13042077696,
+    "allRegularFiles": true,
+    "bytes": 13039001812,
+    "files": 1460,
+    "manifestPath": "/home/andual/Projects/.omp-wcdb-local/scripts/wcdb-migration/receipts/redundant-copy-manifest.jsonl",
+    "manifestSha256": "c59e070804e4c008e5484ad6729bebd3b1168631d02de1b81c826f4a38c36e30",
+    "noAuthoritativeInodeAliases": true,
+    "ownership": "WCDB team-owned partial inventory output",
+    "provenanceReceipts": [
+      "/home/andual/Projects/.omp-wcdb-team/artifacts/inventory/eight-month-plan.json",
+      "/home/andual/Projects/.omp-wcdb-team/artifacts/inventory/repository-history-copy.json"
+    ],
+    "root": "/home/andual/Projects/.omp-wcdb-team/copies/wcdb-inventory-20260915",
+    "uniqueHashes": 1460
+  },
+  "eligibility": {
+    "isActiveSessionPath": false,
+    "isOriginalSource": false,
+    "isSharedSnapshot": false,
+    "isTursoOwned": false,
+    "preservedAllocatedBytes": 2568192,
+    "preservedBytes": 2561106,
+    "preservedFiles": 2,
+    "redundantAllocatedBytesSafeToReclaim": 13039509504,
+    "redundantBytesSafeToReclaim": 13036440706,
+    "redundantFilesSafeToReclaim": 1458,
+    "reviewerApprovalRequiredBeforeDeletion": true,
+    "rootSafeToReclaim": false
+  },
+  "equivalence": {
+    "candidateAllocatedBytesMapped": 13039509504,
+    "candidateBytesMapped": 13036440706,
+    "candidateFilesMapped": 1458,
+    "completeCandidateAccounting": true,
+    "completeRedundantSubsetEquivalence": true,
+    "mismatchedBytes": 0,
+    "mismatchedFiles": 0,
+    "unmatchedAllocatedBytes": 2568192,
+    "unmatchedBytes": 2561106,
+    "unmatchedFiles": 2
+  },
+  "productionMutation": false,
+  "schema": "omp.wcdb.redundant-copy-audit.v1"
+}
