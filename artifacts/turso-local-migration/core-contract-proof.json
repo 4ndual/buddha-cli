@@ -1,0 +1,26 @@
+{
+  "stage": "B-C core repository contract and JSONL backend",
+  "branch": "experiment/turso-core-contract",
+  "runtime": "Bun 1.4.2",
+  "command": "bun test packages/coding-agent/test/session/repository/identity.test.ts packages/coding-agent/test/session/repository/jsonl-repository.test.ts",
+  "result": {
+    "passed": 9,
+    "failed": 0,
+    "expectations": 37,
+    "duration_ms": 935
+  },
+  "covered": [
+    "canonical object ordering and array ordering",
+    "absent versus null identity",
+    "IEEE-754, bigint, and binary byte identity",
+    "namespaced native session IDs",
+    "title-sensitive versions",
+    "identity collision rejection",
+    "keyset pagination",
+    "idempotent repeated import and sync",
+    "expected-head CAS sibling forks without merge",
+    "no absence-driven deletion",
+    "persisted mode-generation fencing",
+    "JSONL module graph with @tursodatabase/database imports forbidden"
+  ]
+}
