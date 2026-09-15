@@ -254,8 +254,12 @@ export interface ReadContextTailRequest {
 	maxEntries: number;
 }
 
-export interface WritePayloadRequest {
+export interface WritePayloadRequest extends FencedWriteRequest {
 	bytes: AsyncIterable<Uint8Array> | Iterable<Uint8Array>;
+	/** Hard total input bound; publication aborts before exceeding it. */
+	maxBytes: number;
+	/** Hard bound for each producer chunk. */
+	maxChunkBytes: number;
 	mediaType?: string;
 }
 
@@ -270,6 +274,30 @@ export interface ReadPayloadRequest {
 	chunkBytes?: number;
 }
 
+export interface ArchiveStreamLimits {
+	maxEntryBytes: number;
+	maxEntriesPerPage: number;
+	maxTotalEntries: number;
+	maxTotalEntryBytes: number;
+	maxPayloadRefsPerPage: number;
+	maxTotalPayloadRefs: number;
+}
+
+export interface SessionArchiveEntryRecord {
+	entry: SessionEntry;
+	/** UTF-8 bytes of the canonical transport record before decoding. */
+	encodedByteLength: number;
+}
+
+export interface SessionArchiveEntryPage {
+	items: readonly SessionArchiveEntryRecord[];
+	byteLength: number;
+}
+
+export interface SessionArchivePayloadPage {
+	items: readonly PayloadDescriptor[];
+}
+
 /** Portable logical record. Physical export paths and transfer timestamps are deliberately absent. */
 export interface SessionArchiveItem {
 	source: SourceIdentity;
@@ -280,8 +308,13 @@ export interface SessionArchiveItem {
 	parentVersionId: VersionId | null;
 	forkPointHash: EventHash | null;
 	header: SessionHeader;
-	entries: readonly SessionEntry[];
 	metadata: SessionSemanticMetadata;
+	entryCount: number;
+	entryBytes: number;
+	payloadRefCount: number;
+	/** A factory so validation/retry can obtain a fresh bounded stream. */
+	openEntryPages(): AsyncIterable<SessionArchiveEntryPage>;
+	openPayloadPages(): AsyncIterable<SessionArchivePayloadPage>;
 }
 
 /** Explicit logical selection for export; callers never pass an internal JSONL path. */
@@ -295,6 +328,7 @@ export type SessionExportItem = SessionArchiveItem;
 export interface ImportArchiveOptions extends FencedWriteRequest {
 	/** Durable namespace of the producer, used to stabilize rediscovered branch mappings. */
 	sourceReplicaId?: ReplicaId;
+	limits: ArchiveStreamLimits;
 }
 
 export interface ExportArchiveQuery {
@@ -302,6 +336,7 @@ export interface ExportArchiveQuery {
 	branchId?: BranchId;
 	cursor?: KeysetCursor;
 	limit?: number;
+	limits: ArchiveStreamLimits;
 }
 
 export interface SyncOptions extends ImportArchiveOptions {
@@ -395,6 +430,6 @@ export interface SessionTransferService {
 		items: AsyncIterable<SessionImportItem> | Iterable<SessionImportItem>,
 		options: ImportArchiveOptions,
 	): Promise<TransferReport>;
-	exportArchive(query?: ExportArchiveQuery): AsyncIterable<SessionExportItem>;
+	exportArchive(query: ExportArchiveQuery): AsyncIterable<SessionExportItem>;
 	syncFrom(source: SessionTransferService, options: SyncOptions): Promise<TransferReport>;
 }
