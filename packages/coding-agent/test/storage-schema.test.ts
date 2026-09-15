@@ -115,21 +115,25 @@ describe("WCDB logical schema", () => {
 		}
 	});
 
-	it("accepts only the logical schema range and keeps DB mode disabled until the SQLite pin is verified", () => {
+	it("accepts only the pinned logical schema and exact source engine versions", () => {
 		const stored: StoredSchemaHeader = {
 			schemaVersion: WCDB_LOGICAL_SCHEMA_VERSION,
 			minimumReaderVersion: WCDB_LOGICAL_SCHEMA_VERSION,
 			maximumReaderVersion: WCDB_LOGICAL_SCHEMA_VERSION,
 			canonicalizerVersion: CANONICALIZER_VERSION,
 			wcdbVersion: WCDB_ENGINE_PIN.wcdbVersion,
-			sqliteVersion: "unverified",
+			sqliteVersion: WCDB_ENGINE_PIN.bundledSqliteVersion,
 		};
 		expect(() => assertLogicalSchemaCompatible(stored)).not.toThrow();
 		expect(() => assertLogicalSchemaCompatible({ ...stored, schemaVersion: 2 })).toThrow(IncompatibleSchemaError);
 		expect(() => assertLogicalSchemaCompatible({ ...stored, canonicalizerVersion: 2 })).toThrow(
 			IncompatibleSchemaError,
 		);
-		expect(() => assertSchemaCompatible(stored)).toThrow("Bundled SQLite version has not passed the native capability gate");
-		expect(WCDB_ENGINE_PIN.verified).toBe(false);
+		expect(() => assertSchemaCompatible(stored)).not.toThrow();
+		expect(() => assertSchemaCompatible({ ...stored, sqliteVersion: "3.27.1" })).toThrow(
+			"does not match pinned 3.27.2",
+		);
+		expect(WCDB_ENGINE_PIN.sourceVerified).toBe(true);
+		expect(WCDB_ENGINE_PIN.runtimeVerified).toBe(false);
 	});
 });
