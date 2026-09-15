@@ -10,7 +10,7 @@
     {
       "command": "bun test packages/coding-agent/test/session/repository/migration/transfer.test.ts",
       "exitCode": 0,
-      "result": "7 pass, 0 fail, 33 expect calls"
+      "result": "8 pass, 0 fail, 35 expect calls"
     },
     {
       "command": "bun packages/coding-agent/src/cli.ts storage status --json",
