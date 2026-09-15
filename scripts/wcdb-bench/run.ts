@@ -116,6 +116,65 @@ async function persistCheckpoint(artifactRoot: string, phase: string, status: st
 		...details,
 	});
 }
+async function sampleProcessMemory(pid: number): Promise<{ rssBytes: number | null; pssBytes: number | null }> {
+	let rssBytes: number | null = null;
+	let pssBytes: number | null = null;
+	try {
+		const status = await Bun.file(`/proc/${pid}/status`).text();
+		const match = status.match(/^VmHWM:\s+(\d+)\s+kB$/m);
+		if (match) rssBytes = Number(match[1]) * 1024;
+	} catch {
+		// Process may exit between the liveness check and procfs read.
+	}
+	try {
+		const smaps = await Bun.file(`/proc/${pid}/smaps_rollup`).text();
+		const match = smaps.match(/^Pss:\s+(\d+)\s+kB$/m);
+		if (match) pssBytes = Number(match[1]) * 1024;
+	} catch {
+		// Process may exit between the liveness check and procfs read.
+	}
+	return { rssBytes, pssBytes };
+}
+
+async function runSupervised(): Promise<void> {
+	const sampleIntervalMs = 10;
+	const args = [...process.argv.slice(2), "--supervised-child"];
+	const benchmark = Bun.spawn([process.execPath, import.meta.path, ...args], { stdout: "pipe", stderr: "pipe" });
+	const stdoutPromise = new Response(benchmark.stdout).text();
+	const stderrPromise = new Response(benchmark.stderr).text();
+	let complete = false;
+	let exitCode = -1;
+	void benchmark.exited.then(code => {
+		exitCode = code;
+		complete = true;
+	});
+	let peakRssBytes: number | null = null;
+	let peakPssBytes: number | null = null;
+	let samples = 0;
+	while (!complete) {
+		const sample = await sampleProcessMemory(benchmark.pid);
+		if (sample.rssBytes !== null) peakRssBytes = Math.max(peakRssBytes ?? 0, sample.rssBytes);
+		if (sample.pssBytes !== null) peakPssBytes = Math.max(peakPssBytes ?? 0, sample.pssBytes);
+		samples++;
+		await Bun.sleep(sampleIntervalMs);
+	}
+	const stdout = await stdoutPromise;
+	const stderr = await stderrPromise;
+	if (exitCode !== 0) throw new Error(`supervised benchmark exited ${exitCode}: ${stderr.slice(0, 4000)}`);
+	const options = parseOptions();
+	const receiptPath = path.join(options.artifactRoot, options.full ? "benchmark-receipt.json" : "smoke-receipt.json");
+	const receipt = (await Bun.file(receiptPath).json()) as BenchmarkReceipt;
+	receipt.processPeak = {
+		rssBytes: peakRssBytes,
+		pssBytes: peakPssBytes,
+		sampleIntervalMs,
+		samples,
+		source: "/proc/<pid>/status VmHWM and /proc/<pid>/smaps_rollup Pss",
+	};
+	await writeJsonAtomic(receiptPath, receipt);
+	process.stdout.write(stdout);
+}
+
 
 async function run(): Promise<void> {
 	const child = optionValue("child") as "writer" | "search" | undefined;
@@ -126,6 +185,11 @@ async function run(): Promise<void> {
 		process.stdout.write(`${JSON.stringify(result)}\n`);
 		process.exit(result.error ? 1 : 0);
 	}
+	if (!process.argv.includes("--supervised-child")) {
+		await runSupervised();
+		return;
+	}
+
 
 	const options = parseOptions();
 	await fs.mkdir(options.artifactRoot, { recursive: true });
@@ -277,6 +341,13 @@ async function run(): Promise<void> {
 		createdAt: new Date().toISOString(),
 		status: fullMeasured ? "measured" : "blocked",
 		machine: await machineDetails(options.databaseRoot),
+		processPeak: {
+			rssBytes: null,
+			pssBytes: null,
+			sampleIntervalMs: 10,
+			samples: 0,
+			source: "/proc/<pid>/status VmHWM and /proc/<pid>/smaps_rollup Pss",
+		},
 		pins: {
 			harnessCommit: process.env.GIT_COMMIT ?? (await gitHeadCommit(path.resolve(import.meta.dir, "../.."))),
 			nativeGatePath: options.nativeGatePath,
