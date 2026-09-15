@@ -5,7 +5,12 @@
     {
       "command": "bun test packages/coding-agent/test/cli/storage-cli.test.ts",
       "exitCode": 0,
-      "result": "6 pass, 0 fail, 23 expect calls"
+      "result": "8 pass, 0 fail, 39 expect calls; includes real no-write recovery dry-run, generation-fence transition preparation, and published-export recovery"
+    },
+    {
+      "command": "bun test packages/coding-agent/test/session/repository/migration/transfer.test.ts",
+      "exitCode": 0,
+      "result": "7 pass, 0 fail, 33 expect calls"
     },
     {
       "command": "bun packages/coding-agent/src/cli.ts storage status --json",
@@ -22,6 +27,12 @@
       "exitCode": 0,
       "result": "registered command lists all actions and control flags"
     }
+  ],
+  "wiredBehaviors": [
+    "status reads an explicitly selected persisted generation fence without loading a database driver",
+    "mode preparation calls prepare, drain, synchronize, and verify and leaves active_mode unchanged",
+    "recover verifies an explicitly selected published bundle and idempotently records its export job receipt",
+    "database mode remains disabled without a verified native capability receipt"
   ],
   "environmentLimitation": {
     "command": "bun test packages/coding-agent/test/cli-command-metadata.test.ts",

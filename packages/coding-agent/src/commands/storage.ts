@@ -18,12 +18,15 @@ export default class Storage extends Command {
 	static flags = {
 		source: Flags.string({ description: "Explicit source path or repository selector" }),
 		destination: Flags.string({ description: "Explicit destination path or repository selector" }),
+		"allowed-root": Flags.string({ description: "Containment root for explicit recovery paths" }),
+		fence: Flags.string({ description: "Persisted storage generation fence path" }),
 		"dry-run": Flags.boolean({ description: "Preview without writes" }),
 		"all-branches": Flags.boolean({ description: "Include every branch/fork" }),
 		"job-id": Flags.string({ description: "Stable transfer job identifier" }),
 		"expected-generation": Flags.integer({
 			description: "Persisted storage generation required to fence repository mutations",
 		}),
+		"expected-nonce": Flags.string({ description: "Persisted storage generation nonce" }),
 		"cancel-after-current-batch": Flags.boolean({
 			description: "Request cancellation at the next durable batch boundary (requires --job-id)",
 		}),
@@ -44,6 +47,8 @@ export default class Storage extends Command {
 			action,
 			source: flags.source,
 			destination: flags.destination,
+			allowedRoot: flags["allowed-root"],
+			fencePath: flags.fence,
 			dryRun: flags["dry-run"],
 			allBranches: flags["all-branches"],
 			jobId: flags["job-id"],
@@ -52,6 +57,7 @@ export default class Storage extends Command {
 			expectedGeneration: flags["expected-generation"],
 			requestedMode: action === "mode" ? parseStorageMode(args.value) : undefined,
 			machine: flags.json || flags.machine,
+			expectedNonce: flags["expected-nonce"],
 		});
 		if (report.outcome === "failed" || report.outcome === "rejected") process.exitCode = 1;
 	}
