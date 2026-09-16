@@ -195,6 +195,7 @@ describe("runSubprocess soft request budget", () => {
 			task: "inventory the api surface",
 			index: 0,
 			id,
+			parentSessionID: "root-native-session",
 			settings: Settings.isolated({ "task.softRequestBudget": 2 }),
 			modelRegistry: { refresh: async () => {} } as unknown as ModelRegistry,
 			enableLsp: false,
@@ -518,6 +519,11 @@ describe("runSubprocess soft request budget", () => {
 		expect(capturedOptions?.subagentEventBus).toBe(treeBus);
 		// The root RPC surface observed the depth-1 run…
 		expect(frames.some(frame => frame.type === "subagent_lifecycle" && frame.payload.id === id)).toBe(true);
+		expect(
+			frames
+				.filter(frame => frame.type === "subagent_lifecycle" && frame.payload.id === id)
+				.every(frame => frame.type !== "subagent_lifecycle" || frame.payload.parentSessionID === "root-native-session"),
+		).toBe(true);
 		// …and the depth-2 frame published on the inherited bus.
 		expect(frames.some(frame => frame.type === "subagent_lifecycle" && frame.payload.id === `${id}.Grandkid`)).toBe(
 			true,

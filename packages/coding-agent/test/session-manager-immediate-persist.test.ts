@@ -132,6 +132,30 @@ describe("SessionManager JSONL software-crash durability", () => {
 		]);
 	});
 
+	it("persists a subagent's exact supervising session id without turning it into a fork", async () => {
+		const cwd = makeTempDir("@pi-subagent-parent-cwd-");
+		const sessionFile = path.join(cwd, "child.jsonl");
+		const manager = await SessionManager.open(sessionFile, undefined, undefined, {
+			initialCwd: cwd,
+			suppressBreadcrumb: true,
+			parentSessionID: "parent-native-session",
+		});
+
+		const [header] = readJsonl(sessionFile);
+		expect(header).toMatchObject({
+			type: "session",
+			parentSessionID: "parent-native-session",
+		});
+		expect(header?.parentSession).toBeUndefined();
+		await manager.close();
+
+		const reopened = await SessionManager.open(sessionFile, undefined, undefined, {
+			parentSessionID: "different-current-session",
+		});
+		expect(readJsonl(sessionFile)[0]?.parentSessionID).toBe("parent-native-session");
+		await reopened.close();
+	});
+
 	it("reopens post-checkpoint user/assistant/tool events after a crash-equivalent snapshot", async () => {
 		const cwd = makeTempDir("@pi-crash-reopen-cwd-");
 		const sessionDir = path.join(cwd, "sessions");

@@ -47,6 +47,12 @@ export interface SessionHeader {
 	 */
 	additionalDirectories?: string[];
 	parentSession?: string;
+	/**
+	 * Exact native session id of the supervising session for a subagent
+	 * transcript. Unlike `parentSession`, this records task/Hub ownership and
+	 * does not make the child a user-visible conversation fork.
+	 */
+	parentSessionID?: string;
 	/** Prior absolute JSONL locations recorded by successful session moves. */
 	previousSessionFiles?: string[];
 	/** Provider prompt-cache identity inherited by exact-route full forks. */
@@ -55,6 +61,8 @@ export interface SessionHeader {
 
 export interface NewSessionOptions {
 	parentSession?: string;
+	/** Native session id that owns a subagent transcript. */
+	parentSessionID?: string;
 	/** Provider prompt-cache identity to seed on the new session header. */
 	providerPromptCacheKey?: string;
 	/** Skip flushing the current session and delete it instead of saving. */

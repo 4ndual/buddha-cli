@@ -39,6 +39,7 @@ function session(
 		isolationEnabled?: boolean;
 		isolationApply?: boolean;
 		modelRoles?: Record<string, string>;
+		sessionID?: string;
 	} = {},
 ): ToolSession {
 	return {
@@ -54,6 +55,7 @@ function session(
 			...(options.isolationApply !== undefined ? { "task.isolation.apply": options.isolationApply } : {}),
 		}),
 		getSessionFile: () => null,
+		getSessionId: () => options.sessionID ?? null,
 		getSessionSpawns: () => "*",
 		getPlanModeState: () => (options.planMode ? { enabled: true } : undefined),
 	} as unknown as ToolSession;
@@ -239,10 +241,15 @@ describe("structured subagent primitive", () => {
 		});
 
 		const handleOnly = await runStructuredSubagent(
-			request({ identity: { id: "AuthLoader", label: "AuthLoader" }, retainArtifacts: true }),
+			request({
+				session: session({ sessionID: "parent-native-session" }),
+				identity: { id: "AuthLoader", label: "AuthLoader" },
+				retainArtifacts: true,
+			}),
 		);
 		expect(dispatched[0]?.description).toBeUndefined();
 		expect(dispatched[0]?.id).toBe("AuthLoader");
+		expect(dispatched[0]?.parentSessionID).toBe("parent-native-session");
 		await fs.rm(handleOnly.artifactsDir, { recursive: true, force: true });
 
 		dispatched.length = 0;

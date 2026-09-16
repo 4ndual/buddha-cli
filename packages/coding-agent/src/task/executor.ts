@@ -408,6 +408,8 @@ export interface ExecutorOptions {
 	description?: string;
 	index: number;
 	id: string;
+	/** Exact native session id that owns this subagent run. */
+	parentSessionID?: string;
 	parentToolCallId?: string;
 	/**
 	 * Spawn runs as a detached background job (parent turn not blocked on it).
@@ -2211,6 +2213,7 @@ interface FinalizeRunArgs {
 	eventBus?: EventBus;
 	subagentEventBus?: EventBus;
 	parentToolCallId?: string;
+	parentSessionID?: string;
 	detached?: boolean;
 	/**
 	 * This finalize is a revival/wake or explicit follow-up turn, not the initial
@@ -2383,6 +2386,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		id,
 		agent: agent.name,
 		parentToolCallId: args.parentToolCallId,
+		parentSessionID: args.parentSessionID,
 		detached: args.detached,
 		agentSource: agent.source,
 		description: progress.description,
@@ -2439,6 +2443,7 @@ export interface IrcWakeTurnMonitorOptions {
 	eventBus?: EventBus;
 	subagentEventBus?: EventBus;
 	parentToolCallId?: string;
+	parentSessionID?: string;
 	/** Fallback session file when the registry ref carries none. */
 	sessionFile?: string;
 	maxRuntimeMs?: number;
@@ -2581,6 +2586,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 			id,
 			agent: agent.name,
 			parentToolCallId: options.parentToolCallId,
+			parentSessionID: options.parentSessionID,
 			detached: true,
 			agentSource: agent.source,
 			description: options.description,
@@ -2635,6 +2641,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 					eventBus: options.eventBus,
 					subagentEventBus: options.subagentEventBus,
 					parentToolCallId: options.parentToolCallId,
+					parentSessionID: options.parentSessionID,
 					detached: true,
 					followUpTurn: true,
 					sessionFile,
@@ -2799,6 +2806,7 @@ export interface FollowUpTurnOptions {
 	eventBus?: EventBus;
 	subagentEventBus?: EventBus;
 	parentToolCallId?: string;
+	parentSessionID?: string;
 	/**
 	 * When set, a turn that produces a `yield` result (re)writes `<artifactsDir>/<id>.md`
 	 * so `agent://<id>` tracks the latest completion. A yield-less turn (e.g. a hub
@@ -2854,6 +2862,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 		id,
 		agent: agent.name,
 		parentToolCallId: options.parentToolCallId,
+		parentSessionID: options.parentSessionID,
 		detached: true,
 		agentSource: agent.source,
 		description: options.description,
@@ -2896,6 +2905,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 		eventBus: options.eventBus,
 		subagentEventBus: options.subagentEventBus,
 		parentToolCallId: options.parentToolCallId,
+		parentSessionID: options.parentSessionID,
 		detached: true,
 		followUpTurn: true,
 		sessionFile,
@@ -3078,6 +3088,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			eventBus: options.eventBus,
 			subagentEventBus: options.subagentEventBus,
 			parentToolCallId: options.parentToolCallId,
+			parentSessionID: options.parentSessionID,
 			sessionFile: subtaskSessionFile,
 			maxRuntimeMs,
 			outputSchema,
@@ -3236,6 +3247,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				? SessionManager.open(sessionFile, undefined, undefined, {
 						initialCwd: effectiveCwd,
 						suppressBreadcrumb: true,
+						parentSessionID: options.parentSessionID,
 					})
 				: Promise.resolve(SessionManager.inMemory(effectiveCwd));
 			// Setup below can fail before this promise's consumption boundary.
@@ -3488,6 +3500,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				id,
 				agent: agent.name,
 				parentToolCallId: options.parentToolCallId,
+				parentSessionID: options.parentSessionID,
 				detached: options.detached,
 				agentSource: agent.source,
 				description: options.description,
@@ -3812,6 +3825,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		eventBus: options.eventBus,
 		subagentEventBus: options.subagentEventBus,
 		parentToolCallId: options.parentToolCallId,
+		parentSessionID: options.parentSessionID,
 		detached: options.detached,
 		sessionFile: subtaskSessionFile,
 		startTime,

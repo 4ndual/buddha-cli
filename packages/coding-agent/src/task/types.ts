@@ -92,6 +92,8 @@ export interface SubagentLifecyclePayload {
 	description?: string;
 	status: "started" | "completed" | "failed" | "aborted";
 	sessionFile?: string;
+	/** Exact native session id of the session that launched this child. */
+	parentSessionID?: string;
 	parentToolCallId?: string;
 	index: number;
 	/**
