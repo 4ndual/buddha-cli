@@ -112,6 +112,16 @@ export function getBaseConfigRoot(): string {
 	return path.join(os.homedir(), getConfigDirName());
 }
 
+/**
+ * Profile-independent user config layer (~/.omp/shared), loaded by every
+ * profile after its own agent dir. Holds executable config (extensions, hooks,
+ * tools, commands) that must be active regardless of which profile a launcher
+ * picked; the default profile's ~/.omp/agent is never shared this way.
+ */
+export function getSharedConfigDir(): string {
+	return path.join(getBaseConfigRoot(), "shared");
+}
+
 function getProfileConfigRoot(profile: string | undefined): string {
 	const root = getBaseConfigRoot();
 	return profile ? path.join(root, "profiles", profile) : root;

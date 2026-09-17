@@ -113,6 +113,9 @@ export function parseAgent(
 	if (!fields) {
 		throw new AgentParsingError(new Error(`Invalid agent field: ${filePath}\n${content}`), filePath);
 	}
+	if (fields.raw && body.trim()) {
+		throw new AgentParsingError(new Error(`Raw agent must have an empty body: ${filePath}`), filePath);
+	}
 	return {
 		...fields,
 		systemPrompt: body,

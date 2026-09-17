@@ -390,6 +390,8 @@ export interface AgentDefinition {
 	name: string;
 	description: string;
 	systemPrompt: string;
+	/** Send only the task as a user message, without tools or inherited context. */
+	raw?: boolean;
 	tools?: string[];
 	spawns?: string[] | "*";
 	model?: string[];

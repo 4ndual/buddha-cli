@@ -287,6 +287,8 @@ export function parseModelList(value: unknown): string[] | undefined {
 export interface ParsedAgentFields {
 	name: string;
 	description: string;
+	/** Run one unmodified user message without inherited instructions or tools. */
+	raw?: boolean;
 	tools?: string[];
 	spawns?: string[] | "*";
 	model?: string[];
@@ -327,8 +329,12 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 		Array.isArray(frontmatter.tools) && frontmatter.tools.length === 0 ? [] : parseArrayOrCSV(frontmatter.tools);
 	if (tools) tools = normalizeToolNames(tools);
 
-	// Subagents with explicit tool lists always need yield
-	if (tools && !tools.includes("yield")) {
+	const raw = parseBoolean(frontmatter.raw) === true;
+	// Raw agents cannot accept tools or an agent-authored system prompt.
+	if (raw && ((tools !== undefined && tools.length > 0) || frontmatter.spawns !== undefined)) return null;
+	if (raw) tools = [];
+	// Ordinary subagents with explicit tool lists always need yield.
+	if (!raw && tools && !tools.includes("yield")) {
 		tools = [...tools, "yield"];
 	}
 
@@ -382,6 +388,7 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 	return {
 		name,
 		description,
+		raw,
 		tools,
 		spawns,
 		model,

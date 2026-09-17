@@ -881,7 +881,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					agentSource,
 					modelRole: policy.modelRole,
 					status: "pending",
-					task: renderSubagentUserPrompt(assignment),
+					task: policy.effectiveAgent.raw ? assignment : renderSubagentUserPrompt(assignment),
 					assignment,
 					recentTools: [],
 					recentOutput: [],

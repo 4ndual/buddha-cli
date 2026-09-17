@@ -1998,6 +1998,7 @@ async function driveSessionToYield(
 	// retrying. Lets the caller restore a safe contract and detach its monitor
 	// while backing off. Absent, the busy error keeps the old path.
 	onPromptBusy?: () => Promise<void>,
+	raw = false,
 ): Promise<DriveOutcome> {
 	using _keepalive = new EventLoopKeepalive();
 	const abortSignal = monitor.abortSignal;
@@ -2060,6 +2061,21 @@ async function driveSessionToYield(
 			// failures keep the old path.
 			const recoverableStop = monitor.budgetStopRequested() || monitor.yieldTurnStopRequested();
 			if (!recoverableStop || abortSignal.aborted) throw err;
+		}
+
+		if (raw) {
+			const lastAssistant = session.getLastAssistantMessage();
+			if (lastAssistant?.stopReason === "error") {
+				return {
+					exitCode: 1,
+					error: attributeSubagentError(lastAssistant.errorMessage, lastAssistant),
+					aborted: false,
+				};
+			}
+			if (lastAssistant?.stopReason === "aborted") {
+				return { exitCode: 1, aborted: monitor.isAbortedRun(), abortReasonText: monitor.resolveAbortReasonText() };
+			}
+			return { exitCode: 0, aborted: false };
 		}
 
 		const reminderToolChoice = buildNamedToolChoice("yield", session.model);
@@ -3009,18 +3025,24 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 	// then reinstall and reattach for the retry.
 	let attemptUnsubscribe = monitor.attach(session);
 	try {
-		outcome = await driveSessionToYield(session, monitor, message, async () => {
-			attemptUnsubscribe();
-			logger.debug("Subagent follow-up lost the prompt race to an IRC wake; backing off", { id });
-			await session.setWorkPoolYieldItems([]);
-			if (signal) {
-				await untilAborted(signal, () => session.waitForIdle());
-			} else {
-				await session.waitForIdle();
-			}
-			await session.setWorkPoolYieldItems(options.workPoolYieldItems ?? []);
-			attemptUnsubscribe = monitor.attach(session);
-		});
+		outcome = await driveSessionToYield(
+			session,
+			monitor,
+			message,
+			async () => {
+				attemptUnsubscribe();
+				logger.debug("Subagent follow-up lost the prompt race to an IRC wake; backing off", { id });
+				await session.setWorkPoolYieldItems([]);
+				if (signal) {
+					await untilAborted(signal, () => session.waitForIdle());
+				} else {
+					await session.waitForIdle();
+				}
+				await session.setWorkPoolYieldItems(options.workPoolYieldItems ?? []);
+				attemptUnsubscribe = monitor.attach(session);
+			},
+			agent.raw,
+		);
 	} finally {
 		try {
 			await untilAborted(AbortSignal.timeout(5000), () => monitor.waitForActiveSessionAbort());
@@ -3080,6 +3102,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		signal,
 		onProgress,
 	} = options;
+	if (agent.raw && outputSchema != null) {
+		throw new Error(`Raw agent ${agent.name} cannot accept an output schema`);
+	}
 	const cleanupGraceMs = options.cleanupGraceMs ?? TASK_ABORT_CLEANUP_GRACE_MS;
 	const startTime = Date.now();
 	// Set by the session's onFirstChatDispatch hook the first time the agent
@@ -3125,13 +3150,16 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	// no advisor (createSubagentSettings forces `advisor.enabled` off); an
 	// explicit model pattern lands on the child's `modelRoles.advisor` so role
 	// aliases and `:level` suffixes resolve inside the spawned session.
-	const advisorSelection = resolveAgentAdvisorSelection({
-		settingsOverride: settings.get("task.agentAdvisor")[agent.name],
-		agentAdvisor: agent.advisor,
-	});
+	const advisorSelection = agent.raw
+		? undefined
+		: resolveAgentAdvisorSelection({
+				settingsOverride: settings.get("task.agentAdvisor")[agent.name],
+				agentAdvisor: agent.advisor,
+			});
 	const subagentSettings = createSubagentSettings(
 		settings,
 		{
+			...(agent.raw ? { "advisor.enabled": false, "providers.openaiWebsockets": "off" as const } : undefined),
 			...(agent.readSummarize === false ? { "read.summarize.enabled": false } : undefined),
 			// Isolated runs must not expose roots outside the worktree.
 			...(worktree !== undefined ? { "workspace.additionalDirectories": [] } : undefined),
@@ -3159,7 +3187,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	const parentDepth = options.taskDepth ?? 0;
 	const childDepth = parentDepth + 1;
 	const atMaxDepth = maxRecursionDepth >= 0 && childDepth >= maxRecursionDepth;
-	const ircEnabled = options.enableIrc !== false && isIrcEnabled(subagentSettings, childDepth);
+	const ircEnabled = !agent.raw && options.enableIrc !== false && isIrcEnabled(subagentSettings, childDepth);
 
 	// Add tools if specified
 	let toolNames: string[] | undefined;
@@ -3176,7 +3204,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	}
 	// Ordinary agents retain the host's always-on collaboration capability.
 	// Restricted sessions must not widen their explicit host tool list with hub.
-	if (toolNames && !options.restrictToolNames && !toolNames.includes("hub")) {
+	if (toolNames && !agent.raw && !options.restrictToolNames && !toolNames.includes("hub")) {
 		toolNames = [...toolNames, "hub"];
 	}
 	if (toolNames?.includes("exec")) {
@@ -3187,7 +3215,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		toolNames = Array.from(new Set(expanded));
 	}
 
-	const modelPatterns = normalizeModelPatterns(modelOverride ?? agent.model);
+	const modelPatterns = normalizeModelPatterns(agent.raw ? agent.model : (modelOverride ?? agent.model));
 	const sessionFile = subtaskSessionFile ?? null;
 	const spawnsEnv = atMaxDepth
 		? ""
@@ -3312,7 +3340,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 
 			const configuredModelPatterns = resolveConfiguredModelPatterns(modelPatterns, settings);
 			const inheritedRetryFallbackChain =
-				configuredModelPatterns.length === 1
+				!agent.raw && configuredModelPatterns.length === 1
 					? resolveSubagentInheritedRetryFallbackChain(
 							subagentSettings,
 							modelRegistry,
@@ -3348,6 +3376,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					resolvedModel: model.id,
 				});
 			}
+			if (agent.raw && (authFallbackUsed || !model)) {
+				throw new Error(`Raw agent ${agent.name} requires its configured model and working credentials`);
+			}
 			// The exact-name `task.agentServiceTierOverrides` entry dispatch resolved
 			// for this agent. The session evaluates it against its final model —
 			// including patterns only it can resolve — so a concrete tier lands on
@@ -3363,14 +3394,16 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 								resolvedModel,
 								inheritedSubagentServiceTiers(settings, options.parentServiceTier),
 							);
-			const retryFallbackRole = installSubagentRetryFallbackChain({
-				settings: subagentSettings,
-				id,
-				candidates: resolveSubagentRetryFallbackCandidates(modelPatterns, modelRegistry, subagentSettings),
-				inheritedFallbackChain: inheritedRetryFallbackChain,
-				model,
-				authFallbackUsed,
-			});
+			const retryFallbackRole = agent.raw
+				? undefined
+				: installSubagentRetryFallbackChain({
+						settings: subagentSettings,
+						id,
+						candidates: resolveSubagentRetryFallbackCandidates(modelPatterns, modelRegistry, subagentSettings),
+						inheritedFallbackChain: inheritedRetryFallbackChain,
+						model,
+						authFallbackUsed,
+					});
 			if (retryFallbackRole) {
 				logger.debug("Configured subagent runtime model fallback chain", {
 					role: retryFallbackRole,
@@ -3388,7 +3421,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			// retry-fallback recovery can never clamp effort back up past it.
 			const spawnEffortCeiling = options.effort !== undefined ? settings.get("task.maxEffort") : undefined;
 			const effortLevel =
-				options.effort !== undefined
+				!agent.raw && options.effort !== undefined
 					? resolveTaskEffortLevel(model, options.effort, spawnEffortCeiling)
 					: undefined;
 			if (model) {
@@ -3427,7 +3460,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				settingsOverride: settings.get("task.agentPrewalk")[agent.name],
 				agentPrewalk: resolveAgentPrewalkDefault(agent, settings.get("task.prewalk")),
 			});
-			if (prewalkPattern) {
+			if (prewalkPattern && !agent.raw) {
 				await awaitAbortable(modelRegistry.awaitBackgroundRefresh());
 				const resolvedPrewalk = resolveModelOverride([prewalkPattern], modelRegistry, settings);
 				const target = resolvedPrewalk.model;
@@ -3451,7 +3484,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			}
 
 			const restrictToolNames = options.restrictToolNames === true;
-			const enableMCP = !restrictToolNames && (options.enableMCP ?? true);
+			const enableMCP = !agent.raw && !restrictToolNames && (options.enableMCP ?? true);
 			const mcpManager = enableMCP ? options.mcpManager : undefined;
 			const mcpProxyTools = mcpManager ? createMCPProxyTools(mcpManager) : [];
 			const sessionCustomTools = [...mcpProxyTools, ...(options.customTools ?? [])];
@@ -3518,9 +3551,11 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				model,
 				modelPattern: model || modelOverride === undefined ? undefined : modelPatterns,
 				modelPatternAuthFallback:
-					model || modelOverride === undefined ? undefined : options.parentActiveModelPattern,
+					agent.raw || model || modelOverride === undefined ? undefined : options.parentActiveModelPattern,
 				modelPatternFallbackRole:
-					model || modelOverride === undefined ? undefined : `${SUBAGENT_RETRY_FALLBACK_ROLE_PREFIX}${id}`,
+					agent.raw || model || modelOverride === undefined
+						? undefined
+						: `${SUBAGENT_RETRY_FALLBACK_ROLE_PREFIX}${id}`,
 				modelPatternDefaultFallbackChain:
 					model || modelOverride === undefined ? undefined : inheritedRetryFallbackChain,
 				thinkingLevel: effectiveThinkingLevel,
@@ -3532,47 +3567,55 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				toolNames,
 				outputSchema,
 				outputSchemaMode: options.outputSchemaMode,
-				restrictToolNames: options.restrictToolNames,
-				requireYieldTool: true,
-				contextFiles: options.contextFiles,
-				skills: options.skills,
-				promptTemplates: options.promptTemplates,
-				workspaceTree: options.workspaceTree,
-				rules: options.rules,
-				extensionRoots: options.extensionRoots,
-				preloadedExtensionPaths: restrictToolNames ? [] : options.preloadedExtensionPaths,
-				preloadedPreparedExtensions: restrictToolNames ? [] : options.preloadedPreparedExtensions,
-				preloadedCustomToolPaths: restrictToolNames ? [] : options.preloadedCustomToolPaths,
-				systemPrompt: defaultPrompt => {
-					const ircRoster = ircEnabled
-						? collectIrcPeerRoster(AgentRegistry.global(), id, ircRootSessionFile)
-						: undefined;
-					const subagentPrompt = prompt.render(subagentSystemPromptTemplate, {
-						agent: agent.systemPrompt,
-						context: options.context?.trim() ?? "",
-						planReference: options.planReference?.content ?? "",
-						planReferencePath: options.planReference?.path ?? "",
-						worktree: worktree ?? "",
-						outputSchema: normalizedOutputSchema,
-						outputSchemaOverridesAgent: options.outputSchemaOverridesAgent === true,
-						// Read the live item set through the registry instead of capturing
-						// the session: this callback outlives the turn via the lifecycle
-						// reviver, and a captured session would pin its whole graph past
-						// TTL park disposal. Parked revivals build while the registry
-						// session is null, so render the cleared set rather than
-						// resurrecting the launch-time pooled instructions.
-						workPoolYieldItems:
-							AgentRegistry.global().get(id)?.session?.getWorkPoolYieldItems?.() ??
-							(forRevive ? [] : (options.workPoolYieldItems ?? [])),
-						ircPeers: ircRoster?.peers ?? [],
-						ircParkedCount: ircRoster?.parkedCount ?? 0,
-						ircOmittedCount: ircRoster?.omittedCount ?? 0,
-						ircSelfId: ircEnabled ? id : "",
-					});
-					return defaultPrompt.length === 0
-						? [subagentPrompt]
-						: [...defaultPrompt.slice(0, -1), subagentPrompt, defaultPrompt[defaultPrompt.length - 1]];
-				},
+				restrictToolNames: agent.raw || options.restrictToolNames,
+				disableExtensionDiscovery: agent.raw,
+				allowRestrictedExtensions: false,
+				allowRestrictedCustomTools: false,
+				requireYieldTool: !agent.raw,
+				contextFiles: agent.raw ? [] : options.contextFiles,
+				skills: agent.raw ? [] : options.skills,
+				promptTemplates: agent.raw ? [] : options.promptTemplates,
+				workspaceTree: agent.raw ? undefined : options.workspaceTree,
+				rules: agent.raw ? [] : options.rules,
+				extensionRoots: agent.raw ? undefined : options.extensionRoots,
+				preloadedExtensionPaths: agent.raw || restrictToolNames ? [] : options.preloadedExtensionPaths,
+				preloadedPreparedExtensions: agent.raw || restrictToolNames ? [] : options.preloadedPreparedExtensions,
+				preloadedCustomToolPaths: agent.raw || restrictToolNames ? [] : options.preloadedCustomToolPaths,
+				systemPrompt: agent.raw
+					? () => []
+					: defaultPrompt => {
+							const ircRoster = ircEnabled
+								? collectIrcPeerRoster(AgentRegistry.global(), id, ircRootSessionFile)
+								: undefined;
+							const subagentPrompt = prompt.render(subagentSystemPromptTemplate, {
+								agent: agent.systemPrompt,
+								context: options.context?.trim() ?? "",
+								planReference: options.planReference?.content ?? "",
+								planReferencePath: options.planReference?.path ?? "",
+								worktree: worktree ?? "",
+								outputSchema: normalizedOutputSchema,
+								outputSchemaOverridesAgent: options.outputSchemaOverridesAgent === true,
+								// Read the live item set through the registry instead of capturing
+								// the session: this callback outlives the turn via the lifecycle
+								// reviver, and a captured session would pin its whole graph past
+								// TTL park disposal. Parked revivals build while the registry
+								// session is null, so render the cleared set rather than
+								// resurrecting the launch-time pooled instructions.
+								workPoolYieldItems:
+									AgentRegistry.global().get(id)?.session?.getWorkPoolYieldItems?.() ??
+									(forRevive ? [] : (options.workPoolYieldItems ?? [])),
+								ircPeers: ircRoster?.peers ?? [],
+								ircParkedCount: ircRoster?.parkedCount ?? 0,
+								ircOmittedCount: ircRoster?.omittedCount ?? 0,
+								ircSelfId: ircEnabled ? id : "",
+							});
+							return defaultPrompt.length === 0
+								? [subagentPrompt]
+								: [...defaultPrompt.slice(0, -1), subagentPrompt, defaultPrompt[defaultPrompt.length - 1]];
+						},
+				providerContextPolicy: agent.raw
+					? { rawMessages: true, skipRequestReminder: true, invariant: { toolNames: [], systemPromptBlocks: 0 } }
+					: undefined,
 				sessionManager: sessionManagerForRun,
 				hasUI: false,
 				prewalk,
@@ -3591,12 +3634,12 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				agentDisplayName: agent.name,
 				agentName: agent.name,
 				expectedAgentRef,
-				enableLsp: lspEnabled,
-				enableIrc: options.enableIrc,
-				skipPythonPreflight,
+				enableLsp: !agent.raw && lspEnabled,
+				enableIrc: agent.raw ? false : options.enableIrc,
+				skipPythonPreflight: agent.raw || skipPythonPreflight,
 				enableMCP,
 				mcpManager,
-				customTools: sessionCustomTools.length > 0 ? sessionCustomTools : undefined,
+				customTools: agent.raw ? [] : sessionCustomTools.length > 0 ? sessionCustomTools : undefined,
 				localProtocolOptions: options.localProtocolOptions,
 				telemetry: subagentTelemetry,
 				parentEvalSessionId: options.parentEvalSessionId,
@@ -3814,7 +3857,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 
 			checkAbort();
 			// Autoload skills via sendCustomMessage (same mechanic as /skill:<name>)
-			if (options.autoloadSkills?.length) {
+			if (!agent.raw && options.autoloadSkills?.length) {
 				for (const skill of options.autoloadSkills) {
 					const { message } = await buildSkillPromptMessage(skill, "", "autoload");
 					await session.sendCustomMessage(
@@ -3830,7 +3873,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			}
 
 			readyAt = performance.now();
-			const outcome = await driveSessionToYield(session, monitor, task);
+			const outcome = await driveSessionToYield(session, monitor, task, undefined, agent.raw);
 			exitCode = outcome.exitCode;
 			error = outcome.error;
 			aborted = outcome.aborted;
@@ -3910,14 +3953,14 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			if (session) {
 				monitor.captureSalvage(session);
 				if (options.keepAlive !== false && worktree === undefined) {
-					installIrcWakeTurnMonitor(session);
+					if (!agent.raw) installIrcWakeTurnMonitor(session);
 				}
 				await finalizeSubagentLifecycle({
 					id,
 					session,
 					aborted,
 					abortKind: monitor.abortKind(),
-					keepAlive: options.keepAlive !== false,
+					keepAlive: !agent.raw && options.keepAlive !== false,
 					isolated: worktree !== undefined,
 					agentIdleTtlMs,
 					reviveSession,

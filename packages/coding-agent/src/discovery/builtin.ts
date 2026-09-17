@@ -4,7 +4,7 @@
  * Primary provider for OMP native configs. Supports all capabilities.
  */
 import * as path from "node:path";
-import { getAgentDir, logger, parseFrontmatter, tryParseJson } from "@oh-my-pi/pi-utils";
+import { getAgentDir, getSharedConfigDir, logger, parseFrontmatter, tryParseJson } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
 import { getManagedSkillsDir, MANAGED_SKILLS_PROVIDER_ID } from "../autolearn/managed-skills";
 import { registerProvider } from "../capability";
@@ -67,6 +67,13 @@ async function getConfigDirs(ctx: LoadContext): Promise<Array<{ dir: string; lev
 	const userDir = await ifNonEmptyDir(getAgentDir());
 	if (userDir) {
 		result.push({ dir: userDir, level: "user" });
+	}
+	// ~/.omp/shared is the one user layer every profile loads. It exists so a
+	// runtime that must attach to every OMP process (live-session bridge, Herdr
+	// agent state) does not depend on which profile a launcher happened to pick.
+	const sharedDir = await ifNonEmptyDir(getSharedConfigDir());
+	if (sharedDir && sharedDir !== userDir) {
+		result.push({ dir: sharedDir, level: "user" });
 	}
 
 	return result;
