@@ -45,9 +45,65 @@ bun scripts/install-profile.ts \
   --bridge-dir ../omp-live-bridge-profile
 ```
 
-The installer refuses an existing destination and writes through a temporary
+A first install refuses an existing destination and writes through a temporary
 directory followed by one rename. It never changes `~/.buddha`, the default
 `~/.omp/agent`, the global `omp` link, or a running CodeNomad/OMP process.
+
+## Update contract
+
+`--update` ships a later revision of the same template into a profile that is
+already installed. It is the only supported way to move a fix into a live
+profile; hand-copying files into `~/.omp/profiles/<name>/agent` is not.
+
+```bash
+bun scripts/install-profile.ts \
+  --profile buddha-v1 \
+  --update
+```
+
+The update runs in this order, and stops at the first step that fails:
+
+1. Stage the tree a fresh install of the same template would produce, in
+   `profiles/<name>/.agent.update-<pid>`. A bad template or a bad
+   `--legacy-agent-dir` fails here, with the live profile untouched.
+2. Move the installed tree aside, whole, to
+   `profile-backups/<name>/agent-<timestamp>`. Backups live outside `profiles/`
+   so nothing scanning that directory mistakes one for an installed profile.
+3. Carry forward from the backup every path the new tree does not provide:
+   `agent.db`, `history.db`, `models.db`, `sessions`, `terminal-sessions`,
+   `cache`, imported rules, and any hand-added file. The template owns its own
+   paths and wins every collision, so an update converges on what a fresh
+   install of that template would produce.
+4. Swap the staged tree in with one rename.
+5. Verify on disk: every file the template owns is present with the template's
+   bytes, and every carried path is present. Success is declared from the tree
+   on disk, never from the copy plan.
+
+Any failure at step 3, 4 or 5 restores the backup before the command exits, so
+the profile is either the new tree or the old one and never a half-update. The
+update is idempotent: running it twice leaves a working profile both times, the
+second run carrying the same state forward and writing its own backup.
+
+`--rollback` restores the most recent `agent-<timestamp>` backup for the
+profile, or the one named by `--backup <dir>`:
+
+```bash
+bun scripts/install-profile.ts \
+  --profile buddha-v1 \
+  --rollback
+```
+
+The tree rollback displaces is itself moved aside, to
+`profile-backups/<name>/superseded-<timestamp>`. No path in the installer
+deletes anything: every tree it stops using is moved aside under
+`profile-backups/<name>/` as `agent-`, `superseded-`, `failed-` or
+`discarded-`, and reclaiming that space is a deliberate, separate act.
+
+`--update` on a profile that was never installed is refused rather than
+silently installing it, and first install still refuses an existing
+destination. Run either from a quiescent window: the installer does not stop a
+running CLI, and a profile updated underneath a live process keeps the code it
+already loaded until it restarts.
 
 The bridge is the CodeNomad backend compatibility boundary. It may run with
 `OMP_PROFILE=buddha-v1` as its default, exposes `GET /profile`, and accepts
