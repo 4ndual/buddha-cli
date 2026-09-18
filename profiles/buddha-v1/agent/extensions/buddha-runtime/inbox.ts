@@ -2,7 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { IrcBus, IrcDeliveryReceipt, IrcMessage } from "@oh-my-pi/pi-coding-agent/irc/bus";
-import type { AgentRef, AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { type AgentRef, type AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { ensurePersistedRoster, isCurrentSessionRosterRef } from "@oh-my-pi/pi-coding-agent/registry/persisted-agents";
 
 export interface HubScope {
 	kind: string;
@@ -208,6 +209,13 @@ export class BuddhaHubInbox {
 		scope: HubScope,
 		readonly registry: AgentRegistry,
 		readonly bus: IrcBus,
+		/**
+		 * The owning session's transcript, read at call time. The registry is
+		 * process-global and empty after a restart, so the roster scan needs a
+		 * root to restore from; a session switch changes it, hence a supplier
+		 * rather than a captured string.
+		 */
+		readonly sessionFileHint?: () => string | null | undefined,
 	) {
 		this.store = new BuddhaHubStore(dataDirectory, scope);
 		this.#stopObserving = this.bus.onDelivery((message, receipt) => this.#recordDelivery(message, receipt));
@@ -238,8 +246,37 @@ export class BuddhaHubInbox {
 		return agent;
 	}
 
-	identities(): AgentRef[] {
-		return this.registry.list().filter(agent => agent.kind !== "advisor" && agent.status !== "aborted");
+	/**
+	 * Restore this root's persisted children into the process-global registry
+	 * before any lookup that can refuse an id for being absent.
+	 *
+	 * `AgentRegistry` holds only what the current process registered, so a
+	 * restarted parent starts with nothing but `Main` and every child that
+	 * survives on disk reads as unknown — `identities()` drops it and
+	 * `sendDirect` refuses it, which the live bridge surfaces as
+	 * `SubagentNotInRoster`. This is the same latched, metadata-only scan the
+	 * native Hub runs from `executeList`/`executeSend`; it registers parked refs
+	 * for transcripts that already exist and creates nothing that did not. A
+	 * scan failure degrades to the in-memory roster rather than throwing, so an
+	 * id that is genuinely absent still reaches `#agent` and its refusal.
+	 */
+	async #restoreRoster(): Promise<string | undefined> {
+		return ensurePersistedRoster(
+			this.registry,
+			this.sessionFileHint?.() ?? this.registry.get(MAIN_AGENT_ID)?.sessionFile,
+		);
+	}
+
+	async identities(): Promise<AgentRef[]> {
+		const rootSessionFile = await this.#restoreRoster();
+		return this.registry
+			.list()
+			.filter(
+				agent =>
+					agent.kind !== "advisor" &&
+					agent.status !== "aborted" &&
+					isCurrentSessionRosterRef(agent, rootSessionFile),
+			);
 	}
 
 	async createChannel(from: string, name: string, channelMembers: string[]) {
@@ -264,6 +301,7 @@ export class BuddhaHubInbox {
 	}
 
 	async sendDirect(from: string, to: string, body: string, replyTo?: string) {
+		await this.#restoreRoster();
 		this.#agent(from);
 		this.#agent(to);
 		if (!body.trim()) throw new Error("Message body is required");
