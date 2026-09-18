@@ -18,6 +18,7 @@ class ProfileHubService {
 			{ kind: "root", id: sessionId },
 			AgentRegistry.global(),
 			IrcBus.global(),
+			() => context.sessionManager.getSessionFile(),
 		);
 		this.#sessionId = sessionId;
 	}
