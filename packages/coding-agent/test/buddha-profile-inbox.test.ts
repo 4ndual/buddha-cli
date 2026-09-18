@@ -5,7 +5,7 @@ import path from "node:path";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { CURRENT_SESSION_VERSION } from "@oh-my-pi/pi-coding-agent/session/session-entries";
-import { BuddhaHubInbox, BuddhaHubStore } from "./inbox";
+import { BuddhaHubInbox, BuddhaHubStore } from "../../../profiles/buddha-v1/agent/extensions/buddha-runtime/inbox";
 
 const roots: string[] = [];
 afterEach(async () => {
