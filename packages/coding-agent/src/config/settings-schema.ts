@@ -4900,13 +4900,13 @@ export const SETTINGS_SCHEMA = {
 
 	"worktree.clone": {
 		type: "boolean",
-		default: true,
+		default: false,
 		ui: {
 			tab: "tasks",
 			group: "Isolation",
 			label: "Clone Checkout into Worktrees",
 			description:
-				"New worktrees from `github pr_checkout` and `git worktree add` in bash start as a copy-on-write clone of the current checkout so ignored build artifacts (node_modules, target) carry over; falls back to a plain checkout when the filesystem cannot clone",
+				"Opt in to copying the current checkout when creating worktrees from `github pr_checkout` or `git worktree add` in bash. This carries ignored artifacts such as node_modules and target into every new worktree. Disabled by default so those worktrees start as plain Git checkouts",
 		},
 	},
 
