@@ -26,6 +26,17 @@ mkdir -p "$launch_dir"
 
 OMP_LAUNCH_CWD=$PWD
 export OMP_LAUNCH_CWD
+
+# Match the normal omp launcher: load the shared raw-task hook and terminal
+# telemetry without replacing caller-provided config overlays.
+overlay=${OMP_RAW_ADAPTER_ROOT:-/home/andual/.local/share/omp-raw-adapter}/overlay.yml
+if [ -f "$overlay" ] && [ "${OMP_RAW_ADAPTER:-1}" != 0 ]; then
+	case ":${PI_CONFIG_FILES:-}:" in
+	*":$overlay:"*) ;;
+	*) PI_CONFIG_FILES="${PI_CONFIG_FILES:+$PI_CONFIG_FILES:}$overlay"; export PI_CONFIG_FILES ;;
+	esac
+fi
+
 cd "$launch_dir"
 # Herdr validates the foreground process name on macOS.
 run_bun() {
