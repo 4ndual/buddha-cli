@@ -1,0 +1,721 @@
+[
+  {
+    "name": "read",
+    "description": "Read a file, URL, or internal URI with path selectors for ranges (default 3000 lines). ssh://host/path is writable with `write` and searchable with `grep`; unsupported hosts: use `bash` with a remote SSH command or mount with `sshfs`.",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "File path, skill:// URI, URL; path selectors select a range.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    },
+    "examples": [],
+    "catalog": "## functions\n\nnamespace functions {\n\n// Read a file, URL, or internal URI with path selectors for ranges (default 3000 lines). ssh://host/path is writable with `write` and searchable with `grep`; unsupported hosts: use `bash` with a remote SSH command or mount with `sshfs`.\ntype read = (_: {\n// File path, skill:// URI, URL; path selectors select a range.\npath: string,\n});\n\n} // namespace functions",
+    "tokens": {
+      "description": 56,
+      "schema": 58,
+      "toolDefinition": 115,
+      "catalog": 92
+    }
+  },
+  {
+    "name": "write",
+    "description": "Create or replace a file; use edit for small existing-file changes. Archive entries use archive.ext:path/inside (zip-family, tar-family, asar). SQLite rows use db.sqlite:table[:key], with JSON content for update and empty content for delete. xd://<tool> dispatches mounted devices with JSON content. Do not create documentation or emoji unless requested.",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "File path or writable internal URI; xd://<tool> dispatches a device.",
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ],
+      "additionalProperties": false
+    },
+    "examples": [],
+    "catalog": "## functions\n\nnamespace functions {\n\n// Create or replace a file; use edit for small existing-file changes. Archive entries use archive.ext:path/inside (zip-family, tar-family, asar). SQLite rows use db.sqlite:table[:key], with JSON content for update and empty content for delete. xd://<tool> dispatches mounted devices with JSON content. Do not create documentation or emoji unless requested.\ntype write = (_: {\n// File path or writable internal URI; xd://<tool> dispatches a device.\npath: string,\ncontent: string,\n});\n\n} // namespace functions",
+    "tokens": {
+      "description": 75,
+      "schema": 69,
+      "toolDefinition": 145,
+      "catalog": 117
+    }
+  },
+  {
+    "name": "bash",
+    "description": "Run one command or short fact-producing pipeline in a persistent shell. Use cwd instead of cd; env for quoted/multiline values; pty only for terminal interaction. Order-dependent commands use &&. Prefer read for file contents/directories, glob for paths, grep for search, eval for scripts/complex control flow, hub start for long-running processes. Common shell utilities are available. Output is captured; truncated output links to artifact://. Internal URIs resolve to paths. timeout:0 disables the deadline.",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "env": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "timeout": {
+          "description": "timeout in seconds; 0 disables the command deadline; nonzero values are clamped to 1-3600",
+          "type": "number"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "pty": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "examples": [],
+    "catalog": "## functions\n\nnamespace functions {\n\n// Run one command or short fact-producing pipeline in a persistent shell. Use cwd instead of cd; env for quoted/multiline values; pty only for terminal interaction. Order-dependent commands use &&. Prefer read for file contents/directories, glob for paths, grep for search, eval for scripts/complex control flow, hub start for long-running processes. Common shell utilities are available. Output is captured; truncated output links to artifact://. Internal URIs resolve to paths. timeout:0 disables the deadline.\ntype bash = (_: {\ncommand: string,\nenv?: Record<string, string>,\n// timeout in seconds; 0 disables the command deadline; nonzero values are clamped to 1-3600\ntimeout?: number,\ncwd?: string,\npty?: boolean,\n});\n\n} // namespace functions",
+    "tokens": {
+      "description": 102,
+      "schema": 110,
+      "toolDefinition": 213,
+      "catalog": 167
+    }
+  },
+  {
+    "name": "ask",
+    "description": "Ask only when existing sources cannot resolve a choice with materially different user tradeoffs. Send related questions together; 2–5 concise options each, with tradeoffs in description. recommended is a zero-based default; multi allows multiple selections. Do not include Other: the UI adds it. Prefer action and state reasonable defaults when the choice is not material.",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "questions": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "question": {
+                "type": "string"
+              },
+              "header": {
+                "type": "string"
+              },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string"
+                    },
+                    "description": {
+                      "type": "string"
+                    },
+                    "preview": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "label"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "multi": {
+                "type": "boolean"
+              },
+              "recommended": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "id",
+              "question",
+              "options"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "questions"
+      ],
+      "additionalProperties": false
+    },
+    "examples": [
+      {
+        "caption": "Single question",
+        "call": {
+          "questions": [
+            {
+              "id": "auth_method",
+              "question": "Which authentication method should this API use?",
+              "options": [
+                {
+                  "label": "JWT",
+                  "description": "Bearer tokens for stateless API clients."
+                },
+                {
+                  "label": "OAuth2",
+                  "description": "Delegated authorization with external identity providers."
+                },
+                {
+                  "label": "Session cookies",
+                  "description": "Browser-first authentication backed by server-side sessions."
+                }
+              ],
+              "recommended": 0
+            }
+          ]
+        }
+      },
+      {
+        "caption": "Multiple questions",
+        "call": {
+          "questions": [
+            {
+              "id": "storage_type",
+              "question": "Which storage backend?",
+              "options": [
+                {
+                  "label": "SQLite"
+                },
+                {
+                  "label": "PostgreSQL"
+                }
+              ]
+            },
+            {
+              "id": "auth_method",
+              "question": "Which auth method?",
+              "options": [
+                {
+                  "label": "JWT"
+                },
+                {
+                  "label": "Session cookies"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "catalog": "## functions\n\nnamespace functions {\n\n// Ask only when existing sources cannot resolve a choice with materially different user tradeoffs. Send related questions together; 2–5 concise options each, with tradeoffs in description. recommended is a zero-based default; multi allows multiple selections. Do not include Other: the UI adds it. Prefer action and state reasonable defaults when the choice is not material.\n//\n// @example \"Single question\"\n// ask(questions=[{\"id\": \"auth_method\", \"question\": \"Which authentication method should this API use?\", \"options\": [{\"label\": \"JWT\", \"description\": \"Bearer tokens for stateless API clients.\"}, {\"label\": \"OAuth2\", \"description\": \"Delegated authorization with external identity providers.\"}, {\"label\": \"Session cookies\", \"description\": \"Browser-first authentication backed by server-side sessions.\"}], \"recommended\": 0}])\n// @example \"Multiple questions\"\n// ask(questions=[{\"id\": \"storage_type\", \"question\": \"Which storage backend?\", \"options\": [{\"label\": \"SQLite\"}, {\"label\": \"PostgreSQL\"}]}, {\"id\": \"auth_method\", \"question\": \"Which auth method?\", \"options\": [{\"label\": \"JWT\"}, {\"label\": \"Session cookies\"}]}])\ntype ask = (_: {\nquestions: Array<{\nid: string,\nquestion: string,\nheader?: string,\noptions: Array<{\nlabel: string,\ndescription?: string,\npreview?: string,\n}>,\nmulti?: boolean,\nrecommended?: number,\n}>,\n});\n\n} // namespace functions",
+    "tokens": {
+      "description": 70,
+      "schema": 162,
+      "toolDefinition": 233,
+      "catalog": 309
+    }
+  },
+  {
+    "name": "hub",
+    "description": "Coordinate peers, background jobs, and project-scoped processes. The user is not a peer; Main answers in normal text. list discovers exact peer IDs (running/idle by default; status:'parked' for history). send({to,message}) wakes known peers; await:true waits for one reply (not with to:'all'); replyTo answers a message. inbox drains queued messages. Use paths, not pasted blobs. Do not message peers for facts tools can obtain. Jobs auto-deliver on completion. jobs snapshots; cancel({ids}) stops jobs. wait only when blocked: returns on the first matching message, job settlement, timeout, or interrupt; ids/from narrow it. User steering needs a text answer before another wait. Long-running services/watchers/REPLs use start({name,application,args,ready}), not bash. Readiness requires the supplied log/port checks, not mere process creation. ps/logs/wait/send/stop/restart/describe with name operate on that process. logs follow uses cursor; patterns are JS RegExp with u, not PCRE inline modifiers. stop is graceful before hard kill. persist survives the last OMP client; detached survives broker exit and disables PTY input. Omit unless needed. A settled job or process exit is not proof its artifact is accepted.",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "op": {
+          "type": "string",
+          "enum": [
+            "send",
+            "wait",
+            "inbox",
+            "list",
+            "jobs",
+            "cancel",
+            "start",
+            "ps",
+            "logs",
+            "stop",
+            "restart",
+            "describe"
+          ]
+        },
+        "to": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "replyTo": {
+          "type": "string"
+        },
+        "await": {
+          "type": "boolean"
+        },
+        "from": {
+          "type": "string"
+        },
+        "ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeoutMs": {
+          "type": "number"
+        },
+        "peek": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "running",
+            "idle",
+            "parked"
+          ]
+        },
+        "limit": {
+          "description": "Clamped to 100; defaults to 32",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 48
+        },
+        "application": {
+          "type": "string",
+          "minLength": 1
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "env": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "pty": {
+          "type": "boolean"
+        },
+        "ready": {
+          "type": "object",
+          "properties": {
+            "log": {
+              "type": "string",
+              "minLength": 1
+            },
+            "port": {
+              "type": "number"
+            },
+            "host": {
+              "type": "string",
+              "minLength": 1
+            },
+            "timeout": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          }
+        },
+        "restart": {
+          "type": "string",
+          "enum": [
+            "no",
+            "on-failure",
+            "always"
+          ]
+        },
+        "persist": {
+          "type": "boolean"
+        },
+        "detached": {
+          "type": "boolean"
+        },
+        "lines": {
+          "description": "Clamped to 1000",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "head": {
+          "type": "boolean"
+        },
+        "grep": {
+          "type": "string",
+          "minLength": 1
+        },
+        "follow": {
+          "type": "boolean"
+        },
+        "cursor": {
+          "type": "number",
+          "minimum": 0
+        },
+        "for": {
+          "type": "string",
+          "enum": [
+            "ready",
+            "exit"
+          ]
+        },
+        "pattern": {
+          "type": "string",
+          "minLength": 1
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "enter": {
+          "type": "boolean"
+        },
+        "keys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "signal": {
+          "type": "string",
+          "enum": [
+            "SIGINT",
+            "SIGTERM",
+            "SIGHUP",
+            "SIGQUIT",
+            "SIGKILL"
+          ]
+        },
+        "timeout": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "required": [
+        "op"
+      ]
+    },
+    "examples": [
+      {
+        "caption": "List peers",
+        "call": {
+          "op": "list"
+        }
+      },
+      {
+        "caption": "Inspect parked peer history",
+        "call": {
+          "op": "list",
+          "status": "parked"
+        }
+      },
+      {
+        "caption": "Fire-and-forget DM — same send wakes idle/parked peers",
+        "call": {
+          "op": "send",
+          "to": "AuthLoader",
+          "message": "Still touching src/server/auth.ts? I need to add a 401 path."
+        }
+      },
+      {
+        "caption": "Round-trip when you cannot proceed without the answer",
+        "call": {
+          "op": "send",
+          "to": "Main",
+          "message": "JWT or session cookies for the auth flow?",
+          "await": true
+        }
+      },
+      {
+        "caption": "Completely blocked: wait for the first finished job or incoming message",
+        "call": {
+          "op": "wait"
+        }
+      },
+      {
+        "caption": "Block until a specific peer answers",
+        "call": {
+          "op": "wait",
+          "from": "AuthLoader",
+          "timeoutMs": 60000
+        }
+      },
+      {
+        "caption": "Kill a hung background job",
+        "call": {
+          "op": "cancel",
+          "ids": [
+            "bash_a1b2c3"
+          ]
+        }
+      },
+      {
+        "caption": "Snapshot every background job without waiting",
+        "call": {
+          "op": "jobs"
+        }
+      },
+      {
+        "caption": "Start a dev server and wait for its log banner and port",
+        "call": {
+          "op": "start",
+          "name": "web",
+          "application": "bun",
+          "args": [
+            "run",
+            "dev"
+          ],
+          "ready": {
+            "log": "Local:.*http",
+            "port": 5173,
+            "timeout": 30
+          }
+        }
+      },
+      {
+        "caption": "Follow process output after a cursor",
+        "call": {
+          "op": "logs",
+          "name": "web",
+          "follow": true,
+          "cursor": 1842,
+          "timeout": 30
+        }
+      },
+      {
+        "caption": "Drive a REPL/debugger over stdin",
+        "call": {
+          "op": "send",
+          "name": "debugger",
+          "text": "breakpoint set --name main"
+        }
+      },
+      {
+        "caption": "Interrupt a process",
+        "call": {
+          "op": "send",
+          "name": "debugger",
+          "keys": [
+            "CTRL_C"
+          ]
+        }
+      },
+      {
+        "caption": "Block until a process is ready",
+        "call": {
+          "op": "wait",
+          "name": "web",
+          "for": "ready",
+          "timeout": 30
+        }
+      }
+    ],
+    "catalog": "## functions\n\nnamespace functions {\n\n// Coordinate peers, background jobs, and project-scoped processes. The user is not a peer; Main answers in normal text. list discovers exact peer IDs (running/idle by default; status:'parked' for history). send({to,message}) wakes known peers; await:true waits for one reply (not with to:'all'); replyTo answers a message. inbox drains queued messages. Use paths, not pasted blobs. Do not message peers for facts tools can obtain. Jobs auto-deliver on completion. jobs snapshots; cancel({ids}) stops jobs. wait only when blocked: returns on the first matching message, job settlement, timeout, or interrupt; ids/from narrow it. User steering needs a text answer before another wait. Long-running services/watchers/REPLs use start({name,application,args,ready}), not bash. Readiness requires the supplied log/port checks, not mere process creation. ps/logs/wait/send/stop/restart/describe with name operate on that process. logs follow uses cursor; patterns are JS RegExp with u, not PCRE inline modifiers. stop is graceful before hard kill. persist survives the last OMP client; detached survives broker exit and disables PTY input. Omit unless needed. A settled job or process exit is not proof its artifact is accepted.\n//\n// @example \"List peers\"\n// list\n// @example \"Inspect parked peer history\"\n// hub(op=\"list\", status=\"parked\")\n// @example \"Fire-and-forget DM — same send wakes idle/parked peers\"\n// hub(op=\"send\", to=\"AuthLoader\", message=\"Still touching src/server/auth.ts? I need to add a 401 path.\")\n// @example \"Round-trip when you cannot proceed without the answer\"\n// hub(op=\"send\", to=\"Main\", message=\"JWT or session cookies for the auth flow?\", await=True)\n// @example \"Completely blocked: wait for the first finished job or incoming message\"\n// wait\n// @example \"Block until a specific peer answers\"\n// hub(op=\"wait\", from=\"AuthLoader\", timeoutMs=60000)\n// @example \"Kill a hung background job\"\n// hub(op=\"cancel\", ids=[\"bash_a1b2c3\"])\n// @example \"Snapshot every background job without waiting\"\n// jobs\n// @example \"Start a dev server and wait for its log banner and port\"\n// hub(op=\"start\", name=\"web\", application=\"bun\", args=[\"run\", \"dev\"], ready={\"log\": \"Local:.*http\", \"port\": 5173, \"timeout\": 30})\n// @example \"Follow process output after a cursor\"\n// hub(op=\"logs\", name=\"web\", follow=True, cursor=1842, timeout=30)\n// @example \"Drive a REPL/debugger over stdin\"\n// hub(op=\"send\", name=\"debugger\", text=\"breakpoint set --name main\")\n// @example \"Interrupt a process\"\n// hub(op=\"send\", name=\"debugger\", keys=[\"CTRL_C\"])\n// @example \"Block until a process is ready\"\n// hub(op=\"wait\", name=\"web\", for=\"ready\", timeout=30)\ntype hub = (_: {\nop: \"send\" | \"wait\" | \"inbox\" | \"list\" | \"jobs\" | \"cancel\" | \"start\" | \"ps\" | \"logs\" | \"stop\" | \"restart\" | \"describe\",\nto?: string,\nmessage?: string,\nreplyTo?: string,\nawait?: boolean,\nfrom?: string,\nids?: string[],\ntimeoutMs?: number,\npeek?: boolean,\nstatus?: \"running\" | \"idle\" | \"parked\",\n// Clamped to 100; defaults to 32\nlimit?: number,\nname?: string,\napplication?: string,\nargs?: string[],\nenv?: Record<string, string>,\ncwd?: string,\npty?: boolean,\nready?: {\nlog?: string,\nport?: number,\nhost?: string,\ntimeout?: number,\n},\nrestart?: \"no\" | \"on-failure\" | \"always\",\npersist?: boolean,\ndetached?: boolean,\n// Clamped to 1000\nlines?: number,\nhead?: boolean,\ngrep?: string,\nfollow?: boolean,\ncursor?: number,\nfor?: \"ready\" | \"exit\",\npattern?: string,\ntext?: string,\nenter?: boolean,\nkeys?: string[],\nsignal?: \"SIGINT\" | \"SIGTERM\" | \"SIGHUP\" | \"SIGQUIT\" | \"SIGKILL\",\ntimeout?: number,\n});\n\n} // namespace functions",
+    "tokens": {
+      "description": 266,
+      "schema": 467,
+      "toolDefinition": 734,
+      "catalog": 917
+    }
+  },
+  {
+    "name": "eval",
+    "description": "Run one step of code in a persistent kernel. State persists across calls and `task` subagents.\nEval `agent()` children use independent kernels.\n\nWork incrementally: imports → define → test → use, each its own cell. Re-run setup ONLY after `reset`, kernel crash.\nTwo or more independent items → named `workpool()` + `.push(…)`; poll outside eval with `hub wait` on the pool name. Handles + `wait()` are for dependency-coupled results.\n\nTop-level `await` works; `asyncio.run(…)` raises error.\nJS runs under **Bun**: globals (`Bun.file`, `Bun.write`, `Bun.$`, `fetch`, `Buffer`) available; top-level `await`/`return` work.\n\nOn error, fix and re-run only the failing step.\n\n<prelude>\nPython: sync, kwargs. JS: async, ONE trailing object literal, never positional.\n```\ndisplay(value) → None        print(value, ...) → None\nread(path, offset?=1, limit?=None) → str\nwrite(path, content) → str\nenv(key?=None, value?=None) → str | None | dict\noutput(*ids, format?=\"raw\", query?=None, offset?=None, limit?=None) → str | dict | list[dict]\nawait tool.<name>(args) → unknown\n    Invoke any session tool; `args` = its parameter object. Async: `await tool.read({...})`.\ncompletion(prompt, model?=\"default\"|\"smol\"|\"slow\", system?=None, schema?=None) → CompletionHandle\n    Oneshot, stateless (no history/tools); returns immediately. `.wait()` → str (parsed object with `schema`). `model`: \"smol\" fast | \"default\" session | \"slow\" most capable.\nagent(prompt, agent?=\"tiny-task\", label?=None, schema?=None, schemaMode?=\"permissive\", isolated?=None, apply?=None, merge?=None, tools?=None) → AgentHandle\n    Spawns a background subagent and returns immediately. `agent` selects a discovered agent; omit it to use `tiny-task`. Allowed agents: `tiny-task`, `atomic-task-reviewer`. Handle: `.id`, `.handle` (\"agent://<id>\"), `.status`, `.done()`, `.wait(timeout?)` → final text (parsed with `schema`), `.send(message)`, `.cancel()`, `.output()`. Unwaited results auto-deliver like async jobs. `schema` overrides agent/session schemas; `isolated` requests a worktree; `apply`/`merge` control its changes. `tools`: names of your @tool-defined tools the child may call.\n    JS: ONE trailing object — agent(prompt, { agent, label, schema, schemaMode, isolated, apply, merge, tools }).\nwait(handles, timeout?=None, raise_errors?=True) → list\n    Barrier over agent/completion handles, results in input order. `raise_errors=False` keeps the error in its slot. JS: wait(handles, { timeout, raiseErrors }).\nworkpool(agent?=None, name?=None, context?=None, tools?=None) → WorkPool\n    Default for 2+ independent items. `.push(*items)`; `.status()`; `.peek()`; `.close()`. Pool name = async job id; results auto-deliver, or poll outside eval with `hub wait` and `ids:[pool.name]`. `eval.workpool.freshAgents=true` uses a new agent per item.\n@tool / tool(fn, name=None, description=None)tool(fn, { name?, description?, parameters? })\n    Define a tool that runs in this kernel (schema inferred from type hints); reference by name in `task` items' `tools`, `agent(tools=…)`, `workpool(tools=…)`. `tool.defined()`, `tool.undefine(name)`.\nlog(message) → None         phase(title) → None\nbudget → `budget.total` (ceiling or None), `budget.spent()`, `budget.remaining()``await budget.total()`, `await budget.spent()`, `await budget.remaining()`; ceiling `+Nk` advisory, `+Nk!` hard.\n```\n</prelude>\n<dag>\nAcyclic waves of handles:\n- **Name nodes.** `h = agent(…)` returns at once; `h.handle` is `agent://<id>`.\n- **Wire edges.** Put an upstream `.wait()` result or `.handle` in the downstream prompt. Bulk: `write(\"local://<name>.md\", …)`.\n- **`wait(hs)`** = wave barrier. Open-ended item streams → `workpool()`.\n- **Isolate failure.** `wait(hs, raise_errors=False)` keeps a failure in its slot; only that subtree degrades.\n- **Acyclic only.** No node waits on its own descendant.\n</dag>\n\n<critical>\nPrior top-level names survive into the next cell — reuse; NEVER re-import/re-declare. Re-read only if file changed since last read.\n</critical>",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "language": {
+          "description": "runtime: \"py\" for the IPython kernel, \"js\" for the persistent JS VM",
+          "type": "string",
+          "enum": [
+            "py",
+            "js"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "timeout": {
+          "type": "number"
+        },
+        "reset": {
+          "type": "boolean"
+        },
+        "code": {
+          "description": "code to run in this eval call, verbatim. Use top-level await freely.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "language",
+        "code"
+      ],
+      "additionalProperties": false
+    },
+    "examples": [
+      {
+        "caption": "First call — set up once",
+        "call": {
+          "language": "py",
+          "title": "imports",
+          "code": "import json\nfrom pathlib import Path"
+        }
+      },
+      {
+        "caption": "Second call — reuse, do NOT re-import",
+        "call": {
+          "language": "py",
+          "title": "load config",
+          "code": "data = json.loads(read('package.json'))\ndisplay(data)"
+        }
+      },
+      {
+        "caption": "Third call — reuse the loaded config",
+        "call": {
+          "language": "py",
+          "title": "scan deps",
+          "code": "display(sorted(data['dependencies']))"
+        }
+      }
+    ],
+    "catalog": "## functions\n\nnamespace functions {\n\n// Run one step of code in a persistent kernel. State persists across calls and `task` subagents.\n// Eval `agent()` children use independent kernels.\n//\n// Work incrementally: imports → define → test → use, each its own cell. Re-run setup ONLY after `reset`, kernel crash.\n// Two or more independent items → named `workpool()` + `.push(…)`; poll outside eval with `hub wait` on the pool name. Handles + `wait()` are for dependency-coupled results.\n//\n// Top-level `await` works; `asyncio.run(…)` raises error.\n// JS runs under **Bun**: globals (`Bun.file`, `Bun.write`, `Bun.$`, `fetch`, `Buffer`) available; top-level `await`/`return` work.\n//\n// On error, fix and re-run only the failing step.\n//\n// <prelude>\n// Python: sync, kwargs. JS: async, ONE trailing object literal, never positional.\n// ```\n// display(value) → None        print(value, ...) → None\n// read(path, offset?=1, limit?=None) → str\n// write(path, content) → str\n// env(key?=None, value?=None) → str | None | dict\n// output(*ids, format?=\"raw\", query?=None, offset?=None, limit?=None) → str | dict | list[dict]\n// await tool.<name>(args) → unknown\n//     Invoke any session tool; `args` = its parameter object. Async: `await tool.read({...})`.\n// completion(prompt, model?=\"default\"|\"smol\"|\"slow\", system?=None, schema?=None) → CompletionHandle\n//     Oneshot, stateless (no history/tools); returns immediately. `.wait()` → str (parsed object with `schema`). `model`: \"smol\" fast | \"default\" session | \"slow\" most capable.\n// agent(prompt, agent?=\"tiny-task\", label?=None, schema?=None, schemaMode?=\"permissive\", isolated?=None, apply?=None, merge?=None, tools?=None) → AgentHandle\n//     Spawns a background subagent and returns immediately. `agent` selects a discovered agent; omit it to use `tiny-task`. Allowed agents: `tiny-task`, `atomic-task-reviewer`. Handle: `.id`, `.handle` (\"agent://<id>\"), `.status`, `.done()`, `.wait(timeout?)` → final text (parsed with `schema`), `.send(message)`, `.cancel()`, `.output()`. Unwaited results auto-deliver like async jobs. `schema` overrides agent/session schemas; `isolated` requests a worktree; `apply`/`merge` control its changes. `tools`: names of your @tool-defined tools the child may call.\n//     JS: ONE trailing object — agent(prompt, { agent, label, schema, schemaMode, isolated, apply, merge, tools }).\n// wait(handles, timeout?=None, raise_errors?=True) → list\n//     Barrier over agent/completion handles, results in input order. `raise_errors=False` keeps the error in its slot. JS: wait(handles, { timeout, raiseErrors }).\n// workpool(agent?=None, name?=None, context?=None, tools?=None) → WorkPool\n//     Default for 2+ independent items. `.push(*items)`; `.status()`; `.peek()`; `.close()`. Pool name = async job id; results auto-deliver, or poll outside eval with `hub wait` and `ids:[pool.name]`. `eval.workpool.freshAgents=true` uses a new agent per item.\n// @tool / tool(fn, name=None, description=None)tool(fn, { name?, description?, parameters? })\n//     Define a tool that runs in this kernel (schema inferred from type hints); reference by name in `task` items' `tools`, `agent(tools=…)`, `workpool(tools=…)`. `tool.defined()`, `tool.undefine(name)`.\n// log(message) → None         phase(title) → None\n// budget → `budget.total` (ceiling or None), `budget.spent()`, `budget.remaining()``await budget.total()`, `await budget.spent()`, `await budget.remaining()`; ceiling `+Nk` advisory, `+Nk!` hard.\n// ```\n// </prelude>\n// <dag>\n// Acyclic waves of handles:\n// - **Name nodes.** `h = agent(…)` returns at once; `h.handle` is `agent://<id>`.\n// - **Wire edges.** Put an upstream `.wait()` result or `.handle` in the downstream prompt. Bulk: `write(\"local://<name>.md\", …)`.\n// - **`wait(hs)`** = wave barrier. Open-ended item streams → `workpool()`.\n// - **Isolate failure.** `wait(hs, raise_errors=False)` keeps a failure in its slot; only that subtree degrades.\n// - **Acyclic only.** No node waits on its own descendant.\n// </dag>\n//\n// <critical>\n// Prior top-level names survive into the next cell — reuse; NEVER re-import/re-declare. Re-read only if file changed since last read.\n// </critical>\n//\n// @example \"First call — set up once\"\n// eval(language=\"py\", title=\"imports\", code=\"\"\"import json\n// from pathlib import Path\"\"\")\n// @example \"Second call — reuse, do NOT re-import\"\n// eval(language=\"py\", title=\"load config\", code=\"\"\"data = json.loads(read('package.json'))\n// display(data)\"\"\")\n// @example \"Third call — reuse the loaded config\"\n// eval(language=\"py\", title=\"scan deps\", code=\"display(sorted(data['dependencies']))\")\ntype eval = (_: {\n// runtime: \"py\" for the IPython kernel, \"js\" for the persistent JS VM\nlanguage: \"py\" | \"js\",\ntitle?: string,\ntimeout?: number,\nreset?: boolean,\n// code to run in this eval call, verbatim. Use top-level await freely.\ncode: string,\n});\n\n} // namespace functions",
+    "tokens": {
+      "description": 1104,
+      "schema": 118,
+      "toolDefinition": 1223,
+      "catalog": 1299
+    }
+  },
+  {
+    "name": "edit",
+    "description": "Single file string replacement; fuzzy whitespace matching.\n\n<instruction>\n- MUST use smallest `old_string` uniquely identifying change.\n- Nonunique `old_string` → MUST add context or use `replace_all: true` for all occurrences.\n- Rename a string across file → use `replace_all: true`.\n- SHOULD edit existing files, not create new.\n</instruction>\n\n<output>\nSuccess/failure status.\nSuccess: file modified in place; replacement applied.\nFailure — e.g., `old_string` absent or multiple matches without `replace_all: true`: error describes issue.\n</output>\n\n<critical>\n- MUST read file at least once in conversation before editing. Tool errors on edit before read.\n</critical>\n\n<bash-alternatives>\nReplace content-addressed — identify change by text.\n\nPattern-addressed bulk changes: bash more efficient:\n\n|Operation|Command|\n|---|---|\n|Regex replace|`sd 'pattern' 'replacement' file`|\n|Bulk replace across files|`sd 'pattern' 'replacement' **/*.ts`|\n\nUse Replace when content identifies location; `ast_edit` for structure-aware codemods.\nFor in-place edits prefer Replace or `write` — diff preview and fuzzy matching.\n</bash-alternatives>",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "old_string": {
+          "type": "string"
+        },
+        "new_string": {
+          "type": "string"
+        },
+        "replace_all": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "old_string",
+        "new_string"
+      ],
+      "additionalProperties": false
+    },
+    "examples": [],
+    "catalog": "## functions\n\nnamespace functions {\n\n// Single file string replacement; fuzzy whitespace matching.\n//\n// <instruction>\n// - MUST use smallest `old_string` uniquely identifying change.\n// - Nonunique `old_string` → MUST add context or use `replace_all: true` for all occurrences.\n// - Rename a string across file → use `replace_all: true`.\n// - SHOULD edit existing files, not create new.\n// </instruction>\n//\n// <output>\n// Success/failure status.\n// Success: file modified in place; replacement applied.\n// Failure — e.g., `old_string` absent or multiple matches without `replace_all: true`: error describes issue.\n// </output>\n//\n// <critical>\n// - MUST read file at least once in conversation before editing. Tool errors on edit before read.\n// </critical>\n//\n// <bash-alternatives>\n// Replace content-addressed — identify change by text.\n//\n// Pattern-addressed bulk changes: bash more efficient:\n//\n// |Operation|Command|\n// |---|---|\n// |Regex replace|`sd 'pattern' 'replacement' file`|\n// |Bulk replace across files|`sd 'pattern' 'replacement' **/*.ts`|\n//\n// Use Replace when content identifies location; `ast_edit` for structure-aware codemods.\n// For in-place edits prefer Replace or `write` — diff preview and fuzzy matching.\n// </bash-alternatives>\ntype edit = (_: {\npath: string,\nold_string: string,\nnew_string: string,\nreplace_all?: boolean,\n});\n\n} // namespace functions",
+    "tokens": {
+      "description": 255,
+      "schema": 71,
+      "toolDefinition": 327,
+      "catalog": 299
+    }
+  },
+  {
+    "name": "task",
+    "description": "Run ONE subagent synchronously. Execution blocks until work finishes.\n\n# Task Design\n- **Agent typing:** Pick each item's most specific available agent. Omit `agent` when the spawn-policy default is the best fit; otherwise pass the specialist explicitly.\n- **No overhead:** Each `task` MUST instruct its agent to skip formatters, linters, and project-wide test suites. Run those once at the end.\n- **One-pass:** Prefer agents that investigate AND edit in one pass;\n- **Overlap:** Parallelize independent ownership. Same-file edits are not guaranteed to merge. Name one integration owner and serialize only the irreducibly shared mutation boundary. Every concurrent batch has two prerequisites:\n  1. Every task MUST skip validation (build/lint/tests) — validating mid-flight blocks agents on each other's edits.\n  2. Decide cross-task contracts up front (e.g. the interface A implements and B consumes) and state them in the task, not left for agents to negotiate.\n\n# Inputs\n- `name`: A stable CamelCase identifier (≤32 chars), used to address the agent (IRC, job ids). Generated automatically if omitted.\n- `agent`: The agent type to spawn (e.g. `reviewer`).\n  Omitting `agent` selects the spawn-policy default (`task`). Use it only when that agent fits the task.\n  NEVER pass the spawn-policy default explicitly. Only omit it after checking the available agents below.\n- `task`: Complete, self-contained instructions. One-liners or missing acceptance criteria are PROHIBITED.\n- `outputSchema`: Invocation-specific JSON Schema. Overrides the selected agent and parent-session schemas.\n- `schemaMode`: `\"permissive\"` (default) accepts a retry-exhausted invalid result with a warning; `\"strict\"` fails it.\n\n# Communication\nSubagents start blank — no conversation history.\nPass large payloads via `local://<path>` URIs, NEVER inline text.\n\n# Format Contracts\n\n`task` format:\n# Target       ← exact files and symbols; explicit non-goals\n# Change       ← step-by-step add/remove/rename; APIs and patterns\n# Acceptance   ← observable result; no project-wide commands\n\n# Available Agents\nAgent spawning is currently disabled.",
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "agent": {
+          "default": "task",
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        },
+        "rt": {
+          "type": "string",
+          "enum": [
+            "R1",
+            "R2",
+            "R3",
+            "R4",
+            "R5"
+          ]
+        },
+        "outputSchema": {
+          "anyOf": [
+            {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": true
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "schemaMode": {
+          "type": "string",
+          "enum": [
+            "permissive",
+            "strict"
+          ]
+        }
+      },
+      "required": [
+        "task",
+        "rt"
+      ]
+    },
+    "examples": [],
+    "catalog": "## functions\n\nnamespace functions {\n\n// Run ONE subagent synchronously. Execution blocks until work finishes.\n//\n// # Task Design\n// - **Agent typing:** Pick each item's most specific available agent. Omit `agent` when the spawn-policy default is the best fit; otherwise pass the specialist explicitly.\n// - **No overhead:** Each `task` MUST instruct its agent to skip formatters, linters, and project-wide test suites. Run those once at the end.\n// - **One-pass:** Prefer agents that investigate AND edit in one pass;\n// - **Overlap:** Parallelize independent ownership. Same-file edits are not guaranteed to merge. Name one integration owner and serialize only the irreducibly shared mutation boundary. Every concurrent batch has two prerequisites:\n//   1. Every task MUST skip validation (build/lint/tests) — validating mid-flight blocks agents on each other's edits.\n//   2. Decide cross-task contracts up front (e.g. the interface A implements and B consumes) and state them in the task, not left for agents to negotiate.\n//\n// # Inputs\n// - `name`: A stable CamelCase identifier (≤32 chars), used to address the agent (IRC, job ids). Generated automatically if omitted.\n// - `agent`: The agent type to spawn (e.g. `reviewer`).\n//   Omitting `agent` selects the spawn-policy default (`task`). Use it only when that agent fits the task.\n//   NEVER pass the spawn-policy default explicitly. Only omit it after checking the available agents below.\n// - `task`: Complete, self-contained instructions. One-liners or missing acceptance criteria are PROHIBITED.\n// - `outputSchema`: Invocation-specific JSON Schema. Overrides the selected agent and parent-session schemas.\n// - `schemaMode`: `\"permissive\"` (default) accepts a retry-exhausted invalid result with a warning; `\"strict\"` fails it.\n//\n// # Communication\n// Subagents start blank — no conversation history.\n// Pass large payloads via `local://<path>` URIs, NEVER inline text.\n//\n// # Format Contracts\n//\n// `task` format:\n// # Target       ← exact files and symbols; explicit non-goals\n// # Change       ← step-by-step add/remove/rename; APIs and patterns\n// # Acceptance   ← observable result; no project-wide commands\n//\n// # Available Agents\n// Agent spawning is currently disabled.\ntype task = (_: {\nname?: string,\nagent?: string,\ntask: string,\nrt: \"R1\" | \"R2\" | \"R3\" | \"R4\" | \"R5\",\noutputSchema?: Record<string, unknown> | boolean | string | null,\nschemaMode?: \"permissive\" | \"strict\",\n});\n\n} // namespace functions",
+    "tokens": {
+      "description": 459,
+      "schema": 135,
+      "toolDefinition": 595,
+      "catalog": 550
+    }
+  }
+]

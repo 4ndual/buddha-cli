@@ -1,146 +1,115 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { Tokenizer } from "../packages/agent/src/tokenizer";
-import { prompt } from "@oh-my-pi/pi-utils";
-import { ReadTool } from "../packages/coding-agent/src/tools/read";
-import { WriteTool } from "../packages/coding-agent/src/tools/write";
-import { BashTool } from "../packages/coding-agent/src/tools/bash";
-import { AskTool } from "../packages/coding-agent/src/tools/ask";
-import { HubTool } from "../packages/coding-agent/src/tools/hub";
-import { resolveEditToolDescription } from "../packages/coding-agent/src/edit";
+
+interface Capture {
+  name: string;
+  description: string;
+  schema: Record<string, unknown>;
+  examples: unknown[];
+  catalog: string;
+  tokens: {
+    description: number;
+    schema: number;
+    toolDefinition: number;
+    catalog: number;
+  };
+}
 
 const root = resolve(import.meta.dir, "..");
-const outputDir = join(root, "docs/tool-context-before-after");
-const tokenCounter = new Tokenizer();
-const toolRoot = "packages/coding-agent/src";
-const settingsValues: Record<string, unknown> = {
-	"read.defaultLimit": 3000,
-	"images.autoResize": false,
-	"async.enabled": false,
-	"bash.autoBackground.enabled": false,
-	"bash.autoBackground.thresholdMs": 30000,
-	"glob.enabled": true,
-	"grep.enabled": true,
-	"astGrep.enabled": false,
-	"astEdit.enabled": false,
-	"launch.enabled": true,
-	"eval.enabled": true,
-	"eval.py": true,
-	"eval.js": true,
-	"lsp.formatOnWrite": false,
-	"lsp.diagnosticsOnWrite": false,
-	"memory.backend": "off",
+const directory = join(root, "docs/tool-context-before-after");
+const before = JSON.parse(
+  await readFile(join(directory, "before.json"), "utf8"),
+) as Capture[];
+const after = JSON.parse(
+  await readFile(join(directory, "after.json"), "utf8"),
+) as Capture[];
+const source: Record<string, string> = {
+  read: "packages/coding-agent/src/tools/read.ts",
+  write: "packages/coding-agent/src/tools/write.ts",
+  bash: "packages/coding-agent/src/tools/bash.ts",
+  ask: "packages/coding-agent/src/tools/ask.ts",
+  hub: "packages/coding-agent/src/tools/hub/index.ts",
+  eval: "packages/coding-agent/src/tools/eval.ts",
+  edit: "packages/coding-agent/src/edit/index.ts",
+  task: "packages/coding-agent/src/task/index.ts",
 };
-const session = {
-	cwd: root,
-	enableLsp: false,
-	hasUI: true,
-	settings: { get: (key: string) => settingsValues[key] ?? false, getShellConfig: () => ({ env: {} }) },
-	isToolActive: (name: string) => ["read", "glob", "grep", "eval", "hub"].includes(name),
-} as never;
-
-async function headFile(relative: string): Promise<string> {
-	const proc = Bun.spawnSync(["git", "show", `HEAD:${relative}`], { cwd: root });
-	if (proc.exitCode !== 0) throw new Error(`Missing HEAD source: ${relative}`);
-	return proc.stdout.toString().trim();
-}
-
-const specs = [
-	{
-		name: "read", before: `${toolRoot}/prompts/tools/read.md`, source: `${toolRoot}/tools/read.ts`,
-		schema: "readSchema", after: new ReadTool(session).description,
-		context: { IS_HL_MODE: false },
-	},
-	{
-		name: "write", before: `${toolRoot}/prompts/tools/write.md`, source: `${toolRoot}/tools/write.ts`,
-		schema: "writeSchema", after: new WriteTool(session).description,
-		context: {},
-	},
-	{
-		name: "bash", before: `${toolRoot}/prompts/tools/bash.md`, source: `${toolRoot}/tools/bash.ts`,
-		schema: "bashSchemaBase", after: new BashTool(session).description,
-		context: { hasEval: true, hasShellBuiltins: true, asyncEnabled: false, autoBackgroundEnabled: false, hasGrep: true, hasRead: true, hasGlob: true, hasLaunch: true, isWindows: false },
-	},
-	{
-		name: "ask", before: `${toolRoot}/prompts/tools/ask.md`, source: `${toolRoot}/tools/ask.ts`,
-		schema: "askSchema", after: new AskTool(session).description,
-		context: {},
-	},
-	{
-		name: "hub", before: `${toolRoot}/prompts/tools/hub.md`, source: `${toolRoot}/tools/hub/index.ts`,
-		schema: "hubSchema", after: new HubTool(session).description,
-		context: {},
-	},
-	{
-		name: "eval", before: `${toolRoot}/prompts/tools/eval.md`, source: `${toolRoot}/tools/eval.ts`,
-		schema: "evalSchema", after: null,
-		context: { py: true, js: true, evalTools: true, eagerDelegation: true, autoBackgroundEnabled: false, spawns: true, spawnDefaultAgent: "task", spawnAllowedAgentsText: "", preludeDocumentation: "" },
-	},
-	{
-		name: "task", before: `${toolRoot}/prompts/tools/task.md`, source: `${toolRoot}/task/index.ts`,
-		schema: "getTaskSchema", after: null,
-		context: { asyncEnabled: false, batchEnabled: false, hasBlockingAgents: false, scoutAvailable: false, ircEnabled: false, evalToolsEnabled: false, effortEnabled: false, isolationEnabled: false, applyIsolatedChanges: false, spawningDisabled: true, defaultAgent: "task", allowedAgentsText: "", agents: [] },
-	},
-] as const;
-
-await mkdir(outputDir, { recursive: true });
-async function save(name: string, content: string): Promise<void> {
-	const target = join(outputDir, name);
-	if (process.argv.includes("--check")) {
-		const existing = await readFile(target, "utf8");
-		if (existing !== content) throw new Error(`Stale context audit: ${target}`);
-		return;
-	}
-	await writeFile(target, content);
-}
+const order = ["read", "write", "bash", "task", "ask", "eval", "hub", "edit"];
+const beforeByName = new Map(before.map((record) => [record.name, record]));
+const afterByName = new Map(after.map((record) => [record.name, record]));
+const savings = { description: 0, toolDefinition: 0, catalog: 0 };
 const rows: string[] = [];
-for (const spec of specs) {
-	const legacyTemplate = await headFile(spec.before);
-	const before = prompt.render(legacyTemplate, spec.context);
-	const after = spec.after ?? before;
-	const oldCount = tokenCounter.countTokens(before, "strict");
-	const newCount = tokenCounter.countTokens(after, "strict");
-	const delta = oldCount - newCount;
-	rows.push(`| [${spec.name}](./${spec.name}.md) | ${oldCount} | ${newCount} | ${delta > 0 ? `+${delta}` : delta} |`);
-	const output = `# ${spec.name}: before and after model-facing description\n\n` +
-		`Baseline: source checkout at HEAD for the previous template, current working tree for the new tool. ` +
-		`Conditional settings are fixed by [the generator](../../scripts/generate-tool-context-audit.ts); other profiles can differ. ` +
-		`OMP may send this descriptor in the provider tool schema or move it into the system prompt. ` +
-		`Neither the TypeScript source nor this audit file is itself sent to the model.\n\n` +
-		`Previous description: **${oldCount}** tokens. Current description: **${newCount}** tokens. ` +
-		`Description-only saving: **${delta}** tokens per exposed tool definition. ` +
-		`Counted with OMP's Tokenizer strict mode (o200k fallback); provider framing, examples, schema JSON, caching, and billing are excluded.\n\n` +
-		`## Before — rendered from ${spec.before}\n\n\`\`\`text\n${before}\n\`\`\`\n\n` +
-		`## After — current runtime description\n\n\`\`\`text\n${after}\n\`\`\`\n\n` +
-		`## Code contract\n\nThe live input contract is \`${spec.schema}\` in [${spec.source}](../../${spec.source}); ` +
-		`Zod is the runtime parser and JSON Schema source. The schema is separately sent as a tool definition when this tool is active. ` +
-		`${spec.name === "task" || spec.name === "eval" ? "This tool retains dynamic instructions; the Zod migration did not shorten this description. " : ""}` +
-		`The result contract is parsed at the tool boundary. This document is a measurement snapshot, not a replacement for executable code.\n`;
-	await save(`${spec.name}.md`, output);
+const signed = (value: number) => (value >= 0 ? `+${value}` : String(value));
+const json = (value: unknown) => JSON.stringify(value, null, 2);
+
+async function save(name: string, body: string): Promise<void> {
+  const target = join(directory, name);
+  if (process.argv.includes("--check")) {
+    if ((await readFile(target, "utf8")) !== body)
+      throw new Error(`Stale audit: ${target}`);
+    return;
+  }
+  await writeFile(target, body);
 }
 
-const editDescription = resolveEditToolDescription("replace", undefined);
-const editCount = tokenCounter.countTokens(editDescription, "strict");
-rows.push(`| [edit](./edit.md) | ${editCount} | ${editCount} | 0 |`);
-await save("edit.md", `# edit: before and after model-facing description\n\n` +
-	`Baseline: replace mode, full prompt variant. The descriptor comes from the native addon through ` +
-	`[resolveEditToolDescription](../../${toolRoot}/edit/index.ts); this migration changed the input/output schema path, not the descriptor. ` +
-	`Other edit modes and the compact variant have different descriptions.\n\n` +
-	`Previous description: **${editCount}** tokens. Current description: **${editCount}** tokens. Description-only saving: **0** tokens. ` +
-	`Counted with OMP's Tokenizer strict mode (o200k fallback); schema, examples and provider framing excluded.\n\n` +
-	`## Before\n\n\`\`\`text\n${editDescription}\n\`\`\`\n\n` +
-	`## After\n\n\`\`\`text\n${editDescription}\n\`\`\`\n\n` +
-	`## Code contract\n\nMode-specific schemas are in [edit/schemas.ts](../../${toolRoot}/edit/schemas.ts), ` +
-	`converted to JSON Schema with \`zodWire\` and parsed at the tool boundary.\n`);
+for (const name of order) {
+  const old = beforeByName.get(name);
+  const now = afterByName.get(name);
+  if (!old || !now) throw new Error(`Missing ${name} capture`);
+  const descriptionSaved = old.tokens.description - now.tokens.description;
+  const wireSaved = old.tokens.toolDefinition - now.tokens.toolDefinition;
+  const catalogSaved = old.tokens.catalog - now.tokens.catalog;
+  savings.description += descriptionSaved;
+  savings.toolDefinition += wireSaved;
+  savings.catalog += catalogSaved;
+  rows.push(
+    `| [${name}](./${name}.md) | ${old.tokens.description} → ${now.tokens.description} (${signed(descriptionSaved)}) | ${old.tokens.toolDefinition} → ${now.tokens.toolDefinition} (${signed(wireSaved)}) | ${old.tokens.catalog} → ${now.tokens.catalog} (${signed(catalogSaved)}) |`,
+  );
+  const special =
+    name === "eval"
+      ? "The old eval module hit a pre-existing import cycle in the isolated checkout. Its unchanged Markdown template was rendered with the current descriptor; its old ArkType schema was reconstructed from the old source. Provider-schema comparison is valid for those inspected fields, but old catalog examples may be understated."
+      : name === "task"
+        ? "The current task schema includes concurrent uncommitted runtime-tier work. Its token delta is a working-tree snapshot, not an isolated effect of the Zod migration."
+        : name === "edit"
+          ? "Both captures use the same available native addon for replace-mode description. The TypeScript schema changed; the description source did not."
+          : "The descriptors and schemas were read from instantiated tools in isolated source checkouts.";
+  const body =
+    `# ${name}: model context before and after\n\n` +
+    `Old source: commit \`89c4b8dff5\`. New source: current working-tree capture. ` +
+    `[Tool implementation](../../${source[name]}). ${special}\n\n` +
+    `| Measured surface | Before | After | Tokens saved |\n| --- | ---: | ---: | ---: |\n` +
+    `| Description | ${old.tokens.description} | ${now.tokens.description} | ${signed(descriptionSaved)} |\n` +
+    `| Provider tool definition (name + description + JSON Schema) | ${old.tokens.toolDefinition} | ${now.tokens.toolDefinition} | ${signed(wireSaved)} |\n` +
+    `| Full system-prompt inventory entry | ${old.tokens.catalog} | ${now.tokens.catalog} | ${signed(catalogSaved)} |\n\n` +
+    `Counts use OMP's strict Tokenizer with its o200k fallback. The provider total is a local ` +
+    `content count, not provider framing or billable usage. Inventory is rendered one tool at a time, ` +
+    `including its examples when present. Native tool mode and prompt-inventory mode are alternatives, not additive.\n\n` +
+    `## Before: description\n\n\`\`\`text\n${old.description}\n\`\`\`\n\n` +
+    `## After: description\n\n\`\`\`text\n${now.description}\n\`\`\`\n\n` +
+    `## Before: input JSON Schema\n\n\`\`\`json\n${json(old.schema)}\n\`\`\`\n\n` +
+    `## After: input JSON Schema\n\n\`\`\`json\n${json(now.schema)}\n\`\`\`\n\n` +
+    `## Before: complete inventory entry\n\n\`\`\`text\n${old.catalog}\n\`\`\`\n\n` +
+    `## After: complete inventory entry\n\n\`\`\`text\n${now.catalog}\n\`\`\`\n\n` +
+    `The TypeScript source is **not** sent to the model. OMP sends one of the generated ` +
+    `surfaces above, depending on provider and session configuration.\n`;
+  await save(`${name}.md`, body);
+}
 
-await save("README.md", `# OMP tool-context migration audit\n\n` +
-	`Generated by [generate-tool-context-audit.ts](../../scripts/generate-tool-context-audit.ts). ` +
-	`These are per-tool descriptions under the generator's explicit baseline, not a claim that all eight tools appear in every request. ` +
-	`Profiles, enabled tools, edit mode, code mode, async mode, prompt-variant policy, and provider transport change the actual context. ` +
-	`The old prompt files remain in the tree as source/history; the live short descriptors come from TypeScript.\n\n` +
-	`| Tool | Before | After | Saved |\n| --- | ---: | ---: | ---: |\n${rows.join("\n")}\n\n` +
-	`Counts are description-only using OMP's strict tokenizer with its o200k fallback. ` +
-	`They do **not** establish total base-context or billable-token savings: JSON Schema, tool examples, provider framing and caching are separate. ` +
-	`The model receives generated schema/description, not the self-explanatory TypeScript itself. ` +
-	`Task, eval and edit intentionally retain substantial instructions where schema alone cannot encode behavior.\n`);
+await save(
+  "README.md",
+  `# OMP tool-context before/after audit\n\n` +
+    `[Capture script](../../scripts/capture-tool-context.ts) and [Markdown generator](../../scripts/generate-tool-context-audit.ts). ` +
+    `Old checkout: \`89c4b8dff5\`; current capture: working tree after the tool rewrite. ` +
+    `The baseline is one explicit configuration: read limit 3000, memory off, async off, ` +
+    `both eval backends on, edit replace/full, task flat/no isolation, and the five core tools available. ` +
+    `Other profiles and settings produce different context.\n\n` +
+    `| Tool | Description tokens | Provider definition tokens | System-inventory tokens |\n` +
+    `| --- | ---: | ---: | ---: |\n${rows.join("\n")}\n` +
+    `| **All eight if exposed** | **${signed(savings.description)} saved** | **${signed(savings.toolDefinition)} saved** | **${signed(savings.catalog)} saved** |\n\n` +
+    `The provider definition count includes the tool name, actual runtime description, and generated JSON Schema; ` +
+    `the system inventory is OMP's rendered descriptor with examples. These are **alternative** presentation modes. ` +
+    `Neither count includes provider framing, hidden overhead, repeated-turn caching, or billable-token behavior. ` +
+    `The model does not receive the self-explanatory TypeScript source. ` +
+    `Read each tool's caveat before attributing its delta to this migration—especially task (concurrent uncommitted runtime-tier edits) ` +
+    `and eval (old module import cycle). Legacy Markdown files remain as source/history and are not live descriptions for the five shortened tools.\n`,
+);
 console.log(rows.join("\n"));
