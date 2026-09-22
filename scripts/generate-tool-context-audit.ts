@@ -66,7 +66,7 @@ for (const name of order) {
   );
   const special =
     name === "eval"
-      ? "The old eval module hit a pre-existing import cycle in the isolated checkout. Its unchanged Markdown template was rendered with the current descriptor; its old ArkType schema was reconstructed from the old source. Provider-schema comparison is valid for those inspected fields, but old catalog examples may be understated."
+      ? "The old eval module hit a pre-existing import cycle in the isolated checkout. Its old ArkType schema was reconstructed from the old source; the description and examples were reused only after their runtime-source text was verified unchanged."
       : name === "task"
         ? "The current task schema includes concurrent uncommitted runtime-tier work. Its token delta is a working-tree snapshot, not an isolated effect of the Zod migration."
         : name === "edit"

@@ -1,12 +1,12 @@
 # eval: model context before and after
 
-Old source: commit `89c4b8dff5`. New source: current working-tree capture. [Tool implementation](../../packages/coding-agent/src/tools/eval.ts). The old eval module hit a pre-existing import cycle in the isolated checkout. Its unchanged Markdown template was rendered with the current descriptor; its old ArkType schema was reconstructed from the old source. Provider-schema comparison is valid for those inspected fields, but old catalog examples may be understated.
+Old source: commit `89c4b8dff5`. New source: current working-tree capture. [Tool implementation](../../packages/coding-agent/src/tools/eval.ts). The old eval module hit a pre-existing import cycle in the isolated checkout. Its old ArkType schema was reconstructed from the old source; the description and examples were reused only after their runtime-source text was verified unchanged.
 
 | Measured surface | Before | After | Tokens saved |
 | --- | ---: | ---: | ---: |
 | Description | 1104 | 1104 | +0 |
 | Provider tool definition (name + description + JSON Schema) | 1259 | 1223 | +36 |
-| Full system-prompt inventory entry | 1241 | 1299 | -58 |
+| Full system-prompt inventory entry | 1343 | 1299 | +44 |
 
 Counts use OMP's strict Tokenizer with its o200k fallback. The provider total is a local content count, not provider framing or billable usage. Inventory is rendered one tool at a time, including its examples when present. Native tool mode and prompt-inventory mode are alternatives, not additive.
 
@@ -247,6 +247,15 @@ namespace functions {
 // <critical>
 // Prior top-level names survive into the next cell — reuse; NEVER re-import/re-declare. Re-read only if file changed since last read.
 // </critical>
+//
+// @example "First call — set up once"
+// eval(language="py", title="imports", code="""import json
+// from pathlib import Path""")
+// @example "Second call — reuse, do NOT re-import"
+// eval(language="py", title="load config", code="""data = json.loads(read('package.json'))
+// display(data)""")
+// @example "Third call — reuse the loaded config"
+// eval(language="py", title="scan deps", code="display(sorted(data['dependencies']))")
 type eval = (_: {
 // runtime: "py" for the IPython kernel, "js" for the persistent JS VM
 language: "py" | "js",

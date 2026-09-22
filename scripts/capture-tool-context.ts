@@ -66,11 +66,9 @@ if (process.env.CAPTURE_OLD === "1") {
   ]);
   const after = JSON.parse(
     await readFile("/capture/after.json", "utf8"),
-  ) as Array<{ name: string; description: string }>;
-  const evalDescription = after.find(
-    (tool) => tool.name === "eval",
-  )?.description;
-  if (!evalDescription)
+  ) as Array<{ name: string; description: string; examples: unknown[] }>;
+  const oldEval = after.find((tool) => tool.name === "eval");
+  if (!oldEval)
     throw new Error("Missing unchanged eval description in current capture");
   const evalSchema = type({
     language: type("'py' | 'js'").describe(
@@ -92,8 +90,9 @@ if (process.env.CAPTURE_OLD === "1") {
   tools.push(
     {
       name: "eval",
-      description: evalDescription,
+      description: oldEval.description,
       parameters: evalSchema,
+      examples: oldEval.examples,
     } as never,
     {
       name: "edit",
