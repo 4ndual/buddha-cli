@@ -615,12 +615,44 @@ function splitImageQuestionTarget(readPath: string): { path: string; question?: 
 // Maximum image file size (20MB) - larger images will be rejected to prevent OOM during serialization
 const MAX_IMAGE_SIZE = MAX_IMAGE_INPUT_BYTES;
 
-export const readSchema = z.strictObject({
-	path: z.string().describe("File path, memory:// or skill:// URI, URL; path selectors select a range."),
-});
-const readSchemaWithoutMemory = z.strictObject({
-	path: z.string().describe("File path, skill:// URI, URL; path selectors select a range."),
-});
+const readRangeSchema = z
+	.string()
+	.min(1)
+	.refine(value => parseSel(value).kind === "lines", "Use a line or range such as 50, 50-200, 50+20, or 5-16,20-24.");
+
+const readSelectionSchema = z.union([
+	z.strictObject({ mode: z.literal("lines"), ranges: z.array(readRangeSchema).min(1).max(32) }),
+	z.strictObject({ mode: z.literal("tail"), lines: z.number().int().min(1).max(DEFAULT_MAX_LINES) }),
+	z.strictObject({ mode: z.literal("raw"), ranges: z.array(readRangeSchema).min(1).max(32).optional() }),
+	z.strictObject({ mode: z.literal("conflicts") }),
+	z.strictObject({ mode: z.literal("image"), action: z.literal("render") }),
+	z.strictObject({ mode: z.literal("image"), action: z.literal("question"), question: z.string().min(1).max(2000) }),
+]);
+
+function readTargetSchema(memory: boolean) {
+	const kinds = memory
+		? "file, directory, archive, SQLite, document, notebook, image, video, memory://, skill://, SSH, or HTTP(S) URL"
+		: "file, directory, archive, SQLite, document, notebook, image, video, skill://, SSH, or HTTP(S) URL";
+	return z.strictObject({
+		path: z.string().min(1).describe(`Auto-detected ${kinds}; legacy inline selectors remain supported.`),
+		selection: readSelectionSchema.optional(),
+	});
+}
+
+const readTarget = readTargetSchema(true);
+const readTargetWithoutMemory = readTargetSchema(false);
+const readBatchFields = {
+	concurrency: z.number().int().min(1).max(8).default(4),
+} as const;
+
+export const readSchema = z.union([
+	readTarget,
+	z.strictObject({ targets: z.array(readTarget).min(2).max(16), ...readBatchFields }),
+]);
+const readSchemaWithoutMemory = z.union([
+	readTargetWithoutMemory,
+	z.strictObject({ targets: z.array(readTargetWithoutMemory).min(2).max(16), ...readBatchFields }),
+]);
 export const readOutputSchema = ToolResultOutput;
 export type ReadToolInput = z.output<typeof readSchema>;
 
@@ -649,12 +681,38 @@ export interface ReadToolDetails {
 		lineNumbers?: Array<number | null>;
 	};
 	summary?: { lines: number; elidedSpans: number; elidedLines: number };
+	continuation?: { path: string; selector: string };
+	recovery?: { path: string; omittedRanges: Array<{ start: number; end: number }>; selectors: string[] };
+	batch?: Array<{ path: string; ok: boolean; details?: ReadToolDetails }>;
 	/** Number of unresolved git conflicts surfaced by this read (TUI uses for inline `⚠ N` badge). */
 	conflictCount?: number;
 	/** Paths recovered from a delimited read argument; used only by the TUI to render one call as multiple read rows. */
 	displayReadTargets?: string[];
 }
 type ReadParams = ReadToolInput;
+type ReadTarget = z.output<typeof readTarget>;
+
+function structuredReadPath(target: ReadTarget): string {
+	const { path: source, selection } = target;
+	if (!selection) return source;
+	const inline = source.includes("://") ? splitInternalUrlSel(source).sel : splitPathAndSel(source).sel;
+	if (inline !== undefined || splitImageQuestionTarget(source).question !== undefined) {
+		throw new ToolError("Use either an inline selector in path or structured selection, not both.");
+	}
+	switch (selection.mode) {
+		case "lines":
+			return `${source}:${selection.ranges.join(",")}`;
+		case "tail":
+			return `${source}:-${selection.lines}`;
+		case "raw":
+			return selection.ranges ? `${source}:raw:${selection.ranges.join(",")}` : `${source}:raw`;
+		case "conflicts":
+			return `${source}:conflicts`;
+		case "image":
+			if (selection.action === "render") return `${source}:img`;
+			return `${/\.svgz?$/i.test(source) ? `${source}:img` : source}?q=${encodeURIComponent(selection.question)}`;
+	}
+}
 
 /** Identical reads tolerated before the loop hint is appended. */
 const REPEAT_READ_HINT_THRESHOLD = 3;
@@ -703,12 +761,16 @@ function appendRepeatReadHint(session: ToolSession, path: string, result: AgentT
 export class ReadTool implements AgentTool<ZodWire<typeof readSchema>, ReadToolDetails> {
 	readonly name = "read";
 	readonly approval = (args: unknown): ToolTier => {
-		let readPath = "";
-		if (args && typeof args === "object" && "path" in args) readPath = String(args.path ?? "");
-		if (pathTargetsSsh(readPath)) return "exec";
-		readPath = splitImageQuestionTarget(readPath).path;
-		const target = splitPathAndSel(readPath);
-		return target.sel === undefined && splitPdfImageReadPath(readPath) ? "exec" : "read";
+		const parsed = readSchema.safeParse(args);
+		if (!parsed.success) return "read";
+		const targets = "targets" in parsed.data ? parsed.data.targets : [parsed.data];
+		for (const input of targets) {
+			const readPath = structuredReadPath(input);
+			if (pathTargetsSsh(readPath)) return "exec";
+			const plainPath = splitImageQuestionTarget(readPath).path;
+			if (splitPathAndSel(plainPath).sel === undefined && splitPdfImageReadPath(plainPath)) return "exec";
+		}
+		return "read";
 	};
 	readonly label = "Read";
 	readonly loadMode = "essential";
@@ -734,7 +796,7 @@ export class ReadTool implements AgentTool<ZodWire<typeof readSchema>, ReadToolD
 	}
 
 	#renderDescription(): string {
-		return `Read a file, URL, or internal URI with path selectors for ranges (default ${this.#defaultLimit} lines). ssh://host/path is writable with \`write\` and searchable with \`grep\`; unsupported hosts: use \`bash\` with a remote SSH command or mount with \`sshfs\`.`;
+		return `Inspect auto-detected files, directories, archives, SQLite, documents, images, videos, internal/SSH resources, and ordinary web URLs. Bare code reads summarize with exact recovery ranges; structured selectors and bounded parallel batches avoid unnecessary content (default ${this.#defaultLimit} lines).`;
 	}
 
 	/**
@@ -1217,8 +1279,8 @@ export class ReadTool implements AgentTool<ZodWire<typeof readSchema>, ReadToolD
 		}
 		if (shouldAddHashLines && outputText) {
 			const tag = buffered
-				? getEditStore(this.session).recordSnapshot(absolutePath, buffered.normalizedText)
-				: getEditStore(this.session).recordSnapshotFile(absolutePath);
+				? getEditStore(this.session).recordSnapshot(absolutePath, buffered.normalizedText, [])
+				: getEditStore(this.session).recordSnapshotFile(absolutePath, []);
 			if (tag) {
 				getEditStore(this.session).recordSeenLinesFromBody(absolutePath, tag, outputText);
 				outputText = `${formatReadHashlineHeader(formatPathRelativeToCwd(absolutePath, this.session.cwd), tag)}\n${outputText}`;
@@ -1247,15 +1309,87 @@ export class ReadTool implements AgentTool<ZodWire<typeof readSchema>, ReadToolD
 		toolContext?: AgentToolContext,
 	): Promise<AgentToolResult<ReadToolDetails>> {
 		const input = readSchema.parse(params);
-		const result = await this.#executeInner(toolCallId, input, signal, onUpdate, toolContext);
+		const result =
+			"targets" in input
+				? await this.#executeBatch(toolCallId, input.targets, input.concurrency, signal, toolContext)
+				: await this.#executeTarget(toolCallId, input, signal, onUpdate, toolContext);
 		readOutputSchema.parse(result);
-		appendRepeatReadHint(this.session, input.path, result);
 		return result;
+	}
+
+	async #executeTarget(
+		toolCallId: string,
+		target: ReadTarget,
+		signal?: AbortSignal,
+		onUpdate?: AgentToolUpdateCallback<ReadToolDetails>,
+		toolContext?: AgentToolContext,
+	): Promise<AgentToolResult<ReadToolDetails>> {
+		const path = structuredReadPath(target);
+		const result = await this.#executeInner(toolCallId, { path }, signal, onUpdate, toolContext);
+		this.#attachRecoveryMetadata(target.path, result);
+		appendRepeatReadHint(this.session, path, result);
+		return result;
+	}
+
+	async #executeBatch(
+		toolCallId: string,
+		targets: ReadTarget[],
+		concurrency: number,
+		signal?: AbortSignal,
+		toolContext?: AgentToolContext,
+	): Promise<AgentToolResult<ReadToolDetails>> {
+		const results = Array.from<AgentToolResult<ReadToolDetails> | undefined>({ length: targets.length });
+		let cursor = 0;
+		const worker = async () => {
+			while (true) {
+				const index = cursor++;
+				if (index >= targets.length) return;
+				try {
+					results[index] = await this.#executeTarget(
+						`${toolCallId}:${index}`,
+						targets[index]!,
+						signal,
+						undefined,
+						toolContext,
+					);
+				} catch (error) {
+					results[index] = {
+						content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
+						isError: true,
+					};
+				}
+			}
+		};
+		await Promise.all(Array.from({ length: Math.min(concurrency, targets.length) }, worker));
+		const content: Array<TextContent | ImageContent> = [];
+		for (const [index, result] of results.entries()) {
+			if (!result) throw new ToolError(`Batch read ${index + 1} did not produce a result.`);
+			content.push({ type: "text", text: `## ${targets[index]!.path}` }, ...result.content);
+		}
+		const completed = results.filter((result): result is AgentToolResult<ReadToolDetails> => result !== undefined);
+		return {
+			content,
+			details: {
+				batch: completed.map((result, index) => ({
+					path: targets[index]!.path,
+					ok: result.isError !== true,
+					...(result.details ? { details: result.details } : {}),
+				})),
+			},
+			...(completed.every(result => result.isError) ? { isError: true } : {}),
+		};
+	}
+
+	#attachRecoveryMetadata(path: string, result: AgentToolResult<ReadToolDetails>): void {
+		const details = result.details;
+		if (!details) return;
+		const nextOffset = details.meta?.truncation?.nextOffset;
+		if (nextOffset !== undefined) details.continuation = { path, selector: `${nextOffset}-` };
 	}
 
 	async #executeInner(
 		_toolCallId: string,
-		params: ReadParams,
+		params: { path: string },
 		signal?: AbortSignal,
 		_onUpdate?: AgentToolUpdateCallback<ReadToolDetails>,
 		_toolContext?: AgentToolContext,
@@ -1668,8 +1802,9 @@ export class ReadTool implements AgentTool<ZodWire<typeof readSchema>, ReadToolD
 									absolutePath,
 									this.session.cwd,
 									buffered.normalizedText,
+									[],
 								)
-							: await readHashlineHeaderContext(this.session, absolutePath, this.session.cwd)
+							: await readHashlineHeaderContext(this.session, absolutePath, this.session.cwd, [])
 						: undefined;
 					const bodyText = footer ? `${renderedSummary.text}\n\n${footer}` : renderedSummary.text;
 					const modelText = prependHashlineHeader(bodyText, summaryHashContext);
@@ -1686,6 +1821,14 @@ export class ReadTool implements AgentTool<ZodWire<typeof readSchema>, ReadToolD
 							lines: countTextLines(renderedSummary.text),
 							elidedSpans: renderedSummary.elidedRanges.length,
 							elidedLines: renderedSummary.elidedLines,
+						},
+						recovery: {
+							path: resolvedDisplayPath,
+							omittedRanges: renderedSummary.elidedRanges.map(range => ({
+								start: range.start,
+								end: range.end,
+							})),
+							selectors: renderedSummary.elidedRanges.map(range => `${range.start}-${range.end}`),
 						},
 					};
 
@@ -1884,13 +2027,14 @@ export class ReadTool implements AgentTool<ZodWire<typeof readSchema>, ReadToolD
 						// non-truncated whole-file window can supply it.
 						const isWholeFile = offset === undefined && limit === undefined && !wasTruncated;
 						const tag = buffered
-							? getEditStore(this.session).recordSnapshot(absolutePath, buffered.normalizedText)
+							? getEditStore(this.session).recordSnapshot(absolutePath, buffered.normalizedText, [])
 							: isWholeFile
 								? getEditStore(this.session).recordSnapshot(
 										absolutePath,
 										normalizeToLF(`${collectedLines.join("\n")}${hasTrailingNewline ? "\n" : ""}`),
+										[],
 									)
-								: getEditStore(this.session).recordSnapshotFile(absolutePath);
+								: getEditStore(this.session).recordSnapshotFile(absolutePath, []);
 						if (tag) {
 							hashContext = hashlineHeaderContext(formatPathRelativeToCwd(absolutePath, this.session.cwd), tag);
 						}
@@ -1999,7 +2143,7 @@ export class ReadTool implements AgentTool<ZodWire<typeof readSchema>, ReadToolD
 						outputText += reachedEof
 							? `\n\n[${totalFileLines - (startLine + userLimitedLines)} more lines in file. Use :${nextOffset} to continue]`
 							: `\n\n[More lines in file (${formatBytes(fileSize)} total; not scanned to EOF). Use :${nextOffset} to continue]`;
-						details = {};
+						details = { continuation: { path: resolvedDisplayPath, selector: `${nextOffset}-` } };
 						sourcePath = absolutePath;
 					} else {
 						// No truncation, no user limit exceeded
@@ -2110,7 +2254,10 @@ export class ReadTool implements AgentTool<ZodWire<typeof readSchema>, ReadToolD
 		const shouldAddLineNumbers = shouldAddHashLines ? false : displayMode.lineNumbers;
 
 		const rawText = region.lines.join("\n");
-		const tag = shouldAddHashLines ? getEditStore(this.session).recordSnapshotFile(entry.absolutePath) : undefined;
+		const seenLines = contiguousLineNumbers(region.startLine, region.lines.length);
+		const tag = shouldAddHashLines
+			? getEditStore(this.session).recordSnapshotFile(entry.absolutePath, seenLines)
+			: undefined;
 		const hashContext = tag
 			? hashlineHeaderContext(formatPathRelativeToCwd(entry.absolutePath, this.session.cwd), tag)
 			: undefined;
@@ -2364,6 +2511,7 @@ export class ReadTool implements AgentTool<ZodWire<typeof readSchema>, ReadToolD
 				};
 			} else if (startLine + collectedLines.length < totalFileLines || !reachedEof) {
 				const nextOffset = startLine + collectedLines.length + 1;
+				details.continuation = { path: url.href, selector: `${nextOffset}-` };
 				outputText += reachedEof
 					? `\n\n[${totalFileLines - (startLine + collectedLines.length)} more lines in artifact. Use ${artifactUrl}:${nextOffset} to continue]`
 					: `\n\n[More lines in artifact (${formatBytes(artifact.size)} total; not scanned to EOF). Use ${artifactUrl}:${nextOffset} to continue]`;

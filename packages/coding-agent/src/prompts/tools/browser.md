@@ -4,7 +4,7 @@ Drive real Chromium tabs from JavaScript or Python Eval with the global `browser
 - Static content? Use `read`. Use `browser` for JavaScript execution, authenticated sessions, and interactive actions.
 - JavaScript: `await browser.open(options)` returns a `BrowserTab`; `browser.tab(name)` returns an existing handle; `await browser.close(options)` releases tabs.
 - Python: `await browser.open(name=…, url=…)`, synchronous `browser.tab(name)`, and `await browser.close(name=…)`. Python methods accept keyword arguments.
-- `open` options: `name`, `url`, `app`, `viewport`, `wait_until`, `dialogs`, `timeout`.
+- `open` options: `name`, `url`, `purpose`, `app`, `viewport`, `wait_until`, `dialogs`, `timeout`. HTTP(S) without `purpose` defaults to reader-mode content. Use `authentication`, `interaction`, `javascript-state`, or `visual-layout` only when a stateful browser is required.
 - `close` options: `name`, `all`, `kill`, `timeout`.
 - Direct tab helpers:
   - Navigation: `url`, `title`, `goto`.
@@ -23,16 +23,17 @@ Drive real Chromium tabs from JavaScript or Python Eval with the global `browser
 - Raw request interception lasts only for the current `tab.run`.
 
 Application modes:
+
 - `app.path`: spawn the specified browser or Electron executable.
 - `app.cdp_url`: attach to an existing CDP endpoint.
 - `app.relay: true`: drive the user's Chrome through the omp relay. `app.target` selects a tab by URL/title substring; without it, the visible tab is adopted. Opening with `url` navigates that adopted tab.
 - Relay sessions are the user's real logged-in browser. Sites attribute actions to the user. Name a target or create a dedicated tab; NEVER navigate the visible tab without authorization.
 - Closing releases the managed tab. It never closes relay/CDP-attached pages. Spawned browsers remain open unless `kill: true`.
-</instruction>
+ </instruction>
 
 <examples>
 ```javascript
-const tab = await browser.open({ name: "docs", url: "https://example.com" });
+const tab = await browser.open({ name: "docs", url: "https://example.com", purpose: "interaction" });
 const observed = await tab.observe();
 await tab.id(observed.elements[0].id).click();
 const title = await tab.run(async ({ tab }, suffix) => (await tab.title()) + suffix, { args: ["!"] });
@@ -40,12 +41,13 @@ await tab.close();
 ```
 
 ```python
-tab = await browser.open(name="docs", url="https://example.com")
+tab = await browser.open(name="docs", url="https://example.com", purpose="interaction")
 observed = await tab.observe()
 await tab.id(observed["elements"][0]["id"]).click()
 title = await tab.run("return await tab.title();", timeout=30)
 await tab.close()
 ```
+
 </examples>
 
 <critical>

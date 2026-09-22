@@ -247,6 +247,7 @@ def _make_browser():
             wait_until=None,
             dialogs=None,
             timeout=None,
+            purpose=None,
         ):
             """Open or attach to a browser tab and return its handle."""
             if name is not None:
@@ -261,8 +262,11 @@ def _make_browser():
                     "wait_until": wait_until,
                     "dialogs": dialogs,
                     "timeout": timeout,
+                    "purpose": purpose,
                 },
             )
+            if details.get("routed") == "read":
+                return {"kind": "content", "url": url, "details": details.get("value")}
             opened_name = details.get("name")
             if not isinstance(opened_name, str) or not opened_name:
                 raise RuntimeError("browser.open() returned an invalid tab name")
