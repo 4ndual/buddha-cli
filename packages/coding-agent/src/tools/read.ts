@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { notebookToEditableText } from "@oh-my-pi/pi-natives";
-import { type } from "@oh-my-pi/omptype";
+import * as z from "zod/v4";
 import type {
 	AgentTool,
 	AgentToolContext,
@@ -17,7 +17,6 @@ import {
 	isProbablyBinaryHeader,
 	isEnoent,
 	logger,
-	prompt,
 	readImageMetadata,
 } from "@oh-my-pi/pi-utils";
 import { normalizeToLF } from "../edit/normalize";
@@ -26,7 +25,6 @@ import { InternalUrlRouter, resolveLocalUrlToFile, resolveLocalUrlToPath } from 
 import { type ResolvedArtifactFile, resolveArtifactFile } from "../internal-urls/artifact-protocol";
 import { parseInternalUrl } from "../internal-urls/parse";
 import type { InternalUrl } from "../internal-urls/types";
-import readDescription from "../prompts/tools/read.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import {
 	DEFAULT_MAX_BYTES,
@@ -140,6 +138,7 @@ import { isResolutionDeviceName, resolutionDeviceUsage } from "./resolve";
 import { ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { xdevDocs, xdevListing } from "./xdev";
+import { ToolResultOutput, type ZodWire, zodWire } from "./zod-wire";
 
 export { readToolRenderer } from "./read-renderer";
 
@@ -616,17 +615,14 @@ function splitImageQuestionTarget(readPath: string): { path: string; question?: 
 // Maximum image file size (20MB) - larger images will be rejected to prevent OOM during serialization
 const MAX_IMAGE_SIZE = MAX_IMAGE_INPUT_BYTES;
 
-const readSchema = type({
-	path: type("string").describe(
-		"Local path, internal URI (e.g. memory://, skill://), or URL. Inline selectors are supported.",
-	),
+export const readSchema = z.strictObject({
+	path: z.string().describe("File path, memory:// or skill:// URI, URL; path selectors select a range."),
 });
-
-const readSchemaWithoutMemory = type({
-	path: type("string").describe("Local path, internal URI (e.g. skill://), or URL. Inline selectors are supported."),
+const readSchemaWithoutMemory = z.strictObject({
+	path: z.string().describe("File path, skill:// URI, URL; path selectors select a range."),
 });
-
-export type ReadToolInput = typeof readSchema.infer;
+export const readOutputSchema = ToolResultOutput;
+export type ReadToolInput = z.output<typeof readSchema>;
 
 export interface ReadToolDetails {
 	kind?: "file" | "url";
@@ -704,7 +700,7 @@ function appendRepeatReadHint(session: ToolSession, path: string, result: AgentT
  * Reads files with support for images, converted documents (via markit), and text.
  * Directories return a formatted listing with modification times.
  */
-export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
+export class ReadTool implements AgentTool<ZodWire<typeof readSchema>, ReadToolDetails> {
 	readonly name = "read";
 	readonly approval = (args: unknown): ToolTier => {
 		let readPath = "";
@@ -717,8 +713,8 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	readonly label = "Read";
 	readonly loadMode = "essential";
 	description: string;
-	get parameters(): typeof readSchema {
-		return this.session.settings.get("memory.backend") === "off" ? readSchemaWithoutMemory : readSchema;
+	get parameters(): ZodWire<typeof readSchema> {
+		return zodWire(this.session.settings.get("memory.backend") === "off" ? readSchemaWithoutMemory : readSchema);
 	}
 	readonly strict = true;
 
@@ -737,15 +733,8 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		this.description = this.#renderDescription();
 	}
 
-	/** Render the description for the current file display mode. */
 	#renderDescription(): string {
-		const displayMode = resolveFileDisplayMode(this.session);
-		return prompt.render(readDescription, {
-			DEFAULT_LIMIT: String(this.#defaultLimit),
-			DEFAULT_MAX_LINES: String(DEFAULT_MAX_LINES),
-			IS_HL_MODE: displayMode.hashLines,
-			IS_LINE_NUMBER_MODE: !displayMode.hashLines && displayMode.lineNumbers,
-		});
+		return `Read a file, URL, or internal URI with path selectors for ranges (default ${this.#defaultLimit} lines). ssh://host/path is writable with \`write\` and searchable with \`grep\`; unsupported hosts: use \`bash\` with a remote SSH command or mount with \`sshfs\`.`;
 	}
 
 	/**
@@ -1257,8 +1246,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		onUpdate?: AgentToolUpdateCallback<ReadToolDetails>,
 		toolContext?: AgentToolContext,
 	): Promise<AgentToolResult<ReadToolDetails>> {
-		const result = await this.#executeInner(toolCallId, params, signal, onUpdate, toolContext);
-		appendRepeatReadHint(this.session, params.path, result);
+		const input = readSchema.parse(params);
+		const result = await this.#executeInner(toolCallId, input, signal, onUpdate, toolContext);
+		readOutputSchema.parse(result);
+		appendRepeatReadHint(this.session, input.path, result);
 		return result;
 	}
 

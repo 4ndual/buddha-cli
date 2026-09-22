@@ -15,7 +15,7 @@
  *   - Questions may time out and auto-select the recommended option (configurable, disabled in plan mode)
  */
 
-import { type as arkType } from "@oh-my-pi/omptype";
+import * as z from "zod/v4";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ToolExample } from "@oh-my-pi/pi-ai";
 import {
@@ -30,16 +30,16 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
-import { prompt, untilAborted } from "@oh-my-pi/pi-utils";
+import { untilAborted } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { ExtensionUISelectItem } from "../extensibility/extensions";
 import { getMarkdownTheme, type Theme, theme } from "../modes/theme/theme";
-import askDescription from "../prompts/tools/ask.md" with { type: "text" };
 import { vocalizer } from "../tts/vocalizer";
 import { framedBlock, outputBlockContentWidth, renderStatusLine } from "../tui";
 import type { ToolSession } from ".";
 import { formatErrorMessage, formatMeta, formatTitle } from "./render-utils";
 import { ToolAbortError } from "./tool-errors";
+import { ToolResultOutput, type ZodWire, zodWire } from "./zod-wire";
 
 // =============================================================================
 // Types
@@ -54,32 +54,26 @@ const RESERVED_OPTION_LABELS: Record<string, true> = {
 	[NEXT_OPTION]: true,
 };
 
-const OptionItem = arkType({
-	label: arkType("string").describe("display label"),
-	"description?": arkType("string").describe("optional explanatory text displayed below the label"),
-	"preview?": arkType("string").describe("optional rich preview content for interactive ask dialogs"),
+const OptionItem = z.strictObject({
+	label: z.string(),
+	description: z.string().optional(),
+	preview: z.string().optional(),
 });
-
-const QuestionItem = arkType({
-	id: arkType("string").describe("question id"),
-	question: arkType("string").describe("question text"),
-	"header?": arkType("string").describe("optional short display chip for rich ask dialogs"),
-	options: OptionItem.array().describe("available options"),
-	"multi?": arkType("boolean").describe("allow multiple selections"),
-	"recommended?": arkType("number").describe("recommended option index"),
-}).narrow((question, ctx) => {
-	const reserved = question.options.find(option => RESERVED_OPTION_LABELS[option.label] === true);
-	return (
-		reserved === undefined ||
-		ctx.mustBe(`defined with option labels that do not collide with reserved runtime labels: ${reserved.label}`)
-	);
-});
-
-const askSchema = arkType({
-	questions: QuestionItem.array().atLeastLength(1).describe("questions to ask"),
-});
-
-export type AskToolInput = typeof askSchema.infer;
+const QuestionItem = z
+	.strictObject({
+		id: z.string(),
+		question: z.string(),
+		header: z.string().optional(),
+		options: z.array(OptionItem),
+		multi: z.boolean().optional(),
+		recommended: z.number().int().min(0).optional(),
+	})
+	.refine(question => question.options.every(option => RESERVED_OPTION_LABELS[option.label] !== true), {
+		message: "Option labels must not use reserved runtime labels",
+	});
+export const askSchema = z.strictObject({ questions: z.array(QuestionItem).min(1) });
+export const askOutputSchema = ToolResultOutput;
+export type AskToolInput = z.output<typeof askSchema>;
 
 /**
  * Recover a validated `questions` payload from a persisted `ask` toolCall's
@@ -91,9 +85,8 @@ export type AskToolInput = typeof askSchema.infer;
  * data back into the picker.
  */
 export function recoverAskQuestions(toolCallArguments: unknown): AskToolInput["questions"] | undefined {
-	const parsed = askSchema(toolCallArguments);
-	if (parsed instanceof arkType.errors) return undefined;
-	return parsed.questions;
+	const parsed = askSchema.safeParse(toolCallArguments);
+	return parsed.success ? parsed.data.questions : undefined;
 }
 
 /** Result for a single question */
@@ -769,16 +762,16 @@ type AskParams = AskToolInput;
  * Allows gathering user preferences, clarifying instructions, and getting decisions
  * on implementation choices as the agent works.
  */
-export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
+export class AskTool implements AgentTool<ZodWire<typeof askSchema>, AskToolDetails> {
 	readonly name = "ask";
 	readonly approval = "read" as const;
 	readonly label = "Ask";
 	readonly summary = "Ask the user a clarifying question";
 	readonly description: string;
-	readonly parameters = askSchema;
+	readonly parameters = zodWire(askSchema);
 	readonly strict = true;
 
-	readonly examples: readonly ToolExample<typeof askSchema.infer>[] = [
+	readonly examples: readonly ToolExample<AskToolInput>[] = [
 		{
 			caption: "Single question",
 			call: {
@@ -826,7 +819,8 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 	readonly loadMode = "discoverable";
 
 	constructor(private readonly session: ToolSession) {
-		this.description = prompt.render(askDescription);
+		this.description =
+			"Ask only when existing sources cannot resolve a choice with materially different user tradeoffs. Send related questions together; 2–5 concise options each, with tradeoffs in description. recommended is a zero-based default; multi allows multiple selections. Do not include Other: the UI adds it. Prefer action and state reasonable defaults when the choice is not material.";
 	}
 
 	static createIf(session: ToolSession): AskTool | null {
@@ -848,6 +842,18 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 	}
 
 	async execute(
+		toolCallId: string,
+		params: AskParams,
+		signal?: AbortSignal,
+		onUpdate?: AgentToolUpdateCallback<AskToolDetails>,
+		context?: AgentToolContext,
+	): Promise<AgentToolResult<AskToolDetails>> {
+		const result = await this.#executeInner(toolCallId, askSchema.parse(params), signal, onUpdate, context);
+		askOutputSchema.parse(result);
+		return result;
+	}
+
+	async #executeInner(
 		_toolCallId: string,
 		params: AskParams,
 		signal?: AbortSignal,

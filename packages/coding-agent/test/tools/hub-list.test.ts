@@ -13,7 +13,7 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-sessi
 import { CURRENT_SESSION_VERSION } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { collectIrcPeerRoster } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { HubTool } from "@oh-my-pi/pi-coding-agent/tools/hub";
+import { HubTool, hubSchema } from "@oh-my-pi/pi-coding-agent/tools/hub";
 import {
 	DEFAULT_HUB_LIST_LIMIT,
 	executeList,
@@ -697,10 +697,9 @@ describe("hub list", () => {
 	});
 
 	it("schema rejects aborted and advisor list filters", () => {
-		const tool = new HubTool(makeToolSession(new AgentRegistry(), MAIN_AGENT_ID));
-		expect(() => tool.parameters.assert({ op: "list", status: "aborted" })).toThrow();
-		expect(() => tool.parameters.assert({ op: "list", status: "advisor" })).toThrow();
-		expect(tool.parameters.assert({ op: "list", status: "parked" })).toEqual({ op: "list", status: "parked" });
+		expect(() => hubSchema.parse({ op: "list", status: "aborted" })).toThrow();
+		expect(() => hubSchema.parse({ op: "list", status: "advisor" })).toThrow();
+		expect(hubSchema.parse({ op: "list", status: "parked" })).toEqual({ op: "list", status: "parked" });
 	});
 
 	it("restores persisted peers after the process registry is lost without leaking them into the default view", async () => {

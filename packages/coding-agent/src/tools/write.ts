@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
-import { type } from "@oh-my-pi/omptype";
+import * as z from "zod/v4";
 import type {
 	AgentTool,
 	AgentToolContext,
@@ -11,7 +11,7 @@ import type {
 	ToolApprovalDecision,
 } from "@oh-my-pi/pi-agent-core";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
-import { isEnoent, isRecord, prompt, untilAborted } from "@oh-my-pi/pi-utils";
+import { isEnoent, isRecord, untilAborted } from "@oh-my-pi/pi-utils";
 import {
 	type ArchiveMemberContent,
 	archiveFormatFromPath,
@@ -30,8 +30,6 @@ import { createLspWritethrough, type FileDiagnosticsResult, type WritethroughCal
 import { DeferredDiagnostics } from "../lsp/deferred-diagnostics";
 import { getDiagnosticsLedger } from "../lsp/diagnostics-ledger";
 import { getLanguageFromPath, highlightCode, type Theme } from "../modes/theme/theme";
-import writeDescription from "../prompts/tools/write.md" with { type: "text" };
-import writeDeviceOnlyDescription from "../prompts/tools/write-device-only.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import { fileHyperlink, framedBlock, renderStatusLine } from "../tui";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
@@ -95,6 +93,7 @@ import {
 } from "./sqlite-reader";
 import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
+import { ToolResultOutput, type ZodWire, zodWire } from "./zod-wire";
 import {
 	dispatchXdevTool,
 	renderXdevCall,
@@ -303,12 +302,12 @@ function resolveBulkDirectives(raw: string, stripped: string): Map<number, strin
 	return rawResult ?? parseBulkDirectives(stripped);
 }
 
-const writeSchema = type({
-	path: type("string").describe("file path"),
-	content: type("string").describe("file content"),
+export const writeSchema = z.strictObject({
+	path: z.string().describe("File path or writable internal URI; xd://<tool> dispatches a device."),
+	content: z.string(),
 });
-
-export type WriteToolInput = typeof writeSchema.infer;
+export const writeOutputSchema = ToolResultOutput;
+export type WriteToolInput = z.output<typeof writeSchema>;
 
 /** Details returned by the write tool for TUI rendering */
 export interface WriteToolDetails {
@@ -512,7 +511,7 @@ function parseSqliteWriteTarget(subPath: string, queryString: string): { table: 
  *
  * Creates or overwrites files with optional LSP formatting and diagnostics.
  */
-export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails> {
+export class WriteTool implements AgentTool<ZodWire<typeof writeSchema>, WriteToolDetails> {
 	readonly name = "write";
 	readonly approval = (args: unknown): ToolApprovalDecision => {
 		const rawPath = (args as Partial<WriteParams>).path;
@@ -570,9 +569,11 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 	readonly label = "Write";
 	get description(): string {
 		const deviceOnly = this.session.deviceOnlyWrite === true && this.session.pendingFullWriteDescription !== true;
-		return prompt.render(deviceOnly ? writeDeviceOnlyDescription : writeDescription);
+		if (deviceOnly)
+			return "Dispatch a mounted xd://<tool> device with JSON arguments in content; read xd:// to discover devices. Filesystem writes are unavailable, except local:// plan drafts in active plan mode.";
+		return "Create or replace a file; use edit for small existing-file changes. Archive entries use archive.ext:path/inside (zip-family, tar-family, asar). SQLite rows use db.sqlite:table[:key], with JSON content for update and empty content for delete. xd://<tool> dispatches mounted devices with JSON content. Do not create documentation or emoji unless requested.";
 	}
-	readonly parameters = writeSchema;
+	readonly parameters = zodWire(writeSchema);
 	readonly strict = true;
 	readonly concurrency = "exclusive";
 	readonly loadMode = "essential";
@@ -1104,6 +1105,18 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 	}
 
 	async execute(
+		toolCallId: string,
+		params: WriteParams,
+		signal?: AbortSignal,
+		onUpdate?: AgentToolUpdateCallback<WriteToolDetails>,
+		context?: AgentToolContext,
+	): Promise<AgentToolResult<WriteToolDetails>> {
+		const result = await this.#executeInner(toolCallId, writeSchema.parse(params), signal, onUpdate, context);
+		writeOutputSchema.parse(result);
+		return result;
+	}
+
+	async #executeInner(
 		_toolCallId: string,
 		{ path: rawPath, content }: WriteParams,
 		signal?: AbortSignal,

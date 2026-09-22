@@ -1,13 +1,13 @@
-import { type } from "@oh-my-pi/omptype";
+import * as z from "zod/v4";
 
-export const replaceEditSchema = type({
-	path: "string",
-	old_string: "string",
-	new_string: "string",
-	"replace_all?": "boolean",
+export const replaceEditSchema = z.strictObject({
+	path: z.string(),
+	old_string: z.string(),
+	new_string: z.string(),
+	replace_all: z.boolean().optional(),
 });
 
-export type ReplaceParams = typeof replaceEditSchema.infer;
+export type ReplaceParams = z.output<typeof replaceEditSchema>;
 
 /** Internal batch form produced only by the Cursor exec bridge. */
 export interface ReplaceBatchParams {
@@ -15,35 +15,35 @@ export interface ReplaceBatchParams {
 	edits: Omit<ReplaceParams, "path">[];
 }
 
-export const patchEditEntrySchema = type({
-	"op?": "'create' | 'delete' | 'update'",
-	"rename?": "string",
-	"diff?": "string",
+export const patchEditEntrySchema = z.strictObject({
+	op: z.enum(["create", "delete", "update"]).optional(),
+	rename: z.string().optional(),
+	diff: z.string().optional(),
 });
 
-export type PatchEditEntry = typeof patchEditEntrySchema.infer;
+export type PatchEditEntry = z.output<typeof patchEditEntrySchema>;
 
-export const patchEditSchema = type({
-	path: "string",
-	edits: patchEditEntrySchema.array(),
+export const patchEditSchema = z.strictObject({
+	path: z.string(),
+	edits: z.array(patchEditEntrySchema),
 });
 
-export type PatchParams = typeof patchEditSchema.infer;
+export type PatchParams = z.output<typeof patchEditSchema>;
 
-export const applyPatchSchema = type({
-	input: "string",
+export const applyPatchSchema = z.strictObject({
+	input: z.string(),
 });
 
-export type ApplyPatchParams = typeof applyPatchSchema.infer;
+export type ApplyPatchParams = z.output<typeof applyPatchSchema>;
 
-export const hashlineEditParamsSchema = type({
-	input: "string",
+export const hashlineEditParamsSchema = z.strictObject({
+	input: z.string(),
 });
 
-export type HashlineParams = typeof hashlineEditParamsSchema.infer;
+export type HashlineParams = z.output<typeof hashlineEditParamsSchema>;
 
-export const sloppyEditSchema = type({
-	input: "string",
+export const sloppyEditSchema = z.strictObject({
+	input: z.string(),
 });
 
-export type SloppyParams = typeof sloppyEditSchema.infer;
+export type SloppyParams = z.output<typeof sloppyEditSchema>;
