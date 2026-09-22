@@ -43,7 +43,7 @@ describe("task spawn policy surfaces", () => {
 
 	it("uses the first allowed spawn as the schema default", () => {
 		const schema = getTaskSchema({ isolationEnabled: false, batchEnabled: false, defaultAgent: "fact-finder" });
-		const parsed = schema({ task: "check" });
+		const parsed = schema.parse({ task: "check" });
 
 		expect(parsed).toEqual({ agent: "fact-finder", task: "check" });
 	});
