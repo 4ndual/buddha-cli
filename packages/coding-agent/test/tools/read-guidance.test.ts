@@ -13,14 +13,13 @@ function createSession(): ToolSession {
 	};
 }
 
-describe("Read SSH guidance", () => {
-	it("advertises grep and current SSH fallbacks instead of retired tool names", () => {
+describe("Read capability discovery", () => {
+	it("advertises automatic routing, summaries, selectors, and batches compactly", () => {
 		const description = new ReadTool(createSession()).description;
 
-		expect(description).toContain("searchable with `grep`");
-		expect(description).toContain("use `bash` with a remote SSH command");
-		expect(description).toContain("`sshfs`");
-		expect(description).not.toContain("`search`");
-		expect(description).not.toContain("`ssh` tool");
+		expect(description).toContain("archives, SQLite, documents, images, videos");
+		expect(description).toContain("ordinary web URLs");
+		expect(description).toContain("exact recovery ranges");
+		expect(description).toContain("structured selectors and bounded parallel batches");
 	});
 });
