@@ -1441,7 +1441,8 @@ function createCodexRequestContext(
 	const baseUrl = model.baseUrl || CODEX_BASE_URL;
 	const url = resolveCodexResponsesUrl(baseUrl);
 
-	const transportSessionId = normalizeOpenAIPromptCacheKey(options?.sessionId);
+	const logicalSessionId = normalizeOpenAIPromptCacheKey(options?.sessionId);
+	const transportSessionId = getOpenAIPromptCacheKey(options);
 	const codexClientVersion = CODEX_CLIENT_VERSION;
 	const requestHeaders = { ...model.headers, ...options?.headers };
 	const rawRequestDump: RawHttpRequestDump = {
@@ -1479,7 +1480,7 @@ function createCodexRequestContext(
 		websocketState.disableWebsocket = sharedWebsocketState.disableWebsocket;
 		websocketState.modelsEtag = sharedWebsocketState.modelsEtag;
 	}
-	const metadataSessionId = transportSessionId ?? crypto.randomUUID();
+	const metadataSessionId = logicalSessionId ?? crypto.randomUUID();
 	const metadataSession = getOrCreateCodexMetadataSessionState(metadataSessionId, providerSessionState);
 	const compaction = options?.codexCompaction;
 	const requestKind: OpenAICodexRequestKind = compaction ? "compaction" : "turn";
@@ -4457,6 +4458,11 @@ function createCodexHeaders(
 	headers.delete(OPENAI_HEADERS.INSTALLATION_ID);
 	if (requestMetadata) {
 		applyCodexCompatibilityHeaders(headers, requestMetadata);
+		// Keep child metadata distinct while routing inherited-prefix forks on
+		// their parent's provider-visible cache identity.
+		if (sessionId && sessionId !== requestMetadata.sessionId) {
+			headers.set(OPENAI_HEADERS.SCOPED_SESSION_ID, sessionId);
+		}
 	} else {
 		headers.delete(OPENAI_HEADERS.SCOPED_SESSION_ID);
 		headers.delete(OPENAI_HEADERS.THREAD_ID);

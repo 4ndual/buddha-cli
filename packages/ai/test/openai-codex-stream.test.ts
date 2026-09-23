@@ -2694,7 +2694,7 @@ describe("openai-codex streaming", () => {
 		});
 		await streamResult.result();
 	});
-	it("keeps prompt_cache_key separate from Codex conversation headers", async () => {
+	it("routes Codex conversation headers on prompt_cache_key while preserving logical metadata", async () => {
 		const tempDir = TempDir.createSync("@pi-codex-stream-");
 		setAgentDir(tempDir.path());
 
@@ -2731,9 +2731,11 @@ describe("openai-codex streaming", () => {
 			promptCacheKey,
 		}).result();
 
-		expect(capturedHeaders?.get("conversation_id")).toBe(sessionId);
-		expect(capturedHeaders?.get("session_id")).toBe(sessionId);
-		expect(capturedHeaders?.get("x-client-request-id")).toBe(sessionId);
+		expect(capturedHeaders?.get("conversation_id")).toBe(promptCacheKey);
+		expect(capturedHeaders?.get("session_id")).toBe(promptCacheKey);
+		expect(capturedHeaders?.get("session-id")).toBe(promptCacheKey);
+		expect(capturedHeaders?.get("x-client-request-id")).toBe(promptCacheKey);
+		expect((capturedBody?.client_metadata as Record<string, string> | undefined)?.session_id).toBe(sessionId);
 		expect(capturedBody?.prompt_cache_key).toBe(promptCacheKey);
 
 		await streamOpenAICodexResponses(model, createCodexTestContext(), {
@@ -2744,9 +2746,11 @@ describe("openai-codex streaming", () => {
 			cacheRetention: "none",
 		}).result();
 
-		expect(capturedHeaders?.get("conversation_id")).toBe(sessionId);
-		expect(capturedHeaders?.get("session_id")).toBe(sessionId);
-		expect(capturedHeaders?.get("x-client-request-id")).toBe(sessionId);
+		expect(capturedHeaders?.get("conversation_id")).toBeNull();
+		expect(capturedHeaders?.get("session_id")).toBeNull();
+		expect(capturedHeaders?.get("session-id")).toBe(sessionId);
+		expect(capturedHeaders?.get("x-client-request-id")).toBeNull();
+		expect((capturedBody?.client_metadata as Record<string, string> | undefined)?.session_id).toBe(sessionId);
 		expect(capturedBody?.prompt_cache_key).toBeUndefined();
 	});
 	it("applies cache retention resolution to direct Codex request body construction", async () => {
