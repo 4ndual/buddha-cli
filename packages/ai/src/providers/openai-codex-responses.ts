@@ -1441,7 +1441,14 @@ function createCodexRequestContext(
 	const baseUrl = model.baseUrl || CODEX_BASE_URL;
 	const url = resolveCodexResponsesUrl(baseUrl);
 
-	const transportSessionId = normalizeOpenAIPromptCacheKey(options?.sessionId);
+	// ChatGPT's Codex route uses the provider-visible session id as a cache
+	// affinity key. A fork deliberately has a new logical session id while
+	// retaining its parent's promptCacheKey, so routing on the child id defeats
+	// the inherited cache even though prompt_cache_key is correct in the body.
+	// Keep logical identity in metadata below, but route the transport on the
+	// effective cache key (the same precedence used by the request body).
+	const logicalSessionId = normalizeOpenAIPromptCacheKey(options?.sessionId);
+	const transportSessionId = getOpenAIPromptCacheKey(options);
 	const codexClientVersion = CODEX_CLIENT_VERSION;
 	const requestHeaders = { ...model.headers, ...options?.headers };
 	const rawRequestDump: RawHttpRequestDump = {
@@ -1479,7 +1486,7 @@ function createCodexRequestContext(
 		websocketState.disableWebsocket = sharedWebsocketState.disableWebsocket;
 		websocketState.modelsEtag = sharedWebsocketState.modelsEtag;
 	}
-	const metadataSessionId = transportSessionId ?? crypto.randomUUID();
+	const metadataSessionId = logicalSessionId ?? crypto.randomUUID();
 	const metadataSession = getOrCreateCodexMetadataSessionState(metadataSessionId, providerSessionState);
 	const compaction = options?.codexCompaction;
 	const requestKind: OpenAICodexRequestKind = compaction ? "compaction" : "turn";

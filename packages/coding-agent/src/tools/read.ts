@@ -653,6 +653,25 @@ const readSchemaWithoutMemory = z.union([
 	readTargetWithoutMemory,
 	z.strictObject({ targets: z.array(readTargetWithoutMemory).min(2).max(16), ...readBatchFields }),
 ]);
+// Function-call providers require a top-level JSON Schema object. Keep the
+// discriminated runtime union above (it gives better validation/errors), but
+// expose the equivalent object-root shape on the wire instead of Zod's
+// top-level anyOf, which the Codex route rejects as type None.
+function readWireSchema(memory: boolean) {
+	const target = memory ? readTarget : readTargetWithoutMemory;
+	return z
+		.strictObject({
+			path: z.string().min(1).optional(),
+			selection: readSelectionSchema.optional(),
+			targets: z.array(target).min(2).max(16).optional(),
+			...readBatchFields,
+		})
+		.refine(value => (value.path === undefined) !== (value.targets === undefined), {
+			message: "Provide exactly one of path or targets",
+		});
+}
+const readWire = readWireSchema(true);
+const readWireWithoutMemory = readWireSchema(false);
 export const readOutputSchema = ToolResultOutput;
 export type ReadToolInput = z.output<typeof readSchema>;
 
@@ -776,7 +795,9 @@ export class ReadTool implements AgentTool<ZodWire<typeof readSchema>, ReadToolD
 	readonly loadMode = "essential";
 	description: string;
 	get parameters(): ZodWire<typeof readSchema> {
-		return zodWire(this.session.settings.get("memory.backend") === "off" ? readSchemaWithoutMemory : readSchema);
+		return zodWire(this.session.settings.get("memory.backend") === "off" ? readWireWithoutMemory : readWire) as unknown as ZodWire<
+			typeof readSchema
+		>;
 	}
 	readonly strict = true;
 
