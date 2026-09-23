@@ -2733,6 +2733,7 @@ describe("openai-codex streaming", () => {
 
 		expect(capturedHeaders?.get("conversation_id")).toBe(promptCacheKey);
 		expect(capturedHeaders?.get("session_id")).toBe(promptCacheKey);
+		expect(capturedHeaders?.get("session-id")).toBe(promptCacheKey);
 		expect(capturedHeaders?.get("x-client-request-id")).toBe(promptCacheKey);
 		expect((capturedBody?.client_metadata as Record<string, string> | undefined)?.session_id).toBe(sessionId);
 		expect(capturedBody?.prompt_cache_key).toBe(promptCacheKey);
@@ -2747,9 +2748,54 @@ describe("openai-codex streaming", () => {
 
 		expect(capturedHeaders?.get("conversation_id")).toBeNull();
 		expect(capturedHeaders?.get("session_id")).toBeNull();
+		expect(capturedHeaders?.get("session-id")).toBe(sessionId);
 		expect(capturedHeaders?.get("x-client-request-id")).toBeNull();
 		expect((capturedBody?.client_metadata as Record<string, string> | undefined)?.session_id).toBe(sessionId);
 		expect(capturedBody?.prompt_cache_key).toBeUndefined();
+	});
+	it("routes an inherited cache identity on the WebSocket handshake without replacing child metadata", async () => {
+		const sessionId = "fork-child-session";
+		const promptCacheKey = "fork-parent-session";
+		let capturedFrame: Record<string, unknown> | undefined;
+		let capturedHeaders: WsHeaders | undefined;
+		class CacheKeyWebSocket extends MockWebSocket {
+			constructor(url: string, options?: WsOptions) {
+				super(url, options);
+				capturedHeaders = options?.headers;
+				this.scheduleOpen();
+			}
+			override send(data: string): void {
+				capturedFrame = JSON.parse(data) as Record<string, unknown>;
+				this.emitCodexResponse({ messageId: "msg_fork", responseId: "resp_fork", text: "Hello" });
+			}
+		}
+		global.WebSocket = CacheKeyWebSocket as unknown as typeof WebSocket;
+		const model = buildModel({
+			id: "gpt-5.3-codex-spark",
+			name: "GPT-5.3 Codex Spark",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			preferWebsockets: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 128000,
+		});
+		const result = await streamOpenAICodexResponses(model, createCodexTestContext(), {
+			apiKey: createCodexTestToken(),
+			sessionId,
+			promptCacheKey,
+			providerSessionState: new Map<string, ProviderSessionState>(),
+		}).result();
+		if (result.stopReason === "error") throw result.error;
+		expect(result.stopReason).toBe("stop");
+		expect(capturedHeaders?.["session-id"]).toBe(promptCacheKey);
+		expect(capturedHeaders?.session_id).toBe(promptCacheKey);
+		expect(capturedHeaders?.conversation_id).toBe(promptCacheKey);
+		expect((capturedFrame?.client_metadata as Record<string, string> | undefined)?.session_id).toBe(sessionId);
+		expect(capturedFrame?.prompt_cache_key).toBe(promptCacheKey);
 	});
 	it("applies cache retention resolution to direct Codex request body construction", async () => {
 		const model = createCodexTestModel();

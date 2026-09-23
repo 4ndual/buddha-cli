@@ -4488,6 +4488,11 @@ function createCodexHeaders(
 	headers.delete(OPENAI_HEADERS.INSTALLATION_ID);
 	if (requestMetadata) {
 		applyCodexCompatibilityHeaders(headers, requestMetadata);
+		// A fork keeps its own logical metadata, but the Codex transport must
+		// advertise the inherited cache identity in both session-id spellings.
+		if (sessionId && sessionId !== requestMetadata.sessionId) {
+			headers.set(OPENAI_HEADERS.SCOPED_SESSION_ID, sessionId);
+		}
 	} else {
 		headers.delete(OPENAI_HEADERS.SCOPED_SESSION_ID);
 		headers.delete(OPENAI_HEADERS.THREAD_ID);
