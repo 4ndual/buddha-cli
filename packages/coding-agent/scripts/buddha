@@ -43,6 +43,9 @@ run_bun() {
 	if [ "${HERDR_ENV:-}" = 1 ] && [ "$(uname -s)" = Darwin ]; then
 		exec -a buddha bun "$@"
 	fi
+	if [ -e /etc/NIXOS ] && [ -x /run/current-system/sw/bin/bun ]; then
+		exec /run/current-system/sw/bin/bun "$@"
+	fi
 	exec bun "$@"
 }
 
