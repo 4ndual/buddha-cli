@@ -138,6 +138,7 @@ export class IrcBus {
 			expectsReply?: boolean;
 			suppressRelay?: boolean;
 			suppressInbox?: boolean;
+			suppressObservers?: boolean;
 		},
 	): Promise<IrcDeliveryReceipt> {
 		return (await this.sendTracked(msg, opts)).receipt;
@@ -150,6 +151,7 @@ export class IrcBus {
 			expectsReply?: boolean;
 			suppressRelay?: boolean;
 			suppressInbox?: boolean;
+			suppressObservers?: boolean;
 		},
 	): Promise<{ message: IrcMessage; receipt: IrcDeliveryReceipt }> {
 		const message: IrcMessage = {
@@ -166,7 +168,7 @@ export class IrcBus {
 			}
 			sent.set(message.to, message.ts);
 		}
-		if (!opts?.suppressInbox)
+		if (!opts?.suppressInbox && !opts?.suppressObservers)
 			await Promise.all([...this.#deliveryListeners].map(listener => listener(message, receipt)));
 		return { message, receipt };
 	}
@@ -187,6 +189,7 @@ export class IrcBus {
 			expectsReply?: boolean;
 			suppressRelay?: boolean;
 			suppressInbox?: boolean;
+			suppressObservers?: boolean;
 		},
 	): Promise<IrcDeliveryReceipt> {
 		const ref = this.#registry.get(message.to);
