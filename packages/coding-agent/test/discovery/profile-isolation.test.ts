@@ -21,7 +21,7 @@ import { clearCache as clearFsCache } from "@oh-my-pi/pi-coding-agent/capability
 import { type Skill, skillCapability } from "@oh-my-pi/pi-coding-agent/capability/skill";
 import { type SlashCommand, slashCommandCapability } from "@oh-my-pi/pi-coding-agent/capability/slash-command";
 import { loadCapability } from "@oh-my-pi/pi-coding-agent/discovery";
-import { getConfigRootDir, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
+import { getConfigRootDir, getSharedConfigDir, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
 
 const originalAgentDirEnv = process.env.PI_CODING_AGENT_DIR;
 const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
@@ -107,5 +107,26 @@ describe("native user-level config discovery follows the active profile", () => 
 		expect(result.items.find(s => s.name === "profile-skill")?._source.path).toBe(
 			path.join(profileAgentDir, "skills", "profile-skill", "SKILL.md"),
 		);
+	});
+
+	test("shared user config loads alongside the active profile", async () => {
+		const sharedDir = getSharedConfigDir();
+		await writeFile(path.join(sharedDir, "commands", "shared-cmd.md"), "Shared command.\n");
+		await writeSkill(path.join(sharedDir, "skills"), "shared-skill");
+		clearFsCache();
+		const commands = await loadCapability<SlashCommand>(slashCommandCapability.id, {
+			cwd: projectDir,
+			providers: ["native"],
+		});
+		const skills = await loadCapability<Skill>(skillCapability.id, {
+			cwd: projectDir,
+			providers: ["native"],
+		});
+		expect(commands.items.map(item => item.name)).toContain("profile-cmd");
+		expect(commands.items.map(item => item.name)).toContain("shared-cmd");
+		expect(commands.items.map(item => item.name)).not.toContain("default-cmd");
+		expect(skills.items.map(item => item.name)).toContain("profile-skill");
+		expect(skills.items.map(item => item.name)).toContain("shared-skill");
+		expect(skills.items.map(item => item.name)).not.toContain("default-skill");
 	});
 });

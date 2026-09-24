@@ -106,8 +106,13 @@ function readProfileFromEnvSafe(): string | undefined {
 	}
 }
 
-function getBaseConfigRoot(): string {
+export function getBaseConfigRoot(): string {
 	return path.join(os.homedir(), getConfigDirName());
+}
+
+/** Profile-independent user config loaded by every profile. */
+export function getSharedConfigDir(): string {
+	return path.join(getBaseConfigRoot(), "shared");
 }
 
 function getProfileConfigRoot(profile: string | undefined): string {
