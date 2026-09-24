@@ -96,8 +96,6 @@ export class IrcBus {
 	readonly #lastSent = new Map<string, Map<string, number>>();
 	/** Extension projection provenance, inherited by replies through replyTo. */
 	readonly #extensionScopes = new Map<string, IrcMessage["extensionScope"]>();
-	/** Extension projection provenance, inherited by replies through replyTo. */
-	readonly #extensionScopes = new Map<string, IrcMessage["extensionScope"]>();
 	readonly #deliveryListeners = new Set<(message: IrcMessage, receipt: IrcDeliveryReceipt) => void | Promise<void>>();
 
 	constructor(registry: AgentRegistry = AgentRegistry.global(), lifecycle?: AgentLifecycleManager) {
