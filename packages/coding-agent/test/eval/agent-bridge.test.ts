@@ -99,15 +99,21 @@ describe("runEvalAgent", () => {
 
 	it("routes omitted eval agent through an opted-in persistent fork and collects its result", async () => {
 		vi.spyOn(taskDiscovery, "discoverAgents").mockResolvedValue({
-			agents: [{ name: "default-fk", description: "Fork", systemPrompt: "Fork", source: "user" }],
+			agents: [
+				{ name: "default-fk", description: "Fork", systemPrompt: "Fork", source: "user" },
+				{ name: "task", description: "Task", systemPrompt: "Task", source: "bundled" },
+				{ name: "default", description: "Default", systemPrompt: "Default", source: "user" },
+			],
 			projectAgentsDir: null,
 		});
+		const native = vi.spyOn(taskExecutor, "runSubprocess").mockResolvedValue(createResult());
 		const calls: Array<{ agent: string; name: string; task: string }> = [];
 		const session = createBudgetSession(SessionManager.inMemory());
 		session.sessionManager = SessionManager.inMemory();
+		let selected = true;
 		session.toolRegistry = new Map([["task", {
 			name: "task",
-			evalDefaultForkAgent: (manager: unknown) => manager === session.sessionManager ? "default-fk" : undefined,
+			evalDefaultForkAgent: (manager: unknown) => selected && manager === session.sessionManager ? "default-fk" : undefined,
 			async execute(_id: string, params: { agent: string; name: string; task: string }) {
 				calls.push(params);
 				const pending = calls.length === 1;
@@ -119,6 +125,11 @@ describe("runEvalAgent", () => {
 		expect(result.details.agent).toBe("default-fk");
 		expect(calls.map(call => call.task)).toEqual(["Inspect this", "collect"]);
 		expect(calls.every(call => call.agent === "default-fk" && call.name === calls[0]?.name)).toBe(true);
+		await runEvalAgentAndWait({ prompt: "Native explicit", agent: "default" }, { session });
+		selected = false;
+		await runEvalAgentAndWait({ prompt: "Native ordinary" }, { session });
+		expect(calls).toHaveLength(2);
+		expect(native).toHaveBeenCalledTimes(2);
 	});
 
 	it("forwards session-scoped MCP and local protocol options", async () => {
