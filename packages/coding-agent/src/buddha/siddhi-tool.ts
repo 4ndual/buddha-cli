@@ -94,16 +94,12 @@ function mergeRefs(current: string[], incoming: readonly string[]): string[] {
  * the turn yielded nothing usable. Alone they are a non-answer: promoting one
  * would show the user a system warning in place of a result.
  */
-const WORKER_WARNING_BANNERS: readonly string[] = [
-	SUBAGENT_WARNING_NULL_YIELD,
-	SUBAGENT_WARNING_MISSING_YIELD,
-	SUBAGENT_WARNING_SCHEMA_OVERRIDDEN,
-];
-
 /** The worker's answer with those banners stripped; empty when the turn produced no answer at all. */
 function answerWithoutBanners(text: string): string {
 	let remaining = text;
-	for (const banner of WORKER_WARNING_BANNERS) remaining = remaining.split(banner).join("");
+	for (const banner of [SUBAGENT_WARNING_NULL_YIELD, SUBAGENT_WARNING_MISSING_YIELD, SUBAGENT_WARNING_SCHEMA_OVERRIDDEN]) {
+		remaining = remaining.split(banner).join("");
+	}
 	return remaining.trim();
 }
 
