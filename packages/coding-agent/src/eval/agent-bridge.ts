@@ -3,6 +3,7 @@
  */
 import { type } from "@oh-my-pi/omptype";
 import { createHash } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { MAIN_AGENT_ID } from "../registry/agent-registry";
 import type { AsyncJobDetails } from "../async/job-manager";
 import { createEvalCustomTools, describeEvalTools } from "../task/eval-tools";
@@ -129,15 +130,13 @@ async function runEvalFork(
 		return item;
 	};
 	let item = await invoke(args.prompt);
+	if (item.pending) await reportProgress(`Running agent ${id}...`);
 	while (item.pending) {
-		await reportProgress(`Running agent ${id}...`);
-		await new Promise<void>((resolve, reject) => {
-			const timer = setTimeout(resolve, 500);
-			signal.addEventListener("abort", () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
-		});
+		await delay(500, undefined, { signal });
 		item = await invoke("collect");
 	}
-	const text = item.text ?? "";
+	if (typeof item.text !== "string") throw new ToolError(`${route.agent} fork returned no final text`);
+	const text = item.text;
 	await reportProgress(text, { evalResult: { text, details: { agent: route.agent, id, structured: false } } });
 	return text;
 }
