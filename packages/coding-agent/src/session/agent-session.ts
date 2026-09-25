@@ -741,7 +741,6 @@ export class AgentSession {
 	#detachUsageBeforeModelCall: (() => void) | undefined;
 	#detachContextAccountingBeforeModelCall: (() => void) | undefined;
 	#pendingContextEstimates: Array<ContextManifest["estimated"] | undefined> = [];
-	#pendingWireRequests: Array<unknown[]> = [];
 	#pendingRawTraces: Array<RawCallTrace | undefined> = [];
 	#rawTraceWrites = new Set<Promise<unknown>>();
 	#rawTracePruneRoots = new Set<string>();
@@ -1488,10 +1487,9 @@ export class AgentSession {
 		this.#onPayload = async (payload, model) => {
 			const replacement = await configuredOnPayload?.(payload, model);
 			const finalPayload = replacement ?? payload;
-			if (this.#pendingWireRequests.length > 0) {
+			if (this.#pendingRawTraces.length > 0) {
 				try {
 					const captured = structuredClone(finalPayload);
-					this.#pendingWireRequests[this.#pendingWireRequests.length - 1]?.push(captured);
 					this.#pendingRawTraces.at(-1)?.record("request", captured);
 				} catch (error) {
 					logger.warn("Failed to capture outbound model payload", { error: String(error) });
@@ -1536,7 +1534,6 @@ export class AgentSession {
 		this.agent.setProviderResponseInterceptor(this.#onResponse);
 		this.agent.setRawSseEventInterceptor(this.#onSseEvent);
 		this.#detachContextAccountingBeforeModelCall = this.agent.addBeforeModelCall(context => {
-			this.#pendingWireRequests.push([]);
 			const sessionFile = this.sessionManager.getSessionFile();
 			let trace: RawCallTrace | undefined;
 			try {
@@ -3016,7 +3013,6 @@ export class AgentSession {
 				this.#trackRawTrace(trace);
 			}
 			this.#pendingContextEstimates = [];
-			this.#pendingWireRequests = [];
 			this.#pendingRawTraces = [];
 			this.#prunedTerminalRefusal = undefined;
 			this.#emitRunState("running");
@@ -3132,7 +3128,6 @@ export class AgentSession {
 		if (event.type === "message_end" && event.message.role === "assistant") {
 			event.message.completedAt = Date.now();
 			const estimated = this.#pendingContextEstimates.shift();
-			const wireRequests = this.#pendingWireRequests.shift() ?? [];
 			const trace = this.#pendingRawTraces.shift();
 			trace?.record("assistant", event.message);
 			const tracePath = trace?.finish({
@@ -3153,7 +3148,7 @@ export class AgentSession {
 						nonMessageTokens:
 							this.#stats.pendingNonMessageTokens ?? computeNonMessageTokens(this, this.agent.tokenizer),
 						compactionEpoch: this.#stats.compactionEpoch,
-						manifest: buildContextManifest(estimated, event.message.usage, wireRequests, tracePath),
+						manifest: buildContextManifest(estimated, event.message.usage, tracePath),
 					};
 				} catch (error) {
 					// Accounting is observational; a malformed extension message must not stop the run.

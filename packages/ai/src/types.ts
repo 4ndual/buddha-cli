@@ -1023,8 +1023,8 @@ export interface ContextSnapshot {
  */
 export interface ContextManifest {
 	version: 1;
-	/** Actual post-transform outbound payloads (including retries), captured before transport send. */
-	wire?: { source: "outbound-payload-hook"; requests: unknown[]; tracePath?: string };
+	/** Full post-transform requests and responses live in a short-retention sidecar, not the session journal. */
+	wire?: { source: "outbound-payload-hook"; tracePath: string };
 	estimated: {
 		source: "local-tokenizer";
 		basis: "provider-bound-context";
