@@ -7,18 +7,191 @@
  */
 import { describe, expect, it } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
-import { Tokenizer } from "@oh-my-pi/pi-agent-core";
+import { Agent, Tokenizer } from "@oh-my-pi/pi-agent-core";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { arkToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import {
+	buildContextManifest,
 	type ContextBreakdown,
 	computeNonMessageBreakdown,
 	computeNonMessageTokens,
 	estimateToolSchemaTokens,
+	estimateContextManifest,
 	renderContextUsage,
 } from "@oh-my-pi/pi-coding-agent/modes/utils/context-usage";
 import { applyToolProxy } from "../../src/extensibility/tool-proxy";
+import { Settings } from "../../src/config/settings";
+import { AgentSession } from "../../src/session/agent-session";
+import { loadEntriesFromFile } from "../../src/session/session-loader";
+import { convertToLlm } from "../../src/session/messages";
+import { SessionManager } from "../../src/session/session-manager";
+import { TempDir } from "@oh-my-pi/pi-utils";
 
 const tokenizer = new Tokenizer();
+
+describe("per-call context manifest", () => {
+	it("keeps each tool and message estimate separate from normalized provider usage", () => {
+		const tools = [
+			{
+				name: "read",
+				description: "Read a file",
+				parameters: { type: "object", properties: { path: { type: "string" } } },
+			},
+			{
+				name: "search",
+				description: "Find text",
+				parameters: { type: "object", properties: { query: { type: "string" } } },
+			},
+		];
+		const session = {
+			systemPrompt: ["base instructions", "workspace context"],
+			agent: { state: { tools } },
+			skills: [],
+		};
+		const messages = [
+			{ role: "user", content: "find it", timestamp: 1 },
+			{
+				role: "toolResult",
+				toolName: "read",
+				toolCallId: "call-1",
+				content: [{ type: "text", text: "file contents" }],
+				isError: false,
+				timestamp: 2,
+			},
+		] as never;
+		const usage = {
+			input: 13,
+			cacheRead: 37,
+			cacheWrite: 5,
+			output: 11,
+			reasoningTokens: 4,
+			totalTokens: 66,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		const manifest = buildContextManifest(estimateContextManifest(session as never, messages, tokenizer), usage);
+		expect(manifest.estimated.basis).toBe("provider-bound-context");
+		expect(manifest.estimated.tools.map(tool => tool.name)).toEqual(["read", "search"]);
+		expect(
+			manifest.estimated.tools.every(
+				tool => tool.totalTokens === tool.nameTokens + tool.descriptionTokens + tool.schemaTokens,
+			),
+		).toBe(true);
+		expect(manifest.estimated.toolSchemaTokens).toBe(estimateToolSchemaTokens(tools as never, tokenizer));
+		expect(manifest.estimated.tools.reduce((sum, tool) => sum + tool.totalTokens, 0)).toBe(
+			manifest.estimated.toolSchemaTokens,
+		);
+		expect(manifest.estimated.messages.map(message => [message.role, message.toolName])).toEqual([
+			["user", undefined],
+			["toolResult", "read"],
+		]);
+		expect(manifest.estimated.messageTokens).toBe(tokenizer.countMessages(messages));
+		expect(manifest.estimated.totalTokens).toBe(
+			computeNonMessageTokens(session as never, tokenizer) + manifest.estimated.messageTokens,
+		);
+		expect(manifest.provider).toEqual({
+			source: "normalized-provider-usage",
+			inputTokens: 13,
+			cacheReadTokens: 37,
+			cacheWriteTokens: 5,
+			outputTokens: 11,
+			reasoningTokens: 4,
+			promptTokens: 55,
+		});
+		expect(JSON.parse(JSON.stringify(manifest))).toEqual(manifest);
+	});
+
+	it("uses the provider context anchor when reported and does not infer reasoning", () => {
+		const manifest = buildContextManifest(estimateContextManifest({ systemPrompt: ["prompt"] }, [], tokenizer), {
+			input: 0,
+			cacheRead: 10,
+			cacheWrite: 0,
+			output: 3,
+			contextTokens: 8,
+			totalTokens: 13,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		});
+		expect(manifest.provider.promptTokens).toBe(8);
+		expect(manifest.provider.reasoningTokens).toBeUndefined();
+	});
+
+	it("survives journal persistence on an assistant message", async () => {
+		using temp = TempDir.createSync("@omp-context-manifest-");
+		const manager = SessionManager.create(temp.path(), `${temp.path()}/sessions`);
+		const usage = {
+			input: 2,
+			cacheRead: 3,
+			cacheWrite: 0,
+			output: 4,
+			totalTokens: 9,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		const manifest = buildContextManifest(
+			estimateContextManifest({ systemPrompt: ["instructions"] }, [], tokenizer),
+			usage,
+		);
+		manager.appendMessage({
+			role: "assistant",
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "test",
+			content: [{ type: "text", text: "done" }],
+			usage,
+			stopReason: "stop",
+			timestamp: 1,
+			contextSnapshot: { promptTokens: 5, nonMessageTokens: manifest.estimated.totalTokens, manifest },
+		} as never);
+		await manager.flush();
+		const file = manager.getSessionFile();
+		expect(file).toBeDefined();
+		const entries = await loadEntriesFromFile(file!);
+		const saved = entries.find(entry => entry.type === "message" && entry.message.role === "assistant");
+		expect(
+			saved?.type === "message" && saved.message.role === "assistant"
+				? saved.message.contextSnapshot?.manifest
+				: undefined,
+		).toEqual(manifest);
+	});
+
+	it("records a distinct prepared context for each AgentSession model call", async () => {
+		const mock = createMockModel({
+			responses: [
+				{ content: ["ok"], usage: { input: 3 } },
+				{ content: ["again"], usage: { input: 6 } },
+			],
+		});
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model: mock.model, systemPrompt: ["base"], tools: [], messages: [] },
+			convertToLlm,
+			streamFn: mock.stream,
+		});
+		const manager = SessionManager.inMemory();
+		const session = new AgentSession({
+			agent,
+			sessionManager: manager,
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry: { getApiKey: async () => "test-key" } as never,
+		});
+		try {
+			await session.prompt("hello");
+			await session.prompt("more");
+			const manifests = manager
+				.getBranch()
+				.flatMap(entry =>
+					entry.type === "message" && entry.message.role === "assistant" && entry.message.contextSnapshot?.manifest
+						? [entry.message.contextSnapshot.manifest]
+						: [],
+				);
+			expect(manifests).toHaveLength(2);
+			expect(manifests[0].estimated.basis).toBe("provider-bound-context");
+			expect(manifests[0].estimated.messages.some(message => message.role === "user")).toBe(true);
+			expect(manifests[1].estimated.messages.length).toBeGreaterThan(manifests[0].estimated.messages.length);
+			expect(manifests.map(manifest => manifest.provider.inputTokens)).toEqual([3, 6]);
+		} finally {
+			await session.dispose();
+		}
+	});
+});
 
 /** An arktype-shaped callable schema from an external arktype copy: a plain
  * function carrying `toJsonSchema`/`assert` that — unlike omptype schemas —

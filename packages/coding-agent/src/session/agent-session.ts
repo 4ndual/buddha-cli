@@ -54,6 +54,7 @@ import {
 import type {
 	AssistantMessage,
 	CodexCompactionContext,
+	ContextManifest,
 	ImageContent,
 	Message,
 	Model,
@@ -162,7 +163,7 @@ import { containsOrchestrate, renderOrchestrateNotice } from "../modes/orchestra
 import { theme } from "../modes/theme/theme";
 import { parseTurnBudget } from "../modes/turn-budget";
 import { containsUltrathink, ULTRATHINK_NOTICE } from "../modes/ultrathink";
-import { computeNonMessageTokens } from "../modes/utils/context-usage";
+import { buildContextManifest, computeNonMessageTokens, estimateContextManifest } from "../modes/utils/context-usage";
 import { containsWorkflow, renderWorkflowNotice } from "../modes/workflow";
 import { type PlanApprovalDetails, resolveApprovedPlan } from "../plan-mode/approved-plan";
 import { listPlanFiles, readPlanFile } from "../plan-mode/plan-files";
@@ -737,6 +738,8 @@ export class AgentSession {
 	#usagePreflightReadyModel: Model | undefined;
 	#detachUsageBeforeQueueDequeue: (() => void) | undefined;
 	#detachUsageBeforeModelCall: (() => void) | undefined;
+	#detachContextAccountingBeforeModelCall: (() => void) | undefined;
+	#pendingContextEstimates: Array<ContextManifest["estimated"] | undefined> = [];
 
 	#transformContext: (messages: AgentMessage[], signal?: AbortSignal) => AgentMessage[] | Promise<AgentMessage[]>;
 	#onPayload: SimpleStreamOptions["onPayload"] | undefined;
@@ -1508,6 +1511,26 @@ export class AgentSession {
 				};
 		this.agent.setProviderResponseInterceptor(this.#onResponse);
 		this.agent.setRawSseEventInterceptor(this.#onSseEvent);
+		this.#detachContextAccountingBeforeModelCall = this.agent.addBeforeModelCall(context => {
+			try {
+				this.#pendingContextEstimates.push(
+					estimateContextManifest(
+						{
+							systemPrompt: context.systemPrompt,
+							agent: { state: { tools: context.tools as never } },
+							skills: this.skills,
+							settings: this.settings,
+						},
+						context.messages,
+						this.agent.tokenizer,
+					),
+				);
+			} catch (error) {
+				// Preserve call/response alignment even if an extension schema cannot be counted.
+				this.#pendingContextEstimates.push(undefined);
+				logger.warn("Failed to estimate provider-bound context", { error: String(error) });
+			}
+		});
 		this.agent.setOnTurnEnd(async (messages, signal, context) => {
 			if (signal?.aborted) return;
 			const rewindReport = this.#extractRewindReport(messages);
@@ -2787,6 +2810,7 @@ export class AgentSession {
 			if (isEmptyErrorTurn(assistantMsg)) return;
 			if (assistantMsg.stopReason !== "aborted" && assistantMsg.stopReason !== "error" && assistantMsg.usage) {
 				assistantMsg.contextSnapshot = {
+					...assistantMsg.contextSnapshot,
 					promptTokens: calculatePromptTokens(assistantMsg.usage),
 					nonMessageTokens:
 						this.#stats.pendingNonMessageTokens ?? computeNonMessageTokens(this, this.agent.tokenizer),
@@ -2945,6 +2969,7 @@ export class AgentSession {
 		// A fresh run supersedes the previously settled (and pruned) refusal
 		// turn: state-based lookups take over again.
 		if (event.type === "agent_start") {
+			this.#pendingContextEstimates = [];
 			this.#prunedTerminalRefusal = undefined;
 			this.#emitRunState("running");
 		}
@@ -3058,6 +3083,26 @@ export class AgentSession {
 		// request start. Persisted with the message and read on rebuild.
 		if (event.type === "message_end" && event.message.role === "assistant") {
 			event.message.completedAt = Date.now();
+			const estimated = this.#pendingContextEstimates.shift();
+			if (
+				estimated &&
+				event.message.stopReason !== "aborted" &&
+				event.message.stopReason !== "error" &&
+				event.message.usage
+			) {
+				try {
+					event.message.contextSnapshot = {
+						promptTokens: calculatePromptTokens(event.message.usage),
+						nonMessageTokens:
+							this.#stats.pendingNonMessageTokens ?? computeNonMessageTokens(this, this.agent.tokenizer),
+						compactionEpoch: this.#stats.compactionEpoch,
+						manifest: buildContextManifest(estimated, event.message.usage),
+					};
+				} catch (error) {
+					// Accounting is observational; a malformed extension message must not stop the run.
+					logger.warn("Failed to build model-call context manifest", { error: String(error) });
+				}
+			}
 		}
 
 		// Deobfuscate assistant message content for display emission — the LLM echoes back
@@ -4563,6 +4608,8 @@ export class AgentSession {
 		this.#detachUsageBeforeQueueDequeue = undefined;
 		this.#detachUsageBeforeModelCall?.();
 		this.#detachUsageBeforeModelCall = undefined;
+		this.#detachContextAccountingBeforeModelCall?.();
+		this.#detachContextAccountingBeforeModelCall = undefined;
 		this.#memory.cancelLocalMemoryStartup();
 		this.#titleGenerationAbortController.abort();
 		this.#abortAutolearnCapture();

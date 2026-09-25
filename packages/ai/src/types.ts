@@ -1004,6 +1004,8 @@ export type AssistantRetryRecovery =
 export interface ContextSnapshot {
 	promptTokens: number; // authoritative provider prompt/input tokens
 	nonMessageTokens: number; // estimated non-message total at send time
+	/** Additive per-call accounting. Estimates and normalized usage are separate ledgers. */
+	manifest?: ContextManifest;
 	/** Estimated prompt tokens removed by local history rewrites after this provider snapshot was recorded. */
 	historyRewriteTokensRemoved?: number;
 	/**
@@ -1014,6 +1016,42 @@ export interface ContextSnapshot {
 	 */
 	compactionEpoch?: number;
 	lastMessageTimestamp?: number;
+}
+
+/** Local tokenizer estimates describe the prepared context before provider serialization.
+ * Providers may add framing or transform it on the wire; these are not billable buckets.
+ */
+export interface ContextManifest {
+	version: 1;
+	estimated: {
+		source: "local-tokenizer";
+		basis: "provider-bound-context";
+		systemPromptTokens: number;
+		systemContextTokens: number;
+		skillsTokens: number;
+		toolSchemaTokens: number;
+		messageTokens: number;
+		totalTokens: number;
+		tools: Array<{
+			index: number;
+			name: string;
+			nameTokens: number;
+			descriptionTokens: number;
+			schemaTokens: number;
+			totalTokens: number;
+		}>;
+		messages: Array<{ index: number; role: string; toolName?: string; tokens: number }>;
+	};
+	/** Normalized provider usage. Reasoning is included in output; cache buckets are included in prompt. */
+	provider: {
+		source: "normalized-provider-usage";
+		inputTokens: number;
+		cacheReadTokens: number;
+		cacheWriteTokens: number;
+		outputTokens: number;
+		reasoningTokens?: number;
+		promptTokens: number;
+	};
 }
 
 export interface AssistantMessage {
