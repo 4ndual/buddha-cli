@@ -97,6 +97,30 @@ describe("runEvalAgent", () => {
 		jobManagers.clear();
 	});
 
+	it("routes omitted eval agent through an opted-in persistent fork and collects its result", async () => {
+		vi.spyOn(taskDiscovery, "discoverAgents").mockResolvedValue({
+			agents: [{ name: "default-fk", description: "Fork", systemPrompt: "Fork", source: "user" }],
+			projectAgentsDir: null,
+		});
+		const calls: Array<{ agent: string; name: string; task: string }> = [];
+		const session = createBudgetSession(SessionManager.inMemory());
+		session.sessionManager = SessionManager.inMemory();
+		session.toolRegistry = new Map([["task", {
+			name: "task",
+			evalDefaultForkAgent: (manager: unknown) => manager === session.sessionManager ? "default-fk" : undefined,
+			async execute(_id: string, params: { agent: string; name: string; task: string }) {
+				calls.push(params);
+				const pending = calls.length === 1;
+				return { content: [{ type: "text", text: pending ? "pending" : "done" }], details: { results: [pending ? { pending: true } : { text: "fork answer" }] } };
+			},
+		} as never]]);
+		const result = await runEvalAgentAndWait({ prompt: "Inspect this", label: "proof" }, { session });
+		expect(result.text).toBe("fork answer");
+		expect(result.details.agent).toBe("default-fk");
+		expect(calls.map(call => call.task)).toEqual(["Inspect this", "collect"]);
+		expect(calls.every(call => call.agent === "default-fk" && call.name === calls[0]?.name)).toBe(true);
+	});
+
 	it("forwards session-scoped MCP and local protocol options", async () => {
 		const agent: AgentDefinition = {
 			name: "task",

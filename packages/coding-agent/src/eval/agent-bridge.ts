@@ -2,7 +2,9 @@
  * Host-side handler for the eval `agent()` helper.
  */
 import { type } from "@oh-my-pi/omptype";
+import { createHash } from "node:crypto";
 import { MAIN_AGENT_ID } from "../registry/agent-registry";
+import type { AsyncJobDetails } from "../async/job-manager";
 import { createEvalCustomTools, describeEvalTools } from "../task/eval-tools";
 import {
 	buildStructuredSubagentRecoveryHint,
@@ -95,6 +97,49 @@ function parseAgentArgs(args: unknown): EvalAgentArgs {
 	return result;
 }
 
+/** Only a profile-installed task router may opt eval agent() into fork delegation. */
+function evalForkTool(session: ToolSession, agent: string | undefined) {
+	const task = session.toolRegistry?.get("task");
+	const select = (task as typeof task & { evalDefaultForkAgent?: unknown } | undefined)?.evalDefaultForkAgent;
+	const forkAgent = typeof select === "function" ? select(session.sessionManager) : undefined;
+	return forkAgent === "default-fk" && (!agent || agent === forkAgent) ? task : undefined;
+}
+
+async function runEvalFork(
+	args: EvalAgentArgs,
+	id: string,
+	tool: NonNullable<ReturnType<typeof evalForkTool>>,
+	reportProgress: (text: string, details?: AsyncJobDetails) => Promise<void>,
+	signal: AbortSignal,
+): Promise<string> {
+	// These controls require native structured-subagent semantics. Never discard
+	// them while presenting a fork as if it honored them.
+	for (const key of ["schema", "schemaMode", "isolated", "apply", "merge", "tools"] as const) {
+		if (Object.hasOwn(args, key)) throw new ToolError(`agent() default-fk cannot honor ${key} in a conversation fork`);
+	}
+	const name = `eval${createHash("sha256").update(id).digest("hex").slice(0, 24)}`;
+	const invoke = async (task: string) => {
+		const result = await tool.execute(id, { agent: "default-fk", name, task } as never, signal);
+		const details = result.details as { results?: Array<{ pending?: boolean; text?: string; error?: string }> } | undefined;
+		const item = details?.results?.[0];
+		if (result.isError || item?.error) throw new ToolError(item?.error ?? result.content.map(part => part.type === "text" ? part.text : "").join("\n"));
+		if (!item) throw new ToolError("default-fk task router returned no fork result");
+		return item;
+	};
+	let item = await invoke(args.prompt);
+	while (item.pending) {
+		await reportProgress(`Running agent ${id}...`);
+		await new Promise<void>((resolve, reject) => {
+			const timer = setTimeout(resolve, 500);
+			signal.addEventListener("abort", () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+		});
+		item = await invoke("collect");
+	}
+	const text = item.text ?? "";
+	await reportProgress(text, { evalResult: { text, details: { agent: "default-fk", id, structured: false } } });
+	return text;
+}
+
 function trimToUndefined(value: string | undefined): string | undefined {
 	const trimmed = value?.trim();
 	return trimmed ? trimmed : undefined;
@@ -171,6 +216,7 @@ async function buildEvalAgentResult(execution: StructuredSubagentResult): Promis
 /** Register a background subagent and return its handle immediately. */
 export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOptions): Promise<EvalAgentHandleResult> {
 	const parsed = parseAgentArgs(args);
+	const forkTool = evalForkTool(options.session, parsed.agent);
 	const turnBudget = options.session.getTurnBudget?.();
 	if (turnBudget?.hard && turnBudget.total !== null && turnBudget.spent >= turnBudget.total) {
 		throw new ToolError(
@@ -189,7 +235,7 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 					...(parsed.apply !== undefined ? { apply: parsed.apply } : {}),
 				}
 			: undefined;
-	const customTools = parsed.tools?.length
+	const customTools = !forkTool && parsed.tools?.length
 		? createEvalCustomTools(options.session, await describeEvalTools(options.session, parsed.tools, options.signal))
 		: undefined;
 
@@ -198,7 +244,7 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 			session: options.session,
 			invocationKind: "eval",
 			assignment: parsed.prompt,
-			...(parsed.agent !== undefined ? { agent: parsed.agent } : {}),
+			...(forkTool ? { agent: "default-fk" } : parsed.agent !== undefined ? { agent: parsed.agent } : {}),
 			...(Object.hasOwn(parsed, "schema") ? { outputSchema: parsed.schema } : {}),
 			...(parsed.schemaMode !== undefined ? { schemaMode: parsed.schemaMode } : {}),
 			...(isolation ? { isolation } : {}),
@@ -215,6 +261,7 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 			id,
 			async ({ signal, reportProgress, markRunning }) => {
 				markRunning();
+				if (forkTool) return runEvalFork(parsed, id, forkTool, reportProgress, signal);
 				let latestProgress: AgentProgress | undefined;
 				try {
 					const execution = await runStructuredSubagent({
