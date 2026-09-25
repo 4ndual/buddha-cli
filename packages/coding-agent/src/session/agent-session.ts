@@ -17,6 +17,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
+import { pruneRawTraces, RawCallTrace, rawTraceRoot } from "./raw-call-trace";
 import { isPromise } from "node:util/types";
 
 import {
@@ -54,6 +55,7 @@ import {
 import type {
 	AssistantMessage,
 	CodexCompactionContext,
+	ContextManifest,
 	ImageContent,
 	Message,
 	Model,
@@ -162,7 +164,7 @@ import { containsOrchestrate, renderOrchestrateNotice } from "../modes/orchestra
 import { theme } from "../modes/theme/theme";
 import { parseTurnBudget } from "../modes/turn-budget";
 import { containsUltrathink, ULTRATHINK_NOTICE } from "../modes/ultrathink";
-import { computeNonMessageTokens } from "../modes/utils/context-usage";
+import { buildContextManifest, computeNonMessageTokens, estimateContextManifest } from "../modes/utils/context-usage";
 import { containsWorkflow, renderWorkflowNotice } from "../modes/workflow";
 import { type PlanApprovalDetails, resolveApprovedPlan } from "../plan-mode/approved-plan";
 import { listPlanFiles, readPlanFile } from "../plan-mode/plan-files";
@@ -737,6 +739,12 @@ export class AgentSession {
 	#usagePreflightReadyModel: Model | undefined;
 	#detachUsageBeforeQueueDequeue: (() => void) | undefined;
 	#detachUsageBeforeModelCall: (() => void) | undefined;
+	#detachContextAccountingBeforeModelCall: (() => void) | undefined;
+	#pendingContextEstimates: Array<ContextManifest["estimated"] | undefined> = [];
+	#pendingWireRequests: Array<unknown[]> = [];
+	#pendingRawTraces: Array<RawCallTrace | undefined> = [];
+	#rawTraceWrites = new Set<Promise<unknown>>();
+	#rawTracePruneRoots = new Set<string>();
 
 	#transformContext: (messages: AgentMessage[], signal?: AbortSignal) => AgentMessage[] | Promise<AgentMessage[]>;
 	#onPayload: SimpleStreamOptions["onPayload"] | undefined;
@@ -1476,7 +1484,21 @@ export class AgentSession {
 		this.#transformContext = config.transformContext ?? (messages => messages);
 		this.#sideStreamFn = config.sideStreamFn ?? streamSimple;
 		this.#preferWebsockets = config.preferWebsockets;
-		this.#onPayload = config.onPayload;
+		const configuredOnPayload = config.onPayload ?? this.agent.getPayloadInterceptor();
+		this.#onPayload = async (payload, model) => {
+			const replacement = await configuredOnPayload?.(payload, model);
+			const finalPayload = replacement ?? payload;
+			if (this.#pendingWireRequests.length > 0) {
+				try {
+					const captured = structuredClone(finalPayload);
+					this.#pendingWireRequests[this.#pendingWireRequests.length - 1]?.push(captured);
+					this.#pendingRawTraces.at(-1)?.record("request", captured);
+				} catch (error) {
+					logger.warn("Failed to capture outbound model payload", { error: String(error) });
+				}
+			}
+			return replacement;
+		};
 		this.rawSseDebugBuffer = config.rawSseDebugBuffer ?? new RawSseDebugBuffer();
 		// Avoid wrapping in an `async` closure when no user callback is configured: the
 		// outer await on `#onResponse` (provider-response.ts) tolerates a sync void return,
@@ -1485,12 +1507,14 @@ export class AgentSession {
 		const configuredOnResponse = config.onResponse;
 		this.#onResponse = configuredOnResponse
 			? async (response, model) => {
+					this.#pendingRawTraces.at(-1)?.record("response", response);
 					this.rawSseDebugBuffer.recordResponse(response, model);
 					this.#stats.ingestProviderUsageHeaders(response, model);
 					await this.#maybeRefreshLazyLocalContext(response, model);
 					await configuredOnResponse(response, model);
 				}
 			: (response, model) => {
+					this.#pendingRawTraces.at(-1)?.record("response", response);
 					this.rawSseDebugBuffer.recordResponse(response, model);
 					this.#stats.ingestProviderUsageHeaders(response, model);
 					// Returns void (no allocation) unless a one-time lazy-model
@@ -1500,14 +1524,54 @@ export class AgentSession {
 		const configuredOnSseEvent = config.onSseEvent;
 		this.#onSseEvent = configuredOnSseEvent
 			? (event, model) => {
+					this.#pendingRawTraces.at(-1)?.record("event", event);
 					this.rawSseDebugBuffer.recordEvent(event, model);
 					configuredOnSseEvent(event, model);
 				}
 			: (event, model) => {
+					this.#pendingRawTraces.at(-1)?.record("event", event);
 					this.rawSseDebugBuffer.recordEvent(event, model);
 				};
+		this.agent.setPayloadInterceptor(this.#onPayload);
 		this.agent.setProviderResponseInterceptor(this.#onResponse);
 		this.agent.setRawSseEventInterceptor(this.#onSseEvent);
+		this.#detachContextAccountingBeforeModelCall = this.agent.addBeforeModelCall(context => {
+			this.#pendingWireRequests.push([]);
+			const sessionFile = this.sessionManager.getSessionFile();
+			let trace: RawCallTrace | undefined;
+			try {
+				trace = sessionFile ? new RawCallTrace(sessionFile, error =>
+					logger.warn("Raw model-call trace could not be saved", { error, sessionFile })) : undefined;
+			} catch (error) {
+				logger.warn("Raw model-call trace could not start", { error: String(error) });
+			}
+			this.#pendingRawTraces.push(trace);
+			if (sessionFile) {
+				const root = rawTraceRoot(sessionFile);
+				if (!this.#rawTracePruneRoots.has(root)) {
+					this.#rawTracePruneRoots.add(root);
+					void pruneRawTraces(root).catch(error => logger.warn("Raw trace pruning failed", { error: String(error) }));
+				}
+			}
+			try {
+				this.#pendingContextEstimates.push(
+					estimateContextManifest(
+						{
+							systemPrompt: context.systemPrompt,
+							agent: { state: { tools: context.tools as never } },
+							skills: this.skills,
+							settings: this.settings,
+						},
+						context.messages,
+						this.agent.tokenizer,
+					),
+				);
+			} catch (error) {
+				// Preserve call/response alignment even if an extension schema cannot be counted.
+				this.#pendingContextEstimates.push(undefined);
+				logger.warn("Failed to estimate provider-bound context", { error: String(error) });
+			}
+		});
 		this.agent.setOnTurnEnd(async (messages, signal, context) => {
 			if (signal?.aborted) return;
 			const rewindReport = this.#extractRewindReport(messages);
@@ -2787,6 +2851,7 @@ export class AgentSession {
 			if (isEmptyErrorTurn(assistantMsg)) return;
 			if (assistantMsg.stopReason !== "aborted" && assistantMsg.stopReason !== "error" && assistantMsg.usage) {
 				assistantMsg.contextSnapshot = {
+					...assistantMsg.contextSnapshot,
 					promptTokens: calculatePromptTokens(assistantMsg.usage),
 					nonMessageTokens:
 						this.#stats.pendingNonMessageTokens ?? computeNonMessageTokens(this, this.agent.tokenizer),
@@ -2945,6 +3010,14 @@ export class AgentSession {
 		// A fresh run supersedes the previously settled (and pruned) refusal
 		// turn: state-based lookups take over again.
 		if (event.type === "agent_start") {
+			for (const trace of this.#pendingRawTraces) {
+				if (!trace) continue;
+				trace.finish({ interrupted: true, reason: "new-agent-run" });
+				this.#trackRawTrace(trace);
+			}
+			this.#pendingContextEstimates = [];
+			this.#pendingWireRequests = [];
+			this.#pendingRawTraces = [];
 			this.#prunedTerminalRefusal = undefined;
 			this.#emitRunState("running");
 		}
@@ -3058,6 +3131,35 @@ export class AgentSession {
 		// request start. Persisted with the message and read on rebuild.
 		if (event.type === "message_end" && event.message.role === "assistant") {
 			event.message.completedAt = Date.now();
+			const estimated = this.#pendingContextEstimates.shift();
+			const wireRequests = this.#pendingWireRequests.shift() ?? [];
+			const trace = this.#pendingRawTraces.shift();
+			trace?.record("assistant", event.message);
+			const tracePath = trace?.finish({
+				stopReason: event.message.stopReason,
+				usage: event.message.usage,
+				responseId: event.message.responseId,
+			});
+			if (trace) this.#trackRawTrace(trace);
+			if (
+				estimated &&
+				event.message.stopReason !== "aborted" &&
+				event.message.stopReason !== "error" &&
+				event.message.usage
+			) {
+				try {
+					event.message.contextSnapshot = {
+						promptTokens: calculatePromptTokens(event.message.usage),
+						nonMessageTokens:
+							this.#stats.pendingNonMessageTokens ?? computeNonMessageTokens(this, this.agent.tokenizer),
+						compactionEpoch: this.#stats.compactionEpoch,
+						manifest: buildContextManifest(estimated, event.message.usage, wireRequests, tracePath),
+					};
+				} catch (error) {
+					// Accounting is observational; a malformed extension message must not stop the run.
+					logger.warn("Failed to build model-call context manifest", { error: String(error) });
+				}
+			}
 		}
 
 		// Deobfuscate assistant message content for display emission — the LLM echoes back
@@ -4563,6 +4665,8 @@ export class AgentSession {
 		this.#detachUsageBeforeQueueDequeue = undefined;
 		this.#detachUsageBeforeModelCall?.();
 		this.#detachUsageBeforeModelCall = undefined;
+		this.#detachContextAccountingBeforeModelCall?.();
+		this.#detachContextAccountingBeforeModelCall = undefined;
 		this.#memory.cancelLocalMemoryStartup();
 		this.#titleGenerationAbortController.abort();
 		this.#abortAutolearnCapture();
@@ -4822,6 +4926,7 @@ export class AgentSession {
 		// still append the finished message/entries after agent.waitForIdle()
 		// alone. Without this the release races the unwind and a disposed session
 		// is repopulated with exactly the state we are trying to drop.
+		this.agent.setPayloadInterceptor(undefined);
 		this.agent.setProviderResponseInterceptor(undefined);
 		this.agent.setRawSseEventInterceptor(undefined);
 		let drained = false;
@@ -4859,6 +4964,7 @@ export class AgentSession {
 		// graph shed its heavy payloads even while the lifecycle adoption record's
 		// reviver closure still references the session object. Fixes #8003.
 		this.#releaseRetainedSessionMemory();
+		await Promise.allSettled(this.#rawTraceWrites);
 
 		// The deadline does not cancel the drain: a handler parked in a slow
 		// extension hook resumes afterwards and would repopulate exactly the
@@ -4873,16 +4979,29 @@ export class AgentSession {
 				await this.agent.waitForIdle();
 				await this.#drainInFlightEventHandlers();
 				this.#releaseRetainedSessionMemory();
+				await Promise.allSettled(this.#rawTraceWrites);
 			})().catch(error => logger.warn("Deferred dispose finalization failed", { error: String(error) }));
 		}
 	}
 
 	/** Drop the in-memory conversation state after the terminal dispose flush. */
 	#releaseRetainedSessionMemory(): void {
+		for (const trace of this.#pendingRawTraces) {
+			if (!trace) continue;
+			trace.finish({ interrupted: true, reason: "dispose" });
+			this.#trackRawTrace(trace);
+		}
+		this.#pendingRawTraces = [];
 		this.agent.reset();
 		this.agent.setAppendOnlyContext(undefined);
 		this.rawSseDebugBuffer.clear();
 		this.sessionManager.releaseRetainedEntries();
+	}
+
+	#trackRawTrace(trace: RawCallTrace): void {
+		const write = trace.settled();
+		this.#rawTraceWrites.add(write);
+		void write.finally(() => this.#rawTraceWrites.delete(write));
 	}
 
 	#closeAllProviderSessions(reason: string): void {
