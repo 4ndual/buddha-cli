@@ -105,8 +105,10 @@ describe("per-call context manifest", () => {
 			promptTokens: 55,
 		});
 		expect(JSON.parse(JSON.stringify(manifest))).toEqual(manifest);
-		const outbound = { instructions: "base instructions", tools: [{ name: "read" }], input: [{ role: "user" }] };
-		expect(buildContextManifest(manifest.estimated, usage, [outbound]).wire?.requests).toEqual([outbound]);
+		expect(buildContextManifest(manifest.estimated, usage, "/profile/raw-calls/call.jsonl").wire).toEqual({
+			source: "outbound-payload-hook",
+			tracePath: "/profile/raw-calls/call.jsonl",
+		});
 	});
 
 	it("uses the provider context anchor when reported and does not infer reasoning", () => {
@@ -233,7 +235,7 @@ describe("per-call context manifest", () => {
 			)[0];
 			if (!manifest) throw new Error(`No manifest: ${JSON.stringify(manager.getBranch())}`);
 			expect(manifest?.wire).toBeDefined();
-			expect(manifest?.wire?.requests[0]).toMatchObject({ instructions: "exact prompt" });
+			expect("requests" in (manifest?.wire ?? {})).toBe(false);
 			const filename = manifest?.wire?.tracePath;
 			expect(filename).toBeDefined();
 			await session.dispose();

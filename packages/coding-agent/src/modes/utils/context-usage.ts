@@ -233,15 +233,13 @@ export function estimateContextManifest(
 export function buildContextManifest(
 	estimated: ContextManifest["estimated"],
 	usage: Usage,
-	wireRequests: unknown[] = [],
 	tracePath?: string,
 ): ContextManifest {
 	return {
 		version: 1,
-		...(wireRequests.length > 0 || tracePath ? { wire: {
+		...(tracePath ? { wire: {
 			source: "outbound-payload-hook" as const,
-			requests: wireRequests,
-			...(tracePath ? { tracePath } : {}),
+			tracePath,
 		} } : {}),
 		estimated,
 		provider: {
