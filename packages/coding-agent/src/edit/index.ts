@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as z from "zod/v4";
 import type {
 	AgentTool,
 	AgentToolArgStream,
@@ -52,6 +53,7 @@ import { outputMeta } from "../tools/output-meta";
 import { resolveFileWriteApprovalTier } from "../tools/path-utils";
 import { planLocalProtocolOptions } from "../tools/plan-mode-guard";
 import { ToolError } from "../tools/tool-errors";
+import { ToolResultOutput, type ZodWire, zodWire } from "../tools/zod-wire";
 import { type EditMode, normalizeEditMode, resolveEditMode } from "../utils/edit-mode";
 import { attemptEditAutoRepair, type EditAutoRepairOutcome } from "./auto-repair";
 import { type AppliedEditSnapshot, createEditBlackboxRecorder } from "./blackbox";
@@ -78,11 +80,17 @@ export * from "./store";
 export { DEFAULT_EDIT_MODE, type EditMode, normalizeEditMode } from "../utils/edit-mode";
 
 type TInput =
-	| typeof replaceEditSchema
-	| typeof patchEditSchema
-	| typeof hashlineEditParamsSchema
-	| typeof applyPatchSchema
-	| typeof sloppyEditSchema;
+	| ZodWire<typeof replaceEditSchema>
+	| ZodWire<typeof patchEditSchema>
+	| ZodWire<typeof hashlineEditParamsSchema>
+	| ZodWire<typeof applyPatchSchema>
+	| ZodWire<typeof sloppyEditSchema>;
+
+export const editOutputSchema = ToolResultOutput;
+const replaceBatchSchema = z.strictObject({
+	path: z.string(),
+	edits: z.array(replaceEditSchema.omit({ path: true })),
+});
 
 type EditParams = ReplaceParams | ReplaceBatchParams | PatchParams | HashlineParams | ApplyPatchParams | SloppyParams;
 
@@ -372,15 +380,15 @@ export class EditTool implements AgentTool<TInput> {
 	get parameters(): TInput {
 		switch (this.mode) {
 			case "replace":
-				return replaceEditSchema;
+				return zodWire(replaceEditSchema);
 			case "patch":
-				return patchEditSchema;
+				return zodWire(patchEditSchema);
 			case "apply_patch":
-				return applyPatchSchema;
+				return zodWire(applyPatchSchema);
 			case "hashline":
-				return hashlineEditParamsSchema;
+				return zodWire(hashlineEditParamsSchema);
 			case "sloppy":
-				return sloppyEditSchema;
+				return zodWire(sloppyEditSchema);
 		}
 	}
 
@@ -462,6 +470,34 @@ export class EditTool implements AgentTool<TInput> {
 	}
 
 	async execute(
+		toolCallId: string,
+		params: EditParams,
+		signal?: AbortSignal,
+		onUpdate?: AgentToolUpdateCallback<EditToolDetails, TInput>,
+		context?: AgentToolContext,
+	): Promise<AgentToolResult<EditToolDetails, TInput>> {
+		const input = this.#parseInput(params);
+		const result = await this.#executeInner(toolCallId, input, signal, onUpdate, context);
+		editOutputSchema.parse(result);
+		return result;
+	}
+
+	#parseInput(params: EditParams): EditParams {
+		switch (this.mode) {
+			case "replace":
+				return "edits" in params ? replaceBatchSchema.parse(params) : replaceEditSchema.parse(params);
+			case "patch":
+				return patchEditSchema.parse(params);
+			case "apply_patch":
+				return applyPatchSchema.parse(params);
+			case "hashline":
+				return hashlineEditParamsSchema.parse(params);
+			case "sloppy":
+				return sloppyEditSchema.parse(params);
+		}
+	}
+
+	async #executeInner(
 		toolCallId: string,
 		params: EditParams,
 		signal?: AbortSignal,

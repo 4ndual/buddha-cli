@@ -31,6 +31,8 @@ interface BrowserOpenOptions {
 	name?: string;
 	/** URL to navigate to after opening or reusing the tab. */
 	url?: string;
+	/** Why a stateful browser is required. Omit to route ordinary HTTP(S) content through read. */
+	purpose?: "authentication" | "interaction" | "javascript-state" | "visual-layout";
 	/** Browser process, CDP endpoint, or relay selection. */
 	app?: BrowserAppOptions;
 	/** Requested page viewport. */
@@ -43,6 +45,12 @@ interface BrowserOpenOptions {
 	persist?: boolean;
 	/** Open timeout in seconds, excluding first-use browser installation. */
 	timeout?: number;
+}
+
+interface BrowserContentResult {
+	readonly kind: "content";
+	readonly url?: string;
+	readonly details?: unknown;
 }
 
 /** Options for releasing managed browser tabs. */
@@ -366,7 +374,7 @@ interface BrowserTab extends BrowserTabHelpers {
 /** Session-scoped browser facade available in JavaScript Eval. */
 declare const browser: {
 	/** Open or reuse a tab and return its handle. */
-	open(options?: BrowserOpenOptions): Promise<BrowserTab>;
+	open(options?: BrowserOpenOptions): Promise<BrowserTab | BrowserContentResult>;
 	/** Return a handle for an existing named tab without opening it. */
 	tab(name?: string): BrowserTab;
 	/** Release one or all managed tabs. */

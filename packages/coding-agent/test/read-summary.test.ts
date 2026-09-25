@@ -81,6 +81,14 @@ describe("read summary", () => {
 		expect(text).toContain("export function beta(): number { … }");
 		expect(text).not.toContain("const clean = value.trim()");
 		expect(result.details?.summary?.elidedSpans).toBe(2);
+		expect(result.details?.recovery).toEqual({
+			path: "src/fixture.ts",
+			omittedRanges: [
+				{ start: 1, end: 5 },
+				{ start: 7, end: 11 },
+			],
+			selectors: ["1-5", "7-11"],
+		});
 	});
 
 	it("uses the resolved path in elision recovery selectors after suffix matching", async () => {

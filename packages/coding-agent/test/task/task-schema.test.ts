@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
-import { type } from "@oh-my-pi/omptype";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { TaskTool, taskSchema } from "@oh-my-pi/pi-coding-agent/task";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
@@ -14,21 +13,18 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 
 describe("task schema (single-spawn)", () => {
 	it("accepts {agent, task}", () => {
-		const parsed = taskSchema({ agent: "scout", task: "Map the auth module." });
-		expect(parsed instanceof type.errors).toBe(false);
+		const parsed = taskSchema.safeParse({ agent: "scout", task: "Map the auth module." });
+		expect(parsed.success).toBe(true);
 	});
 
 	it("defaults agent to `task` when omitted", () => {
-		const parsed = taskSchema({ task: "Map the auth module." });
-		expect(parsed instanceof type.errors).toBe(false);
-		if (!(parsed instanceof type.errors)) {
-			expect(parsed.agent).toBe("task");
-		}
+		const parsed = taskSchema.parse({ task: "Map the auth module." });
+		expect(parsed.agent).toBe("task");
 	});
 
 	it("requires task", () => {
-		const parsed = taskSchema({ agent: "scout" });
-		expect(parsed instanceof type.errors).toBe(true);
+		const parsed = taskSchema.safeParse({ agent: "scout" });
+		expect(parsed.success).toBe(false);
 	});
 
 	it("removes eval tool names from the wire shape when eval.tools.enabled is off", () => {
@@ -37,16 +33,13 @@ describe("task schema (single-spawn)", () => {
 			batchEnabled: false,
 			evalToolsEnabled: false,
 		});
-		const parsed = schema({ agent: "scout", task: "Map the auth module.", tools: ["word_count"] });
-		expect(parsed instanceof type.errors).toBe(false);
-		if (parsed && typeof parsed === "object" && !(parsed instanceof type.errors)) {
-			expect("tools" in parsed).toBe(false);
-		}
+		const parsed = schema.parse({ agent: "scout", task: "Map the auth module.", tools: ["word_count"] });
+		expect("tools" in parsed).toBe(false);
 	});
 
 	it("retains caller outputSchema, schemaMode, and eval tool names while stripping stale keys", () => {
 		const outputSchema = { type: "object", properties: { answer: { type: "string" } } };
-		const parsed = taskSchema({
+		const parsed = taskSchema.parse({
 			agent: "scout",
 			task: "Map the auth module.",
 			outputSchema,
@@ -56,15 +49,12 @@ describe("task schema (single-spawn)", () => {
 			tasks: [{ name: "A", task: "..." }],
 			schema: '{"properties":{}}',
 		});
-		expect(parsed instanceof type.errors).toBe(false);
-		if (!(parsed instanceof type.errors)) {
-			expect(parsed.outputSchema).toEqual(outputSchema);
-			expect(parsed.schemaMode).toBe("strict");
-			expect(parsed.tools).toEqual(["word_count"]);
-			expect("tasks" in parsed).toBe(false);
-			expect("context" in parsed).toBe(false);
-			expect("schema" in parsed).toBe(false);
-		}
+		expect(parsed.outputSchema).toEqual(outputSchema);
+		expect(parsed.schemaMode).toBe("strict");
+		expect(parsed.tools).toEqual(["word_count"]);
+		expect("tasks" in parsed).toBe(false);
+		expect("context" in parsed).toBe(false);
+		expect("schema" in parsed).toBe(false);
 	});
 });
 

@@ -1,5 +1,5 @@
 import * as fs from "node:fs";
-import { type } from "@oh-my-pi/omptype";
+import * as z from "zod/v4";
 import type {
 	AgentTool,
 	AgentToolContext,
@@ -10,7 +10,7 @@ import type {
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { ImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
-import { getProjectDir, isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
+import { getProjectDir, isEnoent, logger } from "@oh-my-pi/pi-utils";
 import { isPosixShell } from "@oh-my-pi/pi-utils/procmgr";
 import {
 	DEFAULT_AUTO_BACKGROUND_THRESHOLD_MS,
@@ -24,7 +24,6 @@ import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
 import { truncateToVisualLines } from "../modes/components/visual-truncate";
 import { highlightCode, type Theme } from "../modes/theme/theme";
-import bashDescription from "../prompts/tools/bash.md" with { type: "text" };
 import type {
 	ClientBridgeTerminalExitStatus,
 	ClientBridgeTerminalHandle,
@@ -63,6 +62,7 @@ import {
 import { extractLeadingCdTarget, extractLiteralAndChainSegments, tokenizeShellSegments } from "./shell-tokenize";
 import { ToolAbortError, ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
+import { ToolResultOutput, type ZodWire, zodWire } from "./zod-wire";
 import { clampTimeout, TOOL_TIMEOUTS } from "./tool-timeouts";
 
 export const BASH_DEFAULT_PREVIEW_LINES = DEFAULT_TERMINAL_PREVIEW_LINES;
@@ -318,34 +318,18 @@ async function saveBashOriginalArtifact(session: ToolSession, originalText: stri
 
 const BASH_TIMEOUT_DESCRIPTION = `timeout in seconds; 0 disables the command deadline; nonzero values are clamped to ${TOOL_TIMEOUTS.bash.min}-${TOOL_TIMEOUTS.bash.max}`;
 
-const bashSchemaBase = type({
-	command: type("string").describe("command to execute"),
-	"env?": type({ "[string]": "string" }).describe("extra env vars"),
-	"timeout?": type("number").describe(BASH_TIMEOUT_DESCRIPTION),
-	"cwd?": type("string").describe("working directory"),
-	"pty?": type("boolean").describe("run in pty mode"),
-});
-
-const bashSchemaWithAsync = type({
-	command: "string",
-	"env?": { "[string]": "string" },
-	"timeout?": type("number").describe(BASH_TIMEOUT_DESCRIPTION),
-	"cwd?": "string",
-	"pty?": "boolean",
-	"async?": type("boolean").describe("run in background"),
-});
-
-type BashToolSchema = typeof bashSchemaBase | typeof bashSchemaWithAsync;
-
-export interface BashToolInput {
-	command: string;
-	env?: Record<string, string>;
-	timeout?: number;
-	cwd?: string;
-
-	async?: boolean;
-	pty?: boolean;
-}
+const bashFields = {
+	command: z.string(),
+	env: z.record(z.string(), z.string()).optional(),
+	timeout: z.number().describe(BASH_TIMEOUT_DESCRIPTION).optional(),
+	cwd: z.string().optional(),
+	pty: z.boolean().optional(),
+};
+export const bashSchemaBase = z.strictObject(bashFields);
+export const bashSchemaWithAsync = z.strictObject({ ...bashFields, async: z.boolean().optional() });
+export const bashOutputSchema = ToolResultOutput;
+type BashToolSchema = ZodWire<typeof bashSchemaBase> | ZodWire<typeof bashSchemaWithAsync>;
+export type BashToolInput = z.output<typeof bashSchemaWithAsync>;
 
 export interface BashToolDetails {
 	meta?: OutputMeta;
@@ -591,7 +575,7 @@ function stripBackgroundNotice(text: string, async: BashToolDetails["async"] | u
  *
  * Executes bash commands with optional timeout and working directory.
  */
-export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSchemaWithAsync, BashToolDetails> {
+export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 	readonly name = "bash";
 	readonly approval = (args: unknown): ToolApprovalDecision => {
 		const rawCommand = (args as Partial<BashToolInput>).command;
@@ -688,20 +672,35 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	get description(): string {
 		const evalBackends = resolveEvalBackends(this.session);
 		const isToolActive = (name: string, fallback: boolean): boolean => this.session.isToolActive?.(name) ?? fallback;
-		return prompt.render(bashDescription, {
-			asyncEnabled: this.#asyncEnabled,
-			autoBackgroundEnabled: this.#autoBackgroundEnabled,
-			autoBackgroundThresholdSeconds: Math.max(0, Math.floor(this.#autoBackgroundThresholdMs / 1000)),
-			hasAstGrep: isToolActive("ast_grep", this.session.settings.get("astGrep.enabled")),
-			hasAstEdit: isToolActive("ast_edit", this.session.settings.get("astEdit.enabled")),
-			hasGrep: isToolActive("grep", this.session.settings.get("grep.enabled")),
-			hasGlob: isToolActive("glob", this.session.settings.get("glob.enabled")),
-			hasRead: isToolActive("read", true),
-			hasLaunch: isToolActive("hub", this.session.settings.get("launch.enabled")),
-			hasEval: isToolActive("eval", evalBackends.python || evalBackends.js),
-			hasShellBuiltins: !shellBuiltinsDisabled(this.session.settings),
-			isWindows: process.platform === "win32",
-		});
+		const alternatives = [
+			isToolActive("read", true) ? "read for file contents/directories" : undefined,
+			isToolActive("glob", this.session.settings.get("glob.enabled")) ? "glob for paths" : undefined,
+			isToolActive("grep", this.session.settings.get("grep.enabled")) ? "grep for search" : undefined,
+			isToolActive("ast_grep", this.session.settings.get("astGrep.enabled"))
+				? "ast_grep for syntax search"
+				: undefined,
+			isToolActive("ast_edit", this.session.settings.get("astEdit.enabled"))
+				? "ast_edit for syntax edits"
+				: undefined,
+			isToolActive("eval", evalBackends.python || evalBackends.js)
+				? "eval for scripts/complex control flow"
+				: undefined,
+			isToolActive("hub", this.session.settings.get("launch.enabled"))
+				? "hub start for long-running processes"
+				: undefined,
+		].filter(Boolean);
+		return [
+			"Run one command or short fact-producing pipeline in a persistent shell. Use cwd instead of cd; env for quoted/multiline values; pty only for terminal interaction. Order-dependent commands use &&.",
+			alternatives.length ? `Prefer ${alternatives.join(", ")}.` : "",
+			this.#asyncEnabled ? "async:true defers a finite command without extending its timeout." : "",
+			this.#autoBackgroundEnabled
+				? `Long calls may auto-background after ${Math.floor(this.#autoBackgroundThresholdMs / 1000)}s.`
+				: "",
+			!shellBuiltinsDisabled(this.session.settings) ? "Common shell utilities are available." : "",
+			"Output is captured; truncated output links to artifact://. Internal URIs resolve to paths. timeout:0 disables the deadline.",
+		]
+			.filter(Boolean)
+			.join(" ");
 	}
 	readonly parameters: BashToolSchema;
 	// Non-pty calls run alongside each other (the executor isolates overlapping
@@ -723,7 +722,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				this.session.settings.get("bash.autoBackground.thresholdMs") ?? DEFAULT_AUTO_BACKGROUND_THRESHOLD_MS,
 			),
 		);
-		this.parameters = this.#asyncEnabled ? bashSchemaWithAsync : bashSchemaBase;
+		this.parameters = zodWire(this.#asyncEnabled ? bashSchemaWithAsync : bashSchemaBase);
 	}
 
 	#formatResultOutput(result: BashResult | BashInteractiveResult): string {
@@ -1002,6 +1001,19 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 	}
 
 	async execute(
+		toolCallId: string,
+		params: BashToolInput,
+		signal?: AbortSignal,
+		onUpdate?: AgentToolUpdateCallback<BashToolDetails>,
+		ctx?: AgentToolContext,
+	): Promise<AgentToolResult<BashToolDetails>> {
+		const input = (this.#asyncEnabled ? bashSchemaWithAsync : bashSchemaBase).parse(params);
+		const result = await this.#executeInner(toolCallId, input, signal, onUpdate, ctx);
+		bashOutputSchema.parse(result);
+		return result;
+	}
+
+	async #executeInner(
 		_toolCallId: string,
 		{
 			command: rawCommand,

@@ -817,7 +817,9 @@ describe("IRC", () => {
 			registry.register({ id: "0-Main", displayName: "main", kind: "main", session: main.session });
 			registry.register({ id: "0-Sub", displayName: "task", kind: "sub", session: sub.session });
 			const observed: IrcMessage[] = [];
-			bus.onDelivery(message => observed.push(message));
+			bus.onDelivery(message => {
+				observed.push(message);
+			});
 
 			const outbound = await bus.sendTracked({
 				from: "0-Main",

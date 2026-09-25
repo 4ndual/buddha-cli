@@ -35,6 +35,7 @@ import pragmaticPersonality from "./prompts/system/personalities/pragmatic.md" w
 import projectPromptTemplate from "./prompts/system/project-prompt.md" with { type: "text" };
 import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type: "text" };
 import { normalizeConcurrencyLimit } from "./task/parallel";
+import { CODE_ONLY_TOOL_NAMES } from "./tools/model-contract";
 import { type ActiveRepoContext, resolveActiveRepoContext } from "./utils/active-repo-context";
 import { normalizePromptPath } from "./utils/prompt-path";
 import { AGENTS_MD_LIMIT, buildWorkspaceTree, type WorkspaceTree } from "./workspace-tree";
@@ -553,12 +554,13 @@ export function projectSystemPromptToolMetadata(
 			return;
 		}
 
-		const descriptionValue = override?.description ?? tool.description;
+		const codeOnly = CODE_ONLY_TOOL_NAMES.has(name);
+		const descriptionValue = codeOnly ? "" : (override?.description ?? tool.description);
 		metadata.set(name, {
 			label,
-			description: typeof descriptionValue === "string" ? descriptionValue : "",
+			description: codeOnly ? "" : typeof descriptionValue === "string" ? descriptionValue : "",
 			parameters: tool.parameters,
-			examples: tool.examples,
+			examples: codeOnly ? undefined : tool.examples,
 			wireName,
 		});
 	};

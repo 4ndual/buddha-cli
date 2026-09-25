@@ -4,7 +4,7 @@ Drive real Chromium tabs from JavaScript or Python Eval with the global `browser
 - Static content? Use `read`. Use `browser` for JavaScript execution, authenticated sessions, and interactive actions.
 - JavaScript: `await browser.open(options)` returns a `BrowserTab`; `browser.tab(name)` returns an existing handle; `await browser.close(options)` releases tabs.
 - Python: `await browser.open(name=…, url=…)`, synchronous `browser.tab(name)`, and `await browser.close(name=…)`. Python methods accept keyword arguments.
-- `open` options: `name`, `url`, `app`, `viewport`, `wait_until`, `dialogs`, `timeout`, `persist`.
+- `open` options: `name`, `url`, `purpose`, `app`, `viewport`, `wait_until`, `dialogs`, `timeout`, `persist`. HTTP(S) without `purpose` defaults to reader-mode content. Use `authentication`, `interaction`, `javascript-state`, or `visual-layout` only when a stateful browser is required.
 - `close` options: `name`, `all`, `kill`, `timeout`.
 - Direct tab helpers:
   - Navigation: `url`, `title`, `goto`.
@@ -34,7 +34,7 @@ Application modes:
 
 <examples>
 ```javascript
-const tab = await browser.open({ name: "docs", url: "https://example.com" });
+const tab = await browser.open({ name: "docs", url: "https://example.com", purpose: "interaction" });
 const observed = await tab.observe();
 await tab.id(observed.elements[0].id).click();
 const title = await tab.run(async ({ tab }, suffix) => (await tab.title()) + suffix, { args: ["!"] });
@@ -42,12 +42,13 @@ await tab.close();
 ```
 
 ```python
-tab = await browser.open(name="docs", url="https://example.com")
+tab = await browser.open(name="docs", url="https://example.com", purpose="interaction")
 observed = await tab.observe()
 await tab.id(observed["elements"][0]["id"]).click()
 title = await tab.run("return await tab.title();", timeout=30)
 await tab.close()
 ```
+
 </examples>
 
 <critical>

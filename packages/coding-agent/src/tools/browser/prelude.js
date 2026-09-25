@@ -9,7 +9,9 @@
 	const serializeFunction = (label, fn) => {
 		const source = String(fn);
 		if (source.includes("[native code]")) {
-			throw new TypeError(`${label} cannot serialize a native or bound function; pass an arrow or function expression`);
+			throw new TypeError(
+				`${label} cannot serialize a native or bound function; pass an arrow or function expression`,
+			);
 		}
 		return source;
 	};
@@ -119,7 +121,10 @@
 		async open(options) {
 			const opts = validateOptions("browser.open", options);
 			const details = await invoke("open", opts);
-			return makeTab(typeof details.name === "string" ? details.name : opts.name ?? "main");
+			if (details.routed === "read") {
+				return Object.freeze({ kind: "content", url: opts.url, details: details.value });
+			}
+			return makeTab(typeof details.name === "string" ? details.name : (opts.name ?? "main"));
 		},
 		tab(name = "main") {
 			if (typeof name !== "string" || name.length === 0) {

@@ -70,6 +70,9 @@ const browserSchema = type({
 	action: type("'open' | 'close' | 'run' | 'call'").describe("operation"),
 	"name?": type("string").describe("tab id (default 'main')"),
 	"url?": type("string").describe("url to open"),
+	"purpose?": type("'authentication' | 'interaction' | 'javascript-state' | 'visual-layout'").describe(
+		"required for interactive HTTP(S) navigation; omit to route ordinary web content through read",
+	),
 	"app?": appSchema,
 	"viewport?": {
 		width: "number",
@@ -101,6 +104,7 @@ interface BrowserPreludeDetails {
 	viewport?: { width: number; height: number; deviceScaleFactor?: number };
 	screenshots?: ScreenshotResult[];
 	value?: unknown;
+	routed?: "read";
 }
 
 function resolveBrowserKind(params: BrowserParams, session: ToolSession): BrowserKind {
@@ -228,6 +232,15 @@ async function openBrowser(
 	timeoutMs: number,
 	signal?: AbortSignal,
 ): Promise<AgentToolResult<unknown>> {
+	if (params.url && /^https?:\/\//i.test(params.url) && !params.purpose) {
+		if (!session.settings.get("fetch.enabled")) throw new ToolError("URL reads are disabled by settings.");
+		const { executeReadUrl } = await import("./fetch");
+		const result = await executeReadUrl(session, { path: params.url, raw: false }, signal);
+		return {
+			...result,
+			details: { action: "open", name, url: params.url, routed: "read", value: result.details },
+		};
+	}
 	const kind = resolveBrowserKind(params, session);
 	details.browser = kind.kind;
 

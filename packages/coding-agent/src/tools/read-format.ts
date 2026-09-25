@@ -57,10 +57,11 @@ function recordFullHashlineContext(
 	absolutePath: string | undefined,
 	displayPath: string,
 	fullText: string,
+	seenLines?: number[],
 ): HashlineHeaderContext | undefined {
 	if (!absolutePath || !path.isAbsolute(absolutePath)) return undefined;
 	const normalized = normalizeToLF(fullText);
-	const tag = getEditStore(session).recordSnapshot(absolutePath, normalized);
+	const tag = getEditStore(session).recordSnapshot(absolutePath, normalized, seenLines);
 	return {
 		header: formatReadHashlineHeader(displayPath, tag),
 		tag,
@@ -73,8 +74,16 @@ export async function readHashlineHeaderContext(
 	absolutePath: string,
 	cwd: string,
 	displayPath?: string,
+	seenLines?: number[],
 ): Promise<HashlineHeaderContext> {
-	return hashlineHeaderContextForText(session, absolutePath, cwd, await Bun.file(absolutePath).text(), displayPath);
+	return hashlineHeaderContextForText(
+		session,
+		absolutePath,
+		cwd,
+		await Bun.file(absolutePath).text(),
+		displayPath,
+		seenLines,
+	);
 }
 
 /**
@@ -88,8 +97,9 @@ export function hashlineHeaderContextForText(
 	cwd: string,
 	fullText: string,
 	displayPath: string = formatPathRelativeToCwd(absolutePath, cwd),
+	seenLines?: number[],
 ): HashlineHeaderContext {
-	const context = recordFullHashlineContext(session, absolutePath, displayPath, fullText);
+	const context = recordFullHashlineContext(session, absolutePath, displayPath, fullText, seenLines);
 	if (!context) throw new ToolError(`Cannot record hashline snapshot for non-absolute path: ${absolutePath}`);
 	return context;
 }
@@ -395,6 +405,7 @@ export function buildInMemoryTextResult(
 					options.sourcePath,
 					formatPathRelativeToCwd(options.sourcePath, session.cwd),
 					text,
+					[],
 				)
 			: undefined;
 	let emittedHashlineHeader = false;
@@ -535,6 +546,7 @@ export function buildInMemoryMultiRangeResult(
 					options.sourcePath,
 					formatPathRelativeToCwd(options.sourcePath, session.cwd),
 					text,
+					[],
 				)
 			: undefined;
 	let emittedHashlineHeader = false;

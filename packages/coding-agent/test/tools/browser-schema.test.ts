@@ -45,6 +45,24 @@ describe("browser prelude", () => {
 		await expect(prelude.invoke({ action: "call", name: "x", chain: [] }, context)).rejects.toThrow(
 			"Action 'call' requires a non-empty 'chain'.",
 		);
+		await expect(
+			prelude.invoke({ action: "open", url: "https://example.com", purpose: "ordinary" }, context),
+		).rejects.toThrow(/browser received invalid arguments/);
+	});
+
+	it("routes an ordinary HTTP open through read without acquiring a browser", async () => {
+		const server = Bun.serve({ port: 0, fetch: () => new Response("ordinary content") });
+		try {
+			const session = makeSession();
+			const result = await createBrowserPrelude(session).invoke(
+				{ action: "open", url: `http://127.0.0.1:${server.port}/page` },
+				{ session, toolCallId: "browser-read-default" },
+			);
+			expect(result.details).toMatchObject({ action: "open", routed: "read" });
+			expect(result.content).toEqual(expect.arrayContaining([expect.objectContaining({ type: "text" })]));
+		} finally {
+			server.stop(true);
+		}
 	});
 
 	it("closes through the real host for an absent named tab", async () => {
@@ -87,7 +105,12 @@ describe("browser prelude", () => {
 		runInContext(prelude.javascript, context);
 		const browser = runInContext("browser", context);
 
-		const tab = await browser.open({ action: "close", name: "docs", url: "https://example.com" });
+		const tab = await browser.open({
+			action: "close",
+			name: "docs",
+			url: "https://example.com",
+			purpose: "interaction",
+		});
 		expect(tab.name).toBe("docs");
 		expect(String(tab)).toBe("<tab docs>");
 		expect(String(tab.id(5))).toBe("<element tab.id(5) on docs>");
@@ -99,7 +122,12 @@ describe("browser prelude", () => {
 		expect(calls).toEqual([
 			{
 				name: "browser",
-				parameters: { action: "open", name: "docs", url: "https://example.com" },
+				parameters: {
+					action: "open",
+					name: "docs",
+					url: "https://example.com",
+					purpose: "interaction",
+				},
 			},
 			{
 				name: "browser",

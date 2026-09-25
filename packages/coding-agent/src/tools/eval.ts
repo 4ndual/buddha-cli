@@ -1,4 +1,4 @@
-import { type } from "@oh-my-pi/omptype";
+import * as z from "zod/v4";
 import type {
 	AgentTool,
 	AgentToolContext,
@@ -40,6 +40,7 @@ import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "./output-me
 import { ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout } from "./tool-timeouts";
+import { ToolResultOutput, type ZodWire, zodWire } from "./zod-wire";
 
 export { EVAL_DEFAULT_PREVIEW_LINES, evalToolRenderer } from "./eval-render";
 
@@ -87,9 +88,9 @@ function enabledEvalLanguages(backends: EvalBackendsAllowance): EvalLanguageToke
 }
 
 const evalCellCommonFields = {
-	"title?": type("string").describe('short label shown in transcript (e.g. "imports", "load config")'),
-	"timeout?": type("number").describe("timeout for this eval call in seconds; 0 disables the cell timeout"),
-	"reset?": type("boolean").describe("wipe this language's kernel before running. Other languages are untouched."),
+	title: z.string().optional(),
+	timeout: z.number().optional(),
+	reset: z.boolean().optional(),
 };
 
 /**
@@ -99,12 +100,13 @@ const evalCellCommonFields = {
  * the full language union for typing; {@link buildEvalSchema} narrows the wire
  * copy per session so disabled backends are never advertised to the model.
  */
-export const evalSchema = type({
-	language: type("'py' | 'js'").describe(describeLanguageField(EVAL_LANGUAGE_ORDER)),
+export const evalSchema = z.strictObject({
+	language: z.enum(EVAL_LANGUAGE_ORDER).describe(describeLanguageField(EVAL_LANGUAGE_ORDER)),
 	...evalCellCommonFields,
-	code: type("string").describe(describeCodeField(EVAL_LANGUAGE_ORDER)),
+	code: z.string().describe(describeCodeField(EVAL_LANGUAGE_ORDER)),
 });
-export type EvalToolParams = typeof evalSchema.infer;
+export const evalOutputSchema = ToolResultOutput;
+export type EvalToolParams = z.output<typeof evalSchema>;
 export type EvalCellInput = EvalToolParams;
 
 /**
@@ -115,12 +117,11 @@ export type EvalCellInput = EvalToolParams;
  * {@link evalSchema} (full union) remains the type-level source of truth.
  */
 function buildEvalSchema(langs: readonly EvalLanguageToken[]): typeof evalSchema {
-	const schema = type({
-		language: type.enumerated(...langs).describe(describeLanguageField(langs)),
-		code: type("string").describe(describeCodeField(langs)),
+	return z.strictObject({
+		language: z.enum(langs as [EvalLanguageToken, ...EvalLanguageToken[]]).describe(describeLanguageField(langs)),
+		code: z.string().describe(describeCodeField(langs)),
 		...evalCellCommonFields,
 	});
-	return schema as unknown as typeof evalSchema;
 }
 
 export type EvalToolResult = {
@@ -262,7 +263,7 @@ function formatEvalInputLanguage(value: string): string {
 	return value;
 }
 
-export class EvalTool implements AgentTool<typeof evalSchema> {
+export class EvalTool implements AgentTool<ZodWire<typeof evalSchema>> {
 	readonly name = "eval";
 	readonly approval = "exec" as const;
 	readonly formatApprovalDetails = (args: unknown): string[] => {
@@ -330,7 +331,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 		return prompt.render(evalCodeModeDescription, { baseDescription, declarations, preludeDeclarations });
 	}
 	/** All reuse-chain examples; the `examples` getter filters by enabled languages. */
-	private static readonly ALL_EXAMPLES: readonly ToolExample<typeof evalSchema.infer>[] = [
+	private static readonly ALL_EXAMPLES: readonly ToolExample<EvalToolParams>[] = [
 		{
 			caption: "First call — set up once",
 			call: {
@@ -356,23 +357,23 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 			},
 		},
 	];
-	get examples(): readonly ToolExample<typeof evalSchema.infer>[] {
+	get examples(): readonly ToolExample<EvalToolParams>[] {
 		const langs = new Set(this.#enabledLanguages());
 		return EvalTool.ALL_EXAMPLES.filter(ex => "call" in ex && langs.has(ex.call.language as EvalLanguageToken));
 	}
-	get parameters(): typeof evalSchema {
+	get parameters(): ZodWire<typeof evalSchema> {
 		const langs = this.#enabledLanguages();
-		if (langs.length === 0 || langs.length === EVAL_LANGUAGE_ORDER.length) return evalSchema;
+		if (langs.length === 0 || langs.length === EVAL_LANGUAGE_ORDER.length) return zodWire(evalSchema);
 		const key = langs.join(",");
 		if (this.#paramsKey !== key) {
 			this.#cachedParams = buildEvalSchema(langs);
 			this.#paramsKey = key;
 		}
-		return this.#cachedParams ?? evalSchema;
+		return zodWire(this.#cachedParams ?? evalSchema);
 	}
 	readonly concurrency = "exclusive";
 	readonly strict = true;
-	readonly intent = (args: Partial<typeof evalSchema.infer>): string | undefined => {
+	readonly intent = (args: Partial<EvalToolParams>): string | undefined => {
 		const title = typeof args.title === "string" ? args.title : undefined;
 		const language = typeof args.language === "string" ? formatEvalInputLanguage(args.language) : "javascript";
 		return title || `running ${language}`;
@@ -422,8 +423,21 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 	}
 
 	async execute(
+		toolCallId: string,
+		params: EvalToolParams,
+		signal?: AbortSignal,
+		onUpdate?: AgentToolUpdateCallback,
+		ctx?: AgentToolContext,
+	): Promise<AgentToolResult<EvalToolDetails | undefined>> {
+		const input = (this.#cachedParams ?? evalSchema).parse(params);
+		const result = await this.#executeInner(toolCallId, input, signal, onUpdate, ctx);
+		evalOutputSchema.parse(result);
+		return result;
+	}
+
+	async #executeInner(
 		_toolCallId: string,
-		params: typeof evalSchema.infer,
+		params: EvalToolParams,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback,
 		ctx?: AgentToolContext,

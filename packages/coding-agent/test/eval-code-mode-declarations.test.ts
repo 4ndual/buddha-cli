@@ -101,7 +101,7 @@ test("browser and computer preludes expose their handle and function-run declara
 		"interface BrowserTabRealm extends BrowserTabHelpers",
 		"interface BrowserRunScope",
 		"interface BrowserTab extends BrowserTabHelpers",
-		"open(options?: BrowserOpenOptions): Promise<BrowserTab>",
+		"open(options?: BrowserOpenOptions): Promise<BrowserTab | BrowserContentResult>",
 		"tab(name?: string): BrowserTab",
 		"close(options?: BrowserCloseOptions): Promise<void>",
 	]) {

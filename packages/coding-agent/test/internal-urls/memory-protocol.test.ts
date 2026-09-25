@@ -103,10 +103,10 @@ describe("MemoryProtocolHandler", () => {
 		};
 		const tool = new ReadTool(session);
 
-		expect(JSON.stringify(tool.parameters.toJsonSchema())).not.toContain("memory://");
+		expect(JSON.stringify(tool.parameters)).not.toContain("memory://");
 
 		settings.override("memory.backend", "local");
-		expect(JSON.stringify(tool.parameters.toJsonSchema())).toContain("memory://");
+		expect(JSON.stringify(tool.parameters)).toContain("memory://");
 	});
 
 	it("reads memory through the calling session's configured registry", async () => {

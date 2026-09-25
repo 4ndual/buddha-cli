@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { type EditStore, notebookToEditableText } from "@oh-my-pi/pi-natives";
-import { type } from "@oh-my-pi/omptype";
+import * as z from "zod/v4";
 import type {
 	AgentTool,
 	AgentToolContext,
@@ -22,7 +22,6 @@ import {
 	isProbablyBinaryHeader,
 	isEnoent,
 	logger,
-	prompt,
 	readImageMetadata,
 } from "@oh-my-pi/pi-utils";
 import { normalizeToLF } from "../edit/normalize";
@@ -32,7 +31,6 @@ import { type ResolvedArtifactFile, resolveArtifactFile } from "../internal-urls
 import { parseInternalUrl } from "../internal-urls/parse";
 import type { InternalUrl } from "../internal-urls/types";
 import { getExperimentalContextSession } from "./context-notes";
-import readDescription from "../prompts/tools/read.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import {
 	DEFAULT_MAX_BYTES,
@@ -152,6 +150,7 @@ import { isResolutionDeviceName, resolutionDeviceUsage } from "./resolve";
 import { ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { xdevDocs, xdevListing } from "./xdev";
+import { ToolResultOutput, type ZodWire, zodWire } from "./zod-wire";
 
 export { readToolRenderer } from "./read-renderer";
 
@@ -628,17 +627,59 @@ function splitImageQuestionTarget(readPath: string): { path: string; question?: 
 // Maximum image file size (20MB) - larger images will be rejected to prevent OOM during serialization
 const MAX_IMAGE_SIZE = MAX_IMAGE_INPUT_BYTES;
 
-const readSchema = type({
-	path: type("string").describe(
-		"Local path, internal URI (e.g. memory://, skill://), or URL. Inline selectors are supported.",
-	),
-});
+const readRangeSchema = z
+	.string()
+	.min(1)
+	.refine(value => parseSel(value).kind === "lines", "Use a line or range such as 50, 50-200, 50+20, or 5-16,20-24.");
 
-const readSchemaWithoutMemory = type({
-	path: type("string").describe("Local path, internal URI (e.g. skill://), or URL. Inline selectors are supported."),
-});
+const readSelectionSchema = z.union([
+	z.strictObject({ mode: z.literal("lines"), ranges: z.array(readRangeSchema).min(1).max(32) }),
+	z.strictObject({ mode: z.literal("tail"), lines: z.number().int().min(1).max(DEFAULT_MAX_LINES) }),
+	z.strictObject({ mode: z.literal("raw"), ranges: z.array(readRangeSchema).min(1).max(32).optional() }),
+	z.strictObject({ mode: z.literal("conflicts") }),
+	z.strictObject({ mode: z.literal("image"), action: z.literal("render") }),
+	z.strictObject({ mode: z.literal("image"), action: z.literal("question"), question: z.string().min(1).max(2000) }),
+]);
 
-export type ReadToolInput = typeof readSchema.infer;
+function readTargetSchema(memory: boolean) {
+	const kinds = memory
+		? "file, directory, archive, SQLite, document, notebook, image, video, memory://, skill://, SSH, or HTTP(S) URL"
+		: "file, directory, archive, SQLite, document, notebook, image, video, skill://, SSH, or HTTP(S) URL";
+	return z.strictObject({
+		path: z.string().min(1).describe(`Auto-detected ${kinds}; legacy inline selectors remain supported.`),
+		selection: readSelectionSchema.optional(),
+	});
+}
+
+const readTarget = readTargetSchema(true);
+const readTargetWithoutMemory = readTargetSchema(false);
+
+function readRequestSchema(memory: boolean) {
+	const target = memory ? readTarget : readTargetWithoutMemory;
+	return z
+		.strictObject({
+			path: target.shape.path.optional(),
+			selection: readSelectionSchema.optional(),
+			targets: z.array(target).min(2).max(16).optional(),
+			concurrency: z.number().int().min(1).max(8).optional(),
+		})
+		.superRefine((value, context) => {
+			if ((value.path === undefined) === (value.targets === undefined)) {
+				context.addIssue({ code: "custom", message: "Provide exactly one of path or targets." });
+			}
+			if (value.path !== undefined && value.concurrency !== undefined) {
+				context.addIssue({ code: "custom", message: "concurrency requires targets." });
+			}
+			if (value.targets !== undefined && value.selection !== undefined) {
+				context.addIssue({ code: "custom", message: "Select each batched target separately." });
+			}
+		});
+}
+
+export const readSchema = readRequestSchema(true);
+const readSchemaWithoutMemory = readRequestSchema(false);
+export const readOutputSchema = ToolResultOutput;
+export type ReadToolInput = z.output<typeof readSchema>;
 
 export interface ReadToolDetails {
 	kind?: "file" | "url";
@@ -665,12 +706,38 @@ export interface ReadToolDetails {
 		lineNumbers?: Array<number | null>;
 	};
 	summary?: { lines: number; elidedSpans: number; elidedLines: number };
+	continuation?: { path: string; selector: string };
+	recovery?: { path: string; omittedRanges: Array<{ start: number; end: number }>; selectors: string[] };
+	batch?: Array<{ path: string; ok: boolean; details?: ReadToolDetails }>;
 	/** Number of unresolved git conflicts surfaced by this read (TUI uses for inline `⚠ N` badge). */
 	conflictCount?: number;
 	/** Paths recovered from a delimited read argument; used only by the TUI to render one call as multiple read rows. */
 	displayReadTargets?: string[];
 }
 type ReadParams = ReadToolInput;
+type ReadTarget = z.output<typeof readTarget>;
+
+function structuredReadPath(target: ReadTarget): string {
+	const { path: source, selection } = target;
+	if (!selection) return source;
+	const inline = source.includes("://") ? splitInternalUrlSel(source).sel : splitPathAndSel(source).sel;
+	if (inline !== undefined || splitImageQuestionTarget(source).question !== undefined) {
+		throw new ToolError("Use either an inline selector in path or structured selection, not both.");
+	}
+	switch (selection.mode) {
+		case "lines":
+			return `${source}:${selection.ranges.join(",")}`;
+		case "tail":
+			return `${source}:-${selection.lines}`;
+		case "raw":
+			return selection.ranges ? `${source}:raw:${selection.ranges.join(",")}` : `${source}:raw`;
+		case "conflicts":
+			return `${source}:conflicts`;
+		case "image":
+			if (selection.action === "render") return `${source}:img`;
+			return `${/\.svgz?$/i.test(source) ? `${source}:img` : source}?q=${encodeURIComponent(selection.question)}`;
+	}
+}
 
 /** Identical reads tolerated before the loop hint is appended. */
 const REPEAT_READ_HINT_THRESHOLD = 3;
@@ -820,21 +887,25 @@ async function assessLocalReadSpeculation(
  * Reads files with support for images, converted documents (via markit), and text.
  * Directories return a formatted listing with modification times.
  */
-export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
+export class ReadTool implements AgentTool<ZodWire<typeof readSchema>, ReadToolDetails> {
 	readonly name = "read";
 	readonly approval = (args: unknown): ToolTier => {
-		let readPath = "";
-		if (args && typeof args === "object" && "path" in args) readPath = String(args.path ?? "");
-		if (pathTargetsSsh(readPath)) return "exec";
-		readPath = splitImageQuestionTarget(readPath).path;
-		const target = splitPathAndSel(readPath);
-		return target.sel === undefined && splitPdfImageReadPath(readPath) ? "exec" : "read";
+		const parsed = readSchema.safeParse(args);
+		if (!parsed.success) return "read";
+		const targets = parsed.data.targets ?? [readTarget.parse(parsed.data)];
+		for (const input of targets) {
+			const readPath = structuredReadPath(input);
+			if (pathTargetsSsh(readPath)) return "exec";
+			const plainPath = splitImageQuestionTarget(readPath).path;
+			if (splitPathAndSel(plainPath).sel === undefined && splitPdfImageReadPath(plainPath)) return "exec";
+		}
+		return "read";
 	};
 	readonly label = "Read";
 	readonly loadMode = "essential";
 	description: string;
-	get parameters(): typeof readSchema {
-		return this.session.settings.get("memory.backend") === "off" ? readSchemaWithoutMemory : readSchema;
+	get parameters(): ZodWire<typeof readSchema> {
+		return zodWire(this.session.settings.get("memory.backend") === "off" ? readSchemaWithoutMemory : readSchema);
 	}
 	readonly strict = true;
 
@@ -914,10 +985,11 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			// but cannot undo that filesystem access. Render the requested
 			// lexical path instead, so the committed result matches an ordinary
 			// read exactly (hashline headers, source metadata).
-			const requestedPath = (context.args as ReadParams).path;
+			const readArgs = readTarget.parse(context.args);
+			const requestedPath = readArgs.path;
 			const result = await speculativeTool.#executeInner(
 				context.toolCall.id,
-				{ ...(context.args as ReadParams), path: absolutePath },
+				{ ...readArgs, path: absolutePath },
 				signal,
 				undefined,
 				undefined,
@@ -935,7 +1007,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					store,
 					snapshotHash,
 					absolutePath,
-					path: (context.args as ReadParams).path,
+					path: readArgs.path,
 				});
 			}
 			if (!snapshotDigest) throw new Error("Speculative read did not consume one stable buffered snapshot");
@@ -971,7 +1043,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					getEditStore(this.session).recordSnapshot(staged.absolutePath, snapshotText, seenLines);
 				}
 			}
-			appendRepeatReadHint(this.session, staged?.path ?? (context.args as ReadParams).path, result);
+			appendRepeatReadHint(this.session, staged?.path ?? readTarget.parse(context.args).path, result);
 			return await postProcessToolResult(result, this.name, this.session as unknown as AgentToolContext);
 		} finally {
 			this.#speculativeReads.delete(context.toolCall.id);
@@ -984,13 +1056,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	 * active-model image capability all feed it, so it can change at runtime).
 	 */
 	#renderDescription(): string {
-		const displayMode = resolveFileDisplayMode(this.session);
-		return prompt.render(readDescription, {
-			DEFAULT_LIMIT: String(this.#defaultLimit),
-			DEFAULT_MAX_LINES: String(DEFAULT_MAX_LINES),
-			IS_HL_MODE: displayMode.hashLines,
-			IS_LINE_NUMBER_MODE: !displayMode.hashLines && displayMode.lineNumbers,
-		});
+		return `Inspect auto-detected files, directories, archives, SQLite, documents, images, videos, internal/SSH resources, and ordinary web URLs. Bare code reads summarize with exact recovery ranges; structured selectors and bounded parallel batches avoid unnecessary content (default ${this.#defaultLimit} lines).`;
 	}
 
 	/**
@@ -1473,8 +1539,8 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		}
 		if (shouldAddHashLines && outputText) {
 			const tag = buffered
-				? getEditStore(this.session).recordSnapshot(absolutePath, buffered.normalizedText)
-				: getEditStore(this.session).recordSnapshotFile(absolutePath);
+				? getEditStore(this.session).recordSnapshot(absolutePath, buffered.normalizedText, [])
+				: getEditStore(this.session).recordSnapshotFile(absolutePath, []);
 			if (tag) {
 				getEditStore(this.session).recordSeenLinesFromBody(absolutePath, tag, outputText);
 				outputText = `${formatReadHashlineHeader(formatPathRelativeToCwd(absolutePath, this.session.cwd), tag)}\n${outputText}`;
@@ -1502,14 +1568,88 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		onUpdate?: AgentToolUpdateCallback<ReadToolDetails>,
 		toolContext?: AgentToolContext,
 	): Promise<AgentToolResult<ReadToolDetails>> {
-		const result = await this.#executeInner(toolCallId, params, signal, onUpdate, toolContext);
-		appendRepeatReadHint(this.session, params.path, result);
+		const input = readSchema.parse(params);
+		const result =
+			input.targets !== undefined
+				? await this.#executeBatch(toolCallId, input.targets, input.concurrency ?? 4, signal, toolContext)
+				: await this.#executeTarget(toolCallId, readTarget.parse(input), signal, onUpdate, toolContext);
+		readOutputSchema.parse(result);
 		return result;
+	}
+
+	async #executeTarget(
+		toolCallId: string,
+		target: ReadTarget,
+		signal?: AbortSignal,
+		onUpdate?: AgentToolUpdateCallback<ReadToolDetails>,
+		toolContext?: AgentToolContext,
+	): Promise<AgentToolResult<ReadToolDetails>> {
+		const path = structuredReadPath(target);
+		const result = await this.#executeInner(toolCallId, { path }, signal, onUpdate, toolContext);
+		this.#attachRecoveryMetadata(target.path, result);
+		appendRepeatReadHint(this.session, path, result);
+		return result;
+	}
+
+	async #executeBatch(
+		toolCallId: string,
+		targets: ReadTarget[],
+		concurrency: number,
+		signal?: AbortSignal,
+		toolContext?: AgentToolContext,
+	): Promise<AgentToolResult<ReadToolDetails>> {
+		const results = Array.from<AgentToolResult<ReadToolDetails> | undefined>({ length: targets.length });
+		let cursor = 0;
+		const worker = async () => {
+			while (true) {
+				const index = cursor++;
+				if (index >= targets.length) return;
+				try {
+					results[index] = await this.#executeTarget(
+						`${toolCallId}:${index}`,
+						targets[index]!,
+						signal,
+						undefined,
+						toolContext,
+					);
+				} catch (error) {
+					results[index] = {
+						content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
+						isError: true,
+					};
+				}
+			}
+		};
+		await Promise.all(Array.from({ length: Math.min(concurrency, targets.length) }, worker));
+		const content: Array<TextContent | ImageContent> = [];
+		for (const [index, result] of results.entries()) {
+			if (!result) throw new ToolError(`Batch read ${index + 1} did not produce a result.`);
+			content.push({ type: "text", text: `## ${targets[index]!.path}` }, ...result.content);
+		}
+		const completed = results.filter((result): result is AgentToolResult<ReadToolDetails> => result !== undefined);
+		return {
+			content,
+			details: {
+				batch: completed.map((result, index) => ({
+					path: targets[index]!.path,
+					ok: result.isError !== true,
+					...(result.details ? { details: result.details } : {}),
+				})),
+			},
+			...(completed.every(result => result.isError) ? { isError: true } : {}),
+		};
+	}
+
+	#attachRecoveryMetadata(path: string, result: AgentToolResult<ReadToolDetails>): void {
+		const details = result.details;
+		if (!details) return;
+		const nextOffset = details.meta?.truncation?.nextOffset;
+		if (nextOffset !== undefined) details.continuation = { path, selector: `${nextOffset}-` };
 	}
 
 	async #executeInner(
 		_toolCallId: string,
-		params: ReadParams,
+		params: { path: string },
 		signal?: AbortSignal,
 		_onUpdate?: AgentToolUpdateCallback<ReadToolDetails>,
 		_toolContext?: AgentToolContext,
@@ -1944,8 +2084,15 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 									this.session.cwd,
 									buffered.normalizedText,
 									summaryDisplayPath,
+									[],
 								)
-							: await readHashlineHeaderContext(this.session, absolutePath, this.session.cwd, summaryDisplayPath)
+							: await readHashlineHeaderContext(
+									this.session,
+									absolutePath,
+									this.session.cwd,
+									summaryDisplayPath,
+									[],
+								)
 						: undefined;
 					const bodyText = footer ? `${renderedSummary.text}\n\n${footer}` : renderedSummary.text;
 					const modelText = prependHashlineHeader(bodyText, summaryHashContext);
@@ -1962,6 +2109,14 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 							lines: countTextLines(renderedSummary.text),
 							elidedSpans: renderedSummary.elidedRanges.length,
 							elidedLines: renderedSummary.elidedLines,
+						},
+						recovery: {
+							path: resolvedDisplayPath,
+							omittedRanges: renderedSummary.elidedRanges.map(range => ({
+								start: range.start,
+								end: range.end,
+							})),
+							selectors: renderedSummary.elidedRanges.map(range => `${range.start}-${range.end}`),
 						},
 					};
 
@@ -2160,13 +2315,14 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						// non-truncated whole-file window can supply it.
 						const isWholeFile = offset === undefined && limit === undefined && !wasTruncated;
 						const tag = buffered
-							? getEditStore(this.session).recordSnapshot(absolutePath, buffered.normalizedText)
+							? getEditStore(this.session).recordSnapshot(absolutePath, buffered.normalizedText, [])
 							: isWholeFile
 								? getEditStore(this.session).recordSnapshot(
 										absolutePath,
 										normalizeToLF(`${collectedLines.join("\n")}${hasTrailingNewline ? "\n" : ""}`),
+										[],
 									)
-								: getEditStore(this.session).recordSnapshotFile(absolutePath);
+								: getEditStore(this.session).recordSnapshotFile(absolutePath, []);
 						if (tag) {
 							hashContext = hashlineHeaderContext(
 								formatPathRelativeToCwd(renderAbsolutePath, this.session.cwd),
@@ -2278,7 +2434,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						outputText += reachedEof
 							? `\n\n[${totalFileLines - (startLine + userLimitedLines)} more lines in file. Use :${nextOffset} to continue]`
 							: `\n\n[More lines in file (${formatBytes(fileSize)} total; not scanned to EOF). Use :${nextOffset} to continue]`;
-						details = {};
+						details = { continuation: { path: resolvedDisplayPath, selector: `${nextOffset}-` } };
 						sourcePath = renderAbsolutePath;
 					} else {
 						// No truncation, no user limit exceeded
@@ -2390,7 +2546,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const shouldAddLineNumbers = shouldAddHashLines ? false : displayMode.lineNumbers;
 
 		const rawText = region.lines.join("\n");
-		const tag = shouldAddHashLines ? getEditStore(this.session).recordSnapshotFile(entry.absolutePath) : undefined;
+		const seenLines = contiguousLineNumbers(region.startLine, region.lines.length);
+		const tag = shouldAddHashLines
+			? getEditStore(this.session).recordSnapshotFile(entry.absolutePath, seenLines)
+			: undefined;
 		const hashContext = tag
 			? hashlineHeaderContext(formatPathRelativeToCwd(entry.absolutePath, this.session.cwd), tag)
 			: undefined;
@@ -2644,6 +2803,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				};
 			} else if (startLine + collectedLines.length < totalFileLines || !reachedEof) {
 				const nextOffset = startLine + collectedLines.length + 1;
+				details.continuation = { path: url.href, selector: `${nextOffset}-` };
 				outputText += reachedEof
 					? `\n\n[${totalFileLines - (startLine + collectedLines.length)} more lines in artifact. Use ${artifactUrl}:${nextOffset} to continue]`
 					: `\n\n[More lines in artifact (${formatBytes(artifact.size)} total; not scanned to EOF). Use ${artifactUrl}:${nextOffset} to continue]`;

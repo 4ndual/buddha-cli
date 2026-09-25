@@ -14,6 +14,7 @@ import type { StreamFn } from "@oh-my-pi/pi-agent-core";
 import { type SimpleStreamOptions, streamSimple } from "@oh-my-pi/pi-ai";
 import { classifyModel } from "@oh-my-pi/pi-catalog/identity";
 import { type Settings, validateProviderMaxInFlightRequests } from "../config/settings";
+import { projectModelToolContext } from "../tools/model-contract";
 
 function timeoutSecondsToMs(value: number): number | undefined {
 	if (!Number.isFinite(value) || value < 0) return undefined;
@@ -86,6 +87,6 @@ export function createSettingsAwareStreamFn(settings: Settings, base: StreamFn =
 			hideThinkingSummary: streamOptions?.hideThinkingSummary ?? settings.get("omitThinking"),
 			...(fallbacks !== undefined ? { fallbacks } : {}),
 		};
-		return base(model, context, merged);
+		return base(model, projectModelToolContext(context), merged);
 	};
 }

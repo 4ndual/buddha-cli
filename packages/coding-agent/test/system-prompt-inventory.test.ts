@@ -221,18 +221,18 @@ describe("system prompt tool inventory", () => {
 		expect(Array.from(first.keys())).toEqual(["read", "edit"]);
 		expect(first.get("edit")).toEqual({
 			label: "edit label r1",
-			description: "edit description r1",
+			description: "",
 			parameters: {
 				type: "object",
 				properties: { arg_r1: { type: "string" } },
 				required: ["arg_r1"],
 			},
-			examples: [{ caption: "edit example r1", note: "note r1" }],
+			examples: undefined,
 			wireName: "edit_wire_r1",
 		});
 		expect(Array.from(reads.values())).toEqual([
-			{ label: 1, wireName: 1, description: 1, parameters: 1, examples: 1 },
-			{ label: 1, wireName: 1, description: 1, parameters: 1, examples: 1 },
+			{ label: 1, wireName: 1, description: 0, parameters: 1, examples: 0 },
+			{ label: 1, wireName: 1, description: 0, parameters: 1, examples: 0 },
 		]);
 
 		const firstPrompt = await buildSystemPrompt({
@@ -248,17 +248,17 @@ describe("system prompt tool inventory", () => {
 		});
 		const firstText = firstPrompt.systemPrompt.join("\n\n");
 		expect(firstText.indexOf("type edit_wire_r1 = (")).toBeLessThan(firstText.indexOf("type read_wire_r1 = ("));
-		expect(firstText).toContain("edit description r1");
+		expect(firstText).not.toContain("edit description r1");
 		expect(firstText).toContain("arg_r1: string,");
 
 		revision = 2;
 		const second = projectSystemPromptToolMetadata(tools, { mode: "full" });
-		expect(second.get("edit")?.description).toBe("edit description r2");
+		expect(second.get("edit")?.description).toBe("");
 		expect(second.get("edit")?.wireName).toBe("edit_wire_r2");
-		expect(first.get("edit")?.description).toBe("edit description r1");
+		expect(first.get("edit")?.description).toBe("");
 		expect(Array.from(reads.values())).toEqual([
-			{ label: 2, wireName: 2, description: 2, parameters: 2, examples: 2 },
-			{ label: 2, wireName: 2, description: 2, parameters: 2, examples: 2 },
+			{ label: 2, wireName: 2, description: 0, parameters: 2, examples: 0 },
+			{ label: 2, wireName: 2, description: 0, parameters: 2, examples: 0 },
 		]);
 
 		const secondPrompt = await buildSystemPrompt({
@@ -274,7 +274,7 @@ describe("system prompt tool inventory", () => {
 		});
 		const secondText = secondPrompt.systemPrompt.join("\n\n");
 		expect(secondText.indexOf("type edit_wire_r2 = (")).toBeLessThan(secondText.indexOf("type read_wire_r2 = ("));
-		expect(secondText).toContain("edit description r2");
+		expect(secondText).not.toContain("edit description r2");
 		expect(secondText).toContain("arg_r2: string,");
 		expect(secondText).not.toContain("edit description r1");
 	});
@@ -538,7 +538,7 @@ describe("system prompt tool inventory", () => {
 
 		expect(toolNames).toContain("bash");
 		expect(toolNames).not.toContain("eval");
-		expect(bash?.description).toContain("purpose-built tool");
+		expect(bash?.description).toContain("persistent shell");
 		expect(bash?.description).not.toContain("eval` cell");
 		expect(bash?.description).not.toContain("use `eval` cells");
 		expect(bash?.description).not.toContain("Prefer `eval`");

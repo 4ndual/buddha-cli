@@ -27,6 +27,7 @@ import taskFollowUpTemplate from "../prompts/tools/task-follow-up.md" with { typ
 import { TASK_EFFORTS, type TaskEffort } from "../thinking";
 import { truncateForPrompt } from "../tools/approval";
 import { isIrcEnabled } from "../tools/hub";
+import { ToolResultOutput, zodWire } from "../tools/zod-wire";
 import { isReadOnlyAgent } from "./read-only-policy";
 import { TASK_LIFECYCLE_SERVICE, type TaskLifecycleService } from "./lifecycle-service";
 import { formatTaskResultSummary } from "./result-summary";
@@ -114,7 +115,9 @@ export type {
 	SubagentEventPayload,
 	SubagentLifecyclePayload,
 	SubagentProgressPayload,
+	TaskItem,
 	TaskParams,
+	TaskSchema,
 	TaskToolDetails,
 } from "./types";
 export * from "./result-summary";
@@ -122,6 +125,8 @@ export {
 	TASK_SUBAGENT_EVENT_CHANNEL,
 	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
 	TASK_SUBAGENT_PROGRESS_CHANNEL,
+	getTaskSchema,
+	taskItemSchema,
 	taskSchema,
 } from "./types";
 
@@ -499,6 +504,8 @@ export async function refreshAgentDiscovery(cwd: string, extensionRoots?: Effect
  * item. When `async.enabled` is on, spawns run as AsyncJobManager jobs; when
  * disabled, the tool blocks until every spawn finishes.
  */
+export const taskOutputSchema = ToolResultOutput;
+
 export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetails, Theme> {
 	readonly name = "task";
 	readonly approval = "exec" as const;
@@ -555,16 +562,6 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	readonly summary = "Spawn subagents to complete delegated tasks";
 	readonly strict = false;
 	readonly loadMode = "essential";
-	// Arktype validates model calls against the active wire schema, but the flat
-	// single-spawn schema carries `"+": "delete"`: a batch `{ context, tasks[] }`
-	// payload has those keys stripped, then fails on the now-missing `task` with
-	// the misleading `task must be a string (was missing)`. That preempts the
-	// tool's own actionable shape checks (`validateShapeParams` /
-	// `validateSpawnParams`), which never run. Lenient validation forwards the
-	// raw args to `execute()` on any arktype failure so those checks surface the
-	// real reason ("enable task.batch, or use the flat `task` shape"). Valid
-	// calls still normalize through arktype; `execute()` resolves `agent`
-	// defaults independently, so the success path is unchanged.
 	readonly lenientArgValidation = true;
 	readonly renderResult = renderResult;
 	// Suppress the streaming call preview once a (partial or final) result exists
@@ -586,14 +583,16 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const planMode = this.session.getPlanModeState?.()?.enabled === true;
 		const isolationEnabled = !planMode && this.session.settings.get("task.isolation.enabled");
 		const defaultAgent = resolveSpawnPolicy(this.session.getSessionSpawns()).defaultAgent;
-		return getTaskSchema({
-			isolationEnabled,
-			batchEnabled: this.#isBatchEnabled(),
-			effortEnabled: this.session.settings.get("task.enableEffort"),
-			evalToolsEnabled: evalToolsEnabled(this.session),
-			defaultAgent,
-			runtimeTierEnabled: this.session.getExtensionService?.(TASK_LIFECYCLE_SERVICE) !== undefined,
-		});
+		return zodWire(
+			getTaskSchema({
+				isolationEnabled,
+				batchEnabled: this.#isBatchEnabled(),
+				effortEnabled: this.session.settings.get("task.enableEffort"),
+				evalToolsEnabled: evalToolsEnabled(this.session),
+				defaultAgent,
+				runtimeTierEnabled: this.session.getExtensionService?.(TASK_LIFECYCLE_SERVICE) !== undefined,
+			}),
+		);
 	}
 
 	renderCall(args: unknown, options: Parameters<typeof renderTaskCall>[1], theme: Theme) {
@@ -684,6 +683,17 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>,
 	): Promise<AgentToolResult<TaskToolDetails>> {
+		const result = await this.#executeInner(toolCallId, rawParams, signal, onUpdate);
+		taskOutputSchema.parse(result);
+		return result;
+	}
+
+	async #executeInner(
+		toolCallId: string,
+		rawParams: unknown,
+		signal?: AbortSignal,
+		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>,
+	): Promise<AgentToolResult<TaskToolDetails>> {
 		const params = repairTaskParams(rawParams as TaskParams);
 		// Schema defaults fill `agent` for model calls, but internal callers
 		// and stale transcripts can bypass arktype. `spawnParamsFor` resolves each
@@ -694,6 +704,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		if (validationError) {
 			return createTaskModeError(validationError);
 		}
+		getTaskSchema({
+			isolationEnabled: true,
+			batchEnabled: Array.isArray(params.tasks),
+			effortEnabled: true,
+			evalToolsEnabled: true,
+			defaultAgent,
+		}).parse(params);
 
 		const spawnItems = resolveSpawnItems(params);
 		const evalToolNames = spawnItems.flatMap(item => item.tools ?? []);

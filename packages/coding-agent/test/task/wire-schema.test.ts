@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
-import { type } from "@oh-my-pi/omptype";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { TaskTool, taskSchema } from "@oh-my-pi/pi-coding-agent/task";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
@@ -40,7 +39,6 @@ describe("oneLineLabel", () => {
 
 /** Narrow a parsed batch payload to its items; fails the test on any other shape. */
 function parsedItems(parsed: unknown): Array<Record<string, unknown>> {
-	if (parsed instanceof type.errors) throw new Error(`schema rejected input: ${parsed.summary}`);
 	if (parsed && typeof parsed === "object" && "tasks" in parsed && Array.isArray(parsed.tasks)) {
 		return parsed.tasks;
 	}
@@ -49,50 +47,53 @@ function parsedItems(parsed: unknown): Array<Record<string, unknown>> {
 
 describe("task wire schema", () => {
 	it("accepts the flat { name, agent, task } shape", () => {
-		const parsed = taskSchema({ name: "AuthLoader", agent: "scout", task: "map the auth flow" });
-		expect(parsed instanceof type.errors).toBe(false);
-		if (!(parsed instanceof type.errors)) {
-			expect(parsed.name).toBe("AuthLoader");
-			expect(parsed.agent).toBe("scout");
-			expect(parsed.task).toBe("map the auth flow");
-		}
+		const parsed = taskSchema.parse({ name: "AuthLoader", agent: "scout", task: "map the auth flow" });
+		expect(parsed.name).toBe("AuthLoader");
+		expect(parsed.agent).toBe("scout");
+		expect(parsed.task).toBe("map the auth flow");
 	});
 
 	it("defaults a missing agent to 'task'", () => {
-		const parsed = taskSchema({ task: "x" });
-		expect(parsed instanceof type.errors).toBe(false);
-		if (!(parsed instanceof type.errors)) {
-			expect(parsed.agent).toBe("task");
-		}
+		const parsed = taskSchema.parse({ task: "x" });
+		expect(parsed.agent).toBe("task");
 	});
 
 	it("deletes stale caller keys (role, description) instead of rejecting", () => {
-		const parsed = taskSchema({ agent: "task", task: "x", role: "Rust specialist", description: "stale ui label" });
-		expect(parsed instanceof type.errors).toBe(false);
-		if (!(parsed instanceof type.errors)) {
-			expect("role" in parsed).toBe(false);
-			expect("description" in parsed).toBe(false);
-			expect(parsed.task).toBe("x");
-		}
+		const parsed = taskSchema.parse({
+			agent: "task",
+			task: "x",
+			role: "Rust specialist",
+			description: "stale ui label",
+		});
+		expect("role" in parsed).toBe(false);
+		expect("description" in parsed).toBe(false);
+		expect(parsed.task).toBe("x");
 	});
 
 	it("defaults batch item agents to 'task' on the fast path and keeps names", () => {
 		const batch = getTaskSchema({ isolationEnabled: false, batchEnabled: true });
-		const items = parsedItems(batch({ context: "ctx", tasks: [{ name: "DbMigrator", task: "x" }] }));
+		const items = parsedItems(batch.parse({ context: "ctx", tasks: [{ name: "DbMigrator", task: "x" }] }));
 		expect(items[0]?.agent).toBe("task");
 		expect(items[0]?.name).toBe("DbMigrator");
 	});
 
 	it("defaults batch item agents to the schema's defaultAgent", () => {
 		const batch = getTaskSchema({ isolationEnabled: false, batchEnabled: true, defaultAgent: "scout" });
-		const items = parsedItems(batch({ context: "ctx", tasks: [{ task: "x" }, { agent: "reviewer", task: "y" }] }));
+		const items = parsedItems(
+			batch.parse({
+				context: "ctx",
+				tasks: [{ task: "x" }, { agent: "reviewer", task: "y" }],
+			}),
+		);
 		expect(items[0]?.agent).toBe("scout");
 		expect(items[1]?.agent).toBe("reviewer");
 	});
 
 	it("deletes stale keys from batch items", () => {
 		const batch = getTaskSchema({ isolationEnabled: false, batchEnabled: true });
-		const items = parsedItems(batch({ context: "ctx", tasks: [{ task: "x", role: "DB migration specialist" }] }));
+		const items = parsedItems(
+			batch.parse({ context: "ctx", tasks: [{ task: "x", role: "DB migration specialist" }] }),
+		);
 		const item = items[0] ?? {};
 		expect("role" in item).toBe(false);
 		expect(item.task).toBe("x");

@@ -1,8 +1,9 @@
-import { type BaseType, type } from "@oh-my-pi/omptype";
+import * as z from "zod/v4";
 import type { Usage } from "@oh-my-pi/pi-ai";
 import { $env } from "@oh-my-pi/pi-utils";
 import type { AgentSessionEvent } from "../session/agent-session";
 import type { ConfiguredThinkingLevel, TaskEffort } from "../thinking";
+import type { ZodWire } from "../tools/zod-wire";
 import type { NestedRepoPatch } from "./worktree";
 
 /** Source of an agent definition */
@@ -106,30 +107,17 @@ export interface SubagentLifecyclePayload {
 /** Display cap for a normalized one-line label (roster line, registry `displayName`, prompt field). */
 export const LABEL_MAX = 80;
 
-// Keep this explicit: ArkType serializes `unknown` as a boolean subschema, which llama.cpp grammars reject.
-const outputSchemaInputSchema = type("object | boolean | string | null");
-// Coarse per-spawn thinking effort; must stay in sync with TASK_EFFORTS in ../thinking.
-const effortRule = '"lo" | "med" | "hi"' as const;
-
-export const taskItemSchema = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	"outputSchema?": outputSchemaInputSchema,
-	"schemaMode?": '"permissive" | "strict"',
-	"tools?": "string[]",
-	"+": "delete",
-});
-const taskItemSchemaIsolated = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	"outputSchema?": outputSchemaInputSchema,
-	"schemaMode?": '"permissive" | "strict"',
-	"tools?": "string[]",
-	"isolated?": "boolean",
-	"+": "delete",
-});
+const outputSchemaInputSchema = z.union([z.record(z.string(), z.unknown()), z.boolean(), z.string(), z.null()]);
+const taskItemFields = {
+	name: z.string().optional(),
+	agent: z.string().default("task"),
+	task: z.string(),
+	outputSchema: outputSchemaInputSchema.optional(),
+	schemaMode: z.enum(["permissive", "strict"]).optional(),
+	tools: z.array(z.string()).optional(),
+};
+export const taskItemSchema = z.object(taskItemFields);
+const taskItemSchemaIsolated = z.object({ ...taskItemFields, isolated: z.boolean().optional() });
 
 /** Single task item. Fields are optional defensively: args stream in token by token. */
 export interface TaskItem {
@@ -153,52 +141,15 @@ export interface TaskItem {
 	isolated?: boolean;
 }
 
-export const taskSchema = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	"outputSchema?": outputSchemaInputSchema,
-	"schemaMode?": '"permissive" | "strict"',
-	"tools?": "string[]",
-	"isolated?": "boolean",
-	"+": "delete",
-});
-const taskSchemaNoIsolation = type({
-	"name?": "string",
-	agent: "string = 'task'",
-	task: "string",
-	"outputSchema?": outputSchemaInputSchema,
-	"schemaMode?": '"permissive" | "strict"',
-	"tools?": "string[]",
-	"+": "delete",
-});
-const taskSchemaBatch = type({
-	context: "string",
-	tasks: taskItemSchemaIsolated.array(),
-	"+": "delete",
-});
-const taskSchemaBatchNoIsolation = type({
-	context: "string",
-	tasks: taskItemSchema.array(),
-	"+": "delete",
-});
-const ALL_TASK_SCHEMAS = [taskSchema, taskSchemaNoIsolation, taskSchemaBatch, taskSchemaBatchNoIsolation] as const;
+export const taskSchema = taskItemSchemaIsolated;
+const taskSchemaNoIsolation = taskItemSchema;
+const taskSchemaBatch = z.object({ context: z.string(), tasks: z.array(taskItemSchemaIsolated) });
+const taskSchemaBatchNoIsolation = z.object({ context: z.string(), tasks: z.array(taskItemSchema) });
 
-type DynamicTaskSchema = (typeof ALL_TASK_SCHEMAS)[number];
 export type TaskSchema = typeof taskSchema;
 /** Active task tool parameter schema for the current isolation / batch flags */
-export type TaskToolSchemaInstance = DynamicTaskSchema | BaseType;
-
-const TASK_AGENT_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
-const taskSchemaCache = new Map<string, BaseType>();
-
-function taskAgentSchemaRule(defaultAgent: string): string {
-	const trimmed = defaultAgent.trim();
-	if (TASK_AGENT_NAME_PATTERN.test(trimmed)) {
-		return `string = '${trimmed}'`;
-	}
-	return "string";
-}
+export type TaskToolSchemaInstance = ZodWire<z.ZodType<TaskParams>>;
+const taskSchemaCache = new Map<string, z.ZodType<TaskParams>>();
 
 function createTaskSchema(options: {
 	isolationEnabled: boolean;
@@ -207,73 +158,22 @@ function createTaskSchema(options: {
 	effortEnabled: boolean;
 	evalToolsEnabled: boolean;
 	runtimeTierEnabled: boolean;
-}): BaseType {
-	const agent = taskAgentSchemaRule(options.defaultAgent);
-	const effortField = options.effortEnabled ? { "effort?": effortRule } : {};
-	const toolsField = options.evalToolsEnabled ? { "tools?": "string[]" } : {};
-	const runtimeTierField = options.runtimeTierEnabled ? { rt: '"R1" | "R2" | "R3" | "R4" | "R5"' } : {};
-	if (options.batchEnabled) {
-		if (options.isolationEnabled) {
-			const item = type.raw({
-				"name?": "string",
-				agent,
-				task: "string",
-				...runtimeTierField,
-				...effortField,
-				"outputSchema?": outputSchemaInputSchema,
-				"schemaMode?": '"permissive" | "strict"',
-				...toolsField,
-				"isolated?": "boolean",
-				"+": "delete",
-			});
-			return type.raw({
-				context: "string",
-				tasks: item.array(),
-				"+": "delete",
-			});
-		}
-		const item = type.raw({
-			"name?": "string",
-			agent,
-			task: "string",
-			...runtimeTierField,
-			...effortField,
-			"outputSchema?": outputSchemaInputSchema,
-			"schemaMode?": '"permissive" | "strict"',
-			...toolsField,
-			"+": "delete",
-		});
-		return type.raw({
-			context: "string",
-			tasks: item.array(),
-			"+": "delete",
-		});
-	}
-	if (options.isolationEnabled) {
-		return type.raw({
-			"name?": "string",
-			agent,
-			task: "string",
-			...runtimeTierField,
-			...effortField,
-			"outputSchema?": outputSchemaInputSchema,
-			"schemaMode?": '"permissive" | "strict"',
-			...toolsField,
-			"isolated?": "boolean",
-			"+": "delete",
-		});
-	}
-	return type.raw({
-		"name?": "string",
-		agent,
-		task: "string",
-		...runtimeTierField,
-		...effortField,
-		"outputSchema?": outputSchemaInputSchema,
-		"schemaMode?": '"permissive" | "strict"',
-		...toolsField,
-		"+": "delete",
+}): z.ZodType<TaskParams> {
+	const fullItem = z.object({
+		...taskItemFields,
+		rt: z.enum(["R1", "R2", "R3", "R4", "R5"]).optional(),
+		agent: z.string().default(options.defaultAgent.trim() || "task"),
+		effort: z.enum(["lo", "med", "hi"]).optional(),
+		isolated: z.boolean().optional(),
 	});
+	const mask: { effort?: true; isolated?: true; tools?: true } = {};
+	if (!options.effortEnabled) mask.effort = true;
+	if (!options.isolationEnabled) mask.isolated = true;
+	if (!options.evalToolsEnabled) mask.tools = true;
+	const item = fullItem.omit(mask);
+	const finalItem = options.runtimeTierEnabled ? item.required({ rt: true }) : item.omit({ rt: true });
+	if (options.batchEnabled) return z.object({ context: z.string(), tasks: z.array(finalItem) });
+	return finalItem;
 }
 
 /** Build the task wire schema for the current settings and spawn policy. */
@@ -286,7 +186,7 @@ export function getTaskSchema(options: {
 	defaultAgent?: string;
 	/** Require and advertise the profile-owned runtime tier field. */
 	runtimeTierEnabled?: boolean;
-}): TaskToolSchemaInstance {
+}): z.ZodType<TaskParams> {
 	const defaultAgent = options.defaultAgent ?? "task";
 	const effortEnabled = options.effortEnabled ?? false;
 	const evalToolsEnabled = options.evalToolsEnabled ?? true;

@@ -1,6 +1,5 @@
 import { beforeAll, describe, expect, it, spyOn, vi } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
-import { type } from "@oh-my-pi/omptype";
 import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type {
@@ -10,7 +9,7 @@ import type {
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { getThemeByName, initTheme, theme, type Theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { AskTool, askToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/ask";
+import { AskTool, askSchema, askToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/ask";
 import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import { TERMINAL } from "@oh-my-pi/pi-tui";
 
@@ -1781,27 +1780,25 @@ describe("AskTool rich ask dialog", () => {
 	});
 
 	it("rejects reserved-label collision in parameters validation", async () => {
-		const tool = new AskTool(createSession());
-
-		const valid = tool.parameters({
+		const valid = askSchema.safeParse({
 			questions: [{ id: "q1", question: "Q?", options: [{ label: "ok" }] }],
 		});
-		expect(valid instanceof type.errors).toBe(false);
+		expect(valid.success).toBe(true);
 
-		const reservedOther = tool.parameters({
+		const reservedOther = askSchema.safeParse({
 			questions: [{ id: "q1", question: "Q?", options: [{ label: "Other (type your own)" }] }],
 		});
-		expect(reservedOther instanceof type.errors).toBe(true);
+		expect(reservedOther.success).toBe(false);
 
-		const reservedChat = tool.parameters({
+		const reservedChat = askSchema.safeParse({
 			questions: [{ id: "q1", question: "Q?", options: [{ label: "Chat about this" }] }],
 		});
-		expect(reservedChat instanceof type.errors).toBe(true);
+		expect(reservedChat.success).toBe(false);
 
-		const reservedNext = tool.parameters({
+		const reservedNext = askSchema.safeParse({
 			questions: [{ id: "q1", question: "Q?", options: [{ label: "Next →" }] }],
 		});
-		expect(reservedNext instanceof type.errors).toBe(true);
+		expect(reservedNext.success).toBe(false);
 	});
 });
 
@@ -1875,7 +1872,7 @@ describe("AskTool carriage-return sanitization", () => {
 		const args = {
 			questions: [{ id: "q1", question: "Q?", options: [{ label: "Other\r(type your own)" }] }],
 		};
-		expect(tool.parameters(args) instanceof type.errors).toBe(false);
+		expect(askSchema.safeParse(args).success).toBe(true);
 		const result = await tool.execute("call-cr-reserved", args, undefined, undefined, context);
 		expect(askDialog).not.toHaveBeenCalled();
 		expect(result.content[0]?.type).toBe("text");

@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { type } from "@oh-my-pi/omptype";
 import { schemaType } from "../src";
 import { TASK_LIFECYCLE_SERVICE, type TaskLifecycleService } from "../src/task/lifecycle-service";
 import { getTaskSchema } from "../src/task/types";
@@ -25,8 +24,8 @@ test("buddha tools extension owns lifecycle policy and leaves it profile-scoped"
 	expect(lifecycle.validate?.({ task: "do work\n# Acceptance\npasses" }, "The task")).toContain("rt");
 	expect(lifecycle.validate?.({ task: "do work\n# Acceptance\npasses", rt: "R2" }, "The task")).toBeUndefined();
 	const profileSchema = getTaskSchema({ isolationEnabled: false, batchEnabled: false, runtimeTierEnabled: true });
-	expect(profileSchema({ task: "do work" }) instanceof type.errors).toBe(true);
-	expect(profileSchema({ task: "do work", rt: "R2" }) instanceof type.errors).toBe(false);
+	expect(profileSchema.safeParse({ task: "do work" }).success).toBe(false);
+	expect(profileSchema.safeParse({ task: "do work", rt: "R2" }).success).toBe(true);
 	expect(
 		lifecycle.formatTelemetry?.({
 			index: 0,

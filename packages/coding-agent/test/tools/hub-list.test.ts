@@ -13,7 +13,7 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-sessi
 import { CURRENT_SESSION_VERSION } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { collectIrcPeerRoster } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { HubTool } from "@oh-my-pi/pi-coding-agent/tools/hub";
+import { HubTool, hubSchema } from "@oh-my-pi/pi-coding-agent/tools/hub";
 import {
 	DEFAULT_HUB_LIST_LIMIT,
 	executeList,
@@ -118,8 +118,9 @@ describe("hub list", () => {
 			displayName: "task",
 			kind: "sub",
 			parentId: MAIN_AGENT_ID,
-			session: null,
+			session: { isStreaming: true } as AgentSession,
 			status: "running",
+			assignment: "auditing tokens",
 			activity: "auditing tokens",
 		});
 		registry.register({
@@ -697,10 +698,9 @@ describe("hub list", () => {
 	});
 
 	it("schema rejects aborted and advisor list filters", () => {
-		const tool = new HubTool(makeToolSession(new AgentRegistry(), MAIN_AGENT_ID));
-		expect(() => tool.parameters.assert({ op: "list", status: "aborted" })).toThrow();
-		expect(() => tool.parameters.assert({ op: "list", status: "advisor" })).toThrow();
-		expect(tool.parameters.assert({ op: "list", status: "parked" })).toEqual({ op: "list", status: "parked" });
+		expect(() => hubSchema.parse({ op: "list", status: "aborted" })).toThrow();
+		expect(() => hubSchema.parse({ op: "list", status: "advisor" })).toThrow();
+		expect(hubSchema.parse({ op: "list", status: "parked" })).toEqual({ op: "list", status: "parked" });
 	});
 
 	it("restores persisted peers after the process registry is lost without leaking them into the default view", async () => {
@@ -1148,7 +1148,7 @@ describe("hub list session authority", () => {
 		await writeParkedTranscript(path.join(dir, "current", "Outer", "Outer.jsonl"), "nested", "nested-steal-task");
 
 		const registry = new AgentRegistry();
-		const liveSession = {} as AgentSession;
+		const liveSession = { isStreaming: true } as AgentSession;
 		registry.register({
 			id: MAIN_AGENT_ID,
 			displayName: MAIN_AGENT_ID,
@@ -1164,6 +1164,7 @@ describe("hub list session authority", () => {
 			session: liveSession,
 			sessionFile: oldLive,
 			status: "running",
+			assignment: "preserve live session",
 		});
 		registry.register({
 			id: "IdleTwin",
@@ -1228,7 +1229,7 @@ describe("hub list session authority", () => {
 		await writeParkedTranscript(newRace, "race", "steal-race");
 
 		const registry = new AgentRegistry();
-		const liveSession = {} as AgentSession;
+		const liveSession = { isStreaming: true } as AgentSession;
 		registry.register({
 			id: MAIN_AGENT_ID,
 			displayName: MAIN_AGENT_ID,
@@ -1268,6 +1269,7 @@ describe("hub list session authority", () => {
 						session: liveSession,
 						sessionFile: newRace,
 						status: "running",
+						assignment: "claimed during roster scan",
 					});
 				});
 			}
@@ -1453,8 +1455,9 @@ describe("child system prompt roster", () => {
 			id: "Runner",
 			displayName: "task",
 			kind: "sub",
-			session: null,
+			session: { isStreaming: true } as AgentSession,
 			status: "running",
+			assignment: "running peer",
 			lastActivity: 0,
 		});
 
@@ -1681,7 +1684,7 @@ describe("hub direct addressing refreshes the caller root without a prior list",
 		const registry = AgentRegistry.global();
 		const delivered: string[] = [];
 		const liveSession = {
-			isStreaming: false,
+			isStreaming: true,
 			messages: [{ role: "user", content: "live-worker-line", timestamp: 1 }],
 			deliverIrcMessage: async (msg: { body: string }) => {
 				delivered.push(msg.body);
@@ -1703,6 +1706,7 @@ describe("hub direct addressing refreshes the caller root without a prior list",
 			session: liveSession,
 			sessionFile: childA,
 			status: "running",
+			assignment: "live worker",
 		});
 
 		// The refresh scans A's tree and finds the same-id transcript, but the
