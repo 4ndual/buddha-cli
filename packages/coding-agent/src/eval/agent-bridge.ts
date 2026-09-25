@@ -102,24 +102,26 @@ function evalForkTool(session: ToolSession, agent: string | undefined) {
 	const task = session.toolRegistry?.get("task");
 	const select = (task as typeof task & { evalDefaultForkAgent?: unknown } | undefined)?.evalDefaultForkAgent;
 	const forkAgent = typeof select === "function" ? select(session.sessionManager) : undefined;
-	return forkAgent === "default-fk" && (!agent || agent === forkAgent) ? task : undefined;
+	return typeof forkAgent === "string" && forkAgent.length > 0 && (!agent || agent === forkAgent)
+		? { tool: task!, agent: forkAgent }
+		: undefined;
 }
 
 async function runEvalFork(
 	args: EvalAgentArgs,
 	id: string,
-	tool: NonNullable<ReturnType<typeof evalForkTool>>,
+	route: NonNullable<ReturnType<typeof evalForkTool>>,
 	reportProgress: (text: string, details?: AsyncJobDetails) => Promise<void>,
 	signal: AbortSignal,
 ): Promise<string> {
 	// These controls require native structured-subagent semantics. Never discard
 	// them while presenting a fork as if it honored them.
 	for (const key of ["schema", "schemaMode", "isolated", "apply", "merge", "tools"] as const) {
-		if (Object.hasOwn(args, key)) throw new ToolError(`agent() default-fk cannot honor ${key} in a conversation fork`);
+		if (Object.hasOwn(args, key)) throw new ToolError(`agent() ${route.agent} cannot honor ${key} in a conversation fork`);
 	}
 	const name = `eval${createHash("sha256").update(id).digest("hex").slice(0, 24)}`;
 	const invoke = async (task: string) => {
-		const result = await tool.execute(id, { agent: "default-fk", name, task } as never, signal);
+		const result = await route.tool.execute(id, { agent: route.agent, name, task } as never, signal);
 		const details = result.details as { results?: Array<{ pending?: boolean; text?: string; error?: string }> } | undefined;
 		const item = details?.results?.[0];
 		if (result.isError || item?.error) throw new ToolError(item?.error ?? result.content.map(part => part.type === "text" ? part.text : "").join("\n"));
@@ -136,7 +138,7 @@ async function runEvalFork(
 		item = await invoke("collect");
 	}
 	const text = item.text ?? "";
-	await reportProgress(text, { evalResult: { text, details: { agent: "default-fk", id, structured: false } } });
+	await reportProgress(text, { evalResult: { text, details: { agent: route.agent, id, structured: false } } });
 	return text;
 }
 
@@ -216,7 +218,7 @@ async function buildEvalAgentResult(execution: StructuredSubagentResult): Promis
 /** Register a background subagent and return its handle immediately. */
 export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOptions): Promise<EvalAgentHandleResult> {
 	const parsed = parseAgentArgs(args);
-	const forkTool = evalForkTool(options.session, parsed.agent);
+	const forkRoute = evalForkTool(options.session, parsed.agent);
 	const turnBudget = options.session.getTurnBudget?.();
 	if (turnBudget?.hard && turnBudget.total !== null && turnBudget.spent >= turnBudget.total) {
 		throw new ToolError(
@@ -235,16 +237,16 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 					...(parsed.apply !== undefined ? { apply: parsed.apply } : {}),
 				}
 			: undefined;
-	const customTools = !forkTool && parsed.tools?.length
+	const customTools = !forkRoute && parsed.tools?.length
 		? createEvalCustomTools(options.session, await describeEvalTools(options.session, parsed.tools, options.signal))
 		: undefined;
 
 	try {
-		const policy = await resolveEffectiveSubagentPolicy({
+		const policy = forkRoute ? { agentName: forkRoute.agent } : await resolveEffectiveSubagentPolicy({
 			session: options.session,
 			invocationKind: "eval",
 			assignment: parsed.prompt,
-			...(forkTool ? { agent: "default-fk" } : parsed.agent !== undefined ? { agent: parsed.agent } : {}),
+			...(parsed.agent !== undefined ? { agent: parsed.agent } : {}),
 			...(Object.hasOwn(parsed, "schema") ? { outputSchema: parsed.schema } : {}),
 			...(parsed.schemaMode !== undefined ? { schemaMode: parsed.schemaMode } : {}),
 			...(isolation ? { isolation } : {}),
@@ -261,7 +263,7 @@ export async function runEvalAgent(args: unknown, options: EvalAgentBridgeOption
 			id,
 			async ({ signal, reportProgress, markRunning }) => {
 				markRunning();
-				if (forkTool) return runEvalFork(parsed, id, forkTool, reportProgress, signal);
+				if (forkRoute) return runEvalFork(parsed, id, forkRoute, reportProgress, signal);
 				let latestProgress: AgentProgress | undefined;
 				try {
 					const execution = await runStructuredSubagent({

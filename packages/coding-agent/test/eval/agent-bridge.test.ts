@@ -132,6 +132,23 @@ describe("runEvalAgent", () => {
 		expect(native).toHaveBeenCalledTimes(2);
 	});
 
+	it("uses a profile fork route without requiring a native fork agent definition", async () => {
+		const session = createBudgetSession(SessionManager.inMemory());
+		const calls: string[] = [];
+		session.toolRegistry = new Map([["task", {
+			name: "task",
+			evalDefaultForkAgent: () => "fork",
+			async execute(_id: string, params: { agent: string; task: string }) {
+				calls.push(`${params.agent}:${params.task}`);
+				return { content: [{ type: "text", text: "done" }], details: { results: [{ text: "inherited reply" }] } };
+			},
+		} as never]]);
+		const result = await runEvalAgentAndWait({ prompt: "Check lineage", label: "lineage" }, { session });
+		expect(result.text).toBe("inherited reply");
+		expect(result.details.agent).toBe("fork");
+		expect(calls).toEqual(["fork:Check lineage"]);
+	});
+
 	it("forwards session-scoped MCP and local protocol options", async () => {
 		const agent: AgentDefinition = {
 			name: "task",
