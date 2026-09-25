@@ -1,7 +1,8 @@
-import type { Tokenizer } from "@oh-my-pi/pi-agent-core";
+import type { AgentMessage, Tokenizer } from "@oh-my-pi/pi-agent-core";
+import { calculatePromptTokens } from "@oh-my-pi/pi-agent-core/compaction";
 import type { CompactionSettings } from "@oh-my-pi/pi-agent-core/compaction";
 import { effectiveReserveTokens, resolveThresholdTokens } from "@oh-my-pi/pi-agent-core/compaction";
-import type { Tool as AiTool, Model } from "@oh-my-pi/pi-ai";
+import type { ContextManifest, Tool as AiTool, Model, Usage } from "@oh-my-pi/pi-ai";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { formatNumber } from "@oh-my-pi/pi-utils";
 import type { Skill } from "../../extensibility/skills";
@@ -147,6 +148,112 @@ export function estimateToolSchemaTokens(
 		}
 	}
 	return tokenizer.countTokens(fragments);
+}
+
+/** Account for an individual tool with the same wire-schema serialization as the aggregate estimate. */
+function estimateOneTool(tool: Pick<Tool, "name" | "description" | "parameters">, index: number, tokenizer: Tokenizer) {
+	const nameTokens = typeof tool.name === "string" ? tokenizer.countTokens(tool.name) : 0;
+	const descriptionTokens = typeof tool.description === "string" ? tokenizer.countTokens(tool.description) : 0;
+	let schemaTokens = 0;
+	let schema: string | undefined;
+	try {
+		const wireTool: AiTool = {
+			name: tool.name,
+			description: tool.description,
+			parameters: tool.parameters as AiTool["parameters"],
+		};
+		const wireJson = JSON.stringify(toolWireSchema(wireTool) ?? {});
+		if (typeof wireJson === "string") {
+			schema = wireJson;
+			schemaTokens = tokenizer.countTokens(wireJson);
+		}
+	} catch {
+		// Match estimateToolSchemaTokens: malformed extension schemas contribute no schema tokens.
+	}
+	return {
+		index,
+		name: typeof tool.name === "string" ? tool.name : String(tool.name),
+		nameTokens,
+		descriptionTokens,
+		schemaTokens,
+		totalTokens: nameTokens + descriptionTokens + schemaTokens,
+		...(typeof tool.description === "string" ? { description: tool.description } : {}),
+		...(schema !== undefined ? { schema } : {}),
+	};
+}
+
+/** Estimate the prepared provider context while it is still the active call. */
+export function estimateContextManifest(
+	session: NonMessageTokenSource,
+	messages: readonly AgentMessage[],
+	tokenizer: Tokenizer,
+): ContextManifest["estimated"] {
+	const breakdown = computeNonMessageBreakdown(session, tokenizer);
+	const tools = (session.agent?.state?.tools ?? EMPTY_TOOLS).map((tool, index) =>
+		estimateOneTool(tool, index, tokenizer),
+	);
+	const messageTokens = tokenizer.countMessages([...messages]);
+	const totalNonMessageTokens = computeNonMessageTokens(session, tokenizer);
+	const systemParts = (session.systemPrompt ?? EMPTY_STRING_PARTS).map((text, index) => ({
+		index,
+		text: text ?? "",
+		tokens: tokenizer.countTokens(text ?? ""),
+	}));
+	const skills = session.settings?.get("skillful") === false
+		? []
+		: renderedSkills(session.skills ?? EMPTY_SKILLS, session.agent?.state?.tools ?? EMPTY_TOOLS).map(skill => ({
+				name: skill.name,
+				source: skill.source,
+				filePath: skill.filePath,
+				tokens: tokenizer.countTokens([skill.name, skill.description ?? ""]),
+			}));
+	return {
+		source: "local-tokenizer",
+		basis: "provider-bound-context",
+		systemPromptTokens: breakdown.systemPromptTokens,
+		systemContextTokens: breakdown.systemContextTokens,
+		skillsTokens: breakdown.skillsTokens,
+		toolSchemaTokens: breakdown.toolsTokens,
+		messageTokens,
+		totalTokens: totalNonMessageTokens + messageTokens,
+		tools,
+		systemParts,
+		skills,
+		messages: messages.map((message, index) => ({
+			index,
+			role: message.role,
+			...(message.role === "toolResult" ? { toolName: message.toolName } : {}),
+			...(typeof message.timestamp === "number" ? { timestamp: message.timestamp } : {}),
+			tokens: tokenizer.countMessages([message]),
+		})),
+	};
+}
+
+/** Combine the send-time estimate with normalized usage without adding the ledgers together. */
+export function buildContextManifest(
+	estimated: ContextManifest["estimated"],
+	usage: Usage,
+	wireRequests: unknown[] = [],
+	tracePath?: string,
+): ContextManifest {
+	return {
+		version: 1,
+		...(wireRequests.length > 0 || tracePath ? { wire: {
+			source: "outbound-payload-hook" as const,
+			requests: wireRequests,
+			...(tracePath ? { tracePath } : {}),
+		} } : {}),
+		estimated,
+		provider: {
+			source: "normalized-provider-usage",
+			inputTokens: usage.input,
+			cacheReadTokens: usage.cacheRead,
+			cacheWriteTokens: usage.cacheWrite,
+			outputTokens: usage.output,
+			...(usage.reasoningTokens !== undefined ? { reasoningTokens: usage.reasoningTokens } : {}),
+			promptTokens: calculatePromptTokens(usage),
+		},
+	};
 }
 
 /**

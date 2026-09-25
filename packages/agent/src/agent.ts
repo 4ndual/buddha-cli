@@ -845,6 +845,14 @@ export class Agent {
 		this.#onResponse = fn;
 	}
 
+	setPayloadInterceptor(fn: SimpleStreamOptions["onPayload"] | undefined): void {
+		this.#onPayload = fn;
+	}
+
+	getPayloadInterceptor(): SimpleStreamOptions["onPayload"] | undefined {
+		return this.#onPayload;
+	}
+
 	setRawSseEventInterceptor(fn: SimpleStreamOptions["onSseEvent"] | undefined): void {
 		this.#onSseEvent = fn;
 	}
