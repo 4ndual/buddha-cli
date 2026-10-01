@@ -15,7 +15,11 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { loadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import {
+	ExtensionRuntime,
+	loadExtensionFromFactory,
+	loadExtensions,
+} from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
@@ -82,5 +86,36 @@ describe("loadExtensions per-session binding (#2190 review fix)", () => {
 		expect(bindings).toHaveLength(2);
 		expect(bindings[0]?.events).toBe(parentEventBus);
 		expect(bindings[1]?.events).toBe(subagentEventBus);
+	});
+
+	it("binds native presentation and pinned Zod wire conversion from the session", async () => {
+		const presentation = {
+			name: "bash",
+			label: "native Bash",
+			approval: "exec" as const,
+			formatApprovalDetails: () => "native approval",
+		};
+		const extension = await loadExtensionFromFactory(
+			api => {
+				(globalThis as { __sessionBinding?: unknown }).__sessionBinding = {
+					hasRegistry: api.hasSessionNativeToolRegistry(),
+					presentation: api.getNativeToolPresentation("bash"),
+					wire: api.zodWire(api.zod.object({ command: api.zod.string() })),
+				};
+			},
+			"/tmp/session-binding",
+			new EventBus(),
+			new ExtensionRuntime(),
+			"<session-binding>",
+			{ getNativeToolPresentation: name => (name === "bash" ? presentation : undefined) },
+		);
+		const observed = (globalThis as { __sessionBinding?: { hasRegistry: boolean; presentation: unknown; wire: { properties?: unknown } } })
+			.__sessionBinding;
+
+		expect(extension.path).toBe("<session-binding>");
+		expect(observed?.hasRegistry).toBe(true);
+		expect(observed?.presentation).toBe(presentation);
+		expect(observed?.wire.properties).toEqual({ command: { type: "string" } });
+		delete (globalThis as { __sessionBinding?: unknown }).__sessionBinding;
 	});
 });

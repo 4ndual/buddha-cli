@@ -108,6 +108,7 @@ import {
 	EXTENSION_HANDLER_TIMEOUT_MS,
 	type ExtensionContext,
 	type ExtensionFactory,
+	type ExtensionSessionBindings,
 	ExtensionRunner,
 	ExtensionToolWrapper,
 	type ExtensionUIContext,
@@ -117,6 +118,7 @@ import {
 	type PreparedExtension,
 	type RegisteredTool,
 	type ToolDefinition,
+	type NativeToolPresentation,
 	wrapRegisteredTools,
 } from "./extensibility/extensions";
 import {
@@ -481,10 +483,10 @@ export interface CreateAgentSessionOptions {
 	 */
 	extensionRoots?: () => EffectiveExtensionRoots;
 	/**
-	 * Pre-loaded extensions (skips file discovery and the per-session factory
-	 * call). Used by the CLI when extensions are loaded early to parse custom
-	 * flags — the same process owns the returned instances, so reusing them is
-	 * safe.
+	 * Pre-loaded extensions. Used by the CLI to discover and parse custom flags
+	 * before session creation. When prepared factories are available, the SDK
+	 * rebinds them to this session's API; otherwise it reuses the supplied
+	 * instances for compatibility.
 	 *
 	 * NEVER pass this across session boundaries (e.g. parent → subagent).
 	 * `Extension` instances close over a parent-bound `ExtensionAPI` (cwd,
@@ -1827,6 +1829,24 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		const disposeCallbacks = new Set<() => void>();
 		const activeToolNames = new Set<string>();
 		const toolRegistry = new Map<string, Tool & Pick<ToolDefinition, "defaultInactive">>();
+		// Extension factories bind after createTools has filled this registry and
+		// before extension overrides replace entries. This is the session-local
+		// native tool source; AgentSession.getToolByName() would resolve the later
+		// override wrapper instead.
+		const extensionSessionBindings: ExtensionSessionBindings = {
+			getNativeToolPresentation: name => {
+				const tool = toolRegistry.get(name);
+				if (!tool) return undefined;
+				return {
+					name: tool.name,
+					label: tool.label,
+					approval: tool.approval,
+					formatApprovalDetails: tool.formatApprovalDetails,
+					renderCall: tool.renderCall,
+					renderResult: tool.renderResult,
+				} satisfies NativeToolPresentation;
+			},
+		};
 		const setActiveToolNames = (names: Iterable<string>): void => {
 			activeToolNames.clear();
 			for (const name of names) {
@@ -2208,12 +2228,33 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// Allocate a session runtime without evaluating caller-provided extension
 			// instances, paths, or factories.
 			extensionPaths = [];
-			extensionsResult = await loadExtensions([], cwd, eventBus);
+			extensionsResult = await loadExtensions([], cwd, eventBus, extensionSessionBindings);
 		} else if (options.preloadedExtensions) {
-			extensionsResult = {
-				...options.preloadedExtensions,
-				extensions: [...options.preloadedExtensions.extensions],
-			};
+			if (options.preloadedExtensions.preparedExtensions) {
+				// CLI callers bind trusted extensions early to discover/parse extension
+				// flags. Rebind their imported factories now that this session's native
+				// ToolSession exists; the early instances cannot see this registry.
+				extensionPaths = options.preloadedExtensions.preparedExtensions.map(prepared => prepared.path);
+				extensionsResult = await logger.time(
+					"bindPreparedExtensions",
+					bindPreparedExtensions,
+					options.preloadedExtensions.preparedExtensions,
+					cwd,
+					eventBus,
+					extensionSessionBindings,
+				);
+				for (const [name, value] of options.preloadedExtensions.runtime.flagValues) {
+					extensionsResult.runtime.flagValues.set(name, value);
+				}
+				for (const { path, error } of extensionsResult.errors) {
+					logger.error("Failed to bind extension", { path, error });
+				}
+			} else {
+				extensionsResult = {
+					...options.preloadedExtensions,
+					extensions: [...options.preloadedExtensions.extensions],
+				};
+			}
 			// Capture paths for downstream forwarding; filter inline-factory
 			// entries (`<inline-N>`) — those are per-session, not source paths.
 			extensionPaths = extensionsResult.extensions
@@ -2227,13 +2268,21 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				options.preloadedPreparedExtensions,
 				cwd,
 				eventBus,
+				extensionSessionBindings,
 			);
 			for (const { path, error } of extensionsResult.errors) {
 				logger.error("Failed to bind extension", { path, error });
 			}
 		} else if (options.preloadedExtensionPaths) {
 			extensionPaths = options.preloadedExtensionPaths;
-			extensionsResult = await logger.time("loadExtensions", loadExtensions, extensionPaths, cwd, eventBus);
+			extensionsResult = await logger.time(
+				"loadExtensions",
+				loadExtensions,
+				extensionPaths,
+				cwd,
+				eventBus,
+				extensionSessionBindings,
+			);
 			for (const { path, error } of extensionsResult.errors) {
 				logger.error("Failed to load extension", { path, error });
 			}
@@ -2241,7 +2290,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			extensionPaths = await logger.time("discoverSessionExtensionPaths", () =>
 				discoverSessionExtensionPaths(options, cwd, settings),
 			);
-			extensionsResult = await logger.time("loadExtensions", loadExtensions, extensionPaths, cwd, eventBus);
+			extensionsResult = await logger.time(
+				"loadExtensions",
+				loadExtensions,
+				extensionPaths,
+				cwd,
+				eventBus,
+				extensionSessionBindings,
+			);
 			for (const { path, error } of extensionsResult.errors) {
 				logger.error("Failed to load extension", { path, error });
 			}
@@ -2270,7 +2326,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			for (let i = 0; i < inlineExtensions.length; i++) {
 				const factory = inlineExtensions[i];
 				const sourceId = `<inline-${nextInlineExtensionIndex++}>`;
-				const loaded = await loadExtensionFromFactory(factory, cwd, eventBus, extensionsResult.runtime, sourceId);
+				const loaded = await loadExtensionFromFactory(
+					factory,
+					cwd,
+					eventBus,
+					extensionsResult.runtime,
+					sourceId,
+					extensionSessionBindings,
+				);
 				extensionsResult.extensions.push(loaded);
 				if (i < rebindableInlineExtensionCount) {
 					extensionsResult.preparedExtensions ??= [];

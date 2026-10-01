@@ -12,6 +12,7 @@ import type { type as ArkType } from "@oh-my-pi/omptype";
 import type * as TypeBox from "@oh-my-pi/omptype/typebox";
 import type * as zod from "@oh-my-pi/omptype/zod";
 import type {
+	AgentTool,
 	AgentMessage,
 	AgentToolResult,
 	AgentToolUpdateCallback,
@@ -688,6 +689,16 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	) => Component;
 }
 
+export type NativeToolPresentation = Pick<
+	AgentTool,
+	"name" | "label" | "approval" | "formatApprovalDetails" | "renderCall" | "renderResult"
+>;
+
+/** Session-owned native capabilities made available while binding extensions. */
+export interface ExtensionSessionBindings {
+	getNativeToolPresentation(name: string): NativeToolPresentation | undefined;
+}
+
 /** Whether a tool's source is scoped to the user, the project, or a transient runtime session. */
 export type SourceScope = "user" | "project" | "temporary";
 
@@ -1246,6 +1257,15 @@ export interface ExtensionAPI {
 
 	/** Injected Zod-compatible omptype builder for extension tools. */
 	zod: typeof zod;
+
+	/** Convert a Zod schema with this SDK's pinned native wire converter. */
+	zodWire<S extends zod.ZodType>(schema: S): Record<string, unknown> & { static: zod.output<S> };
+
+	/** Whether this factory is bound to a live session's native tool registry. */
+	hasSessionNativeToolRegistry(): boolean;
+
+	/** Read presentation hooks from this session's unwrapped native tool registry. */
+	getNativeToolPresentation(name: string): NativeToolPresentation | undefined;
 
 	/** Injected pi-coding-agent exports for accessing SDK utilities */
 	pi: typeof PiCodingAgent;
